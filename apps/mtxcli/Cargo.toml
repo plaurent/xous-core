@@ -1,6 +1,6 @@
 [package]
 name = "mtxcli"
-version = "0.1.0"
+version = "0.6.0"
 authors = ["bunnie <bunnie@kosagi.com>"]
 edition = "2018"
 description = "Matrix chat"
@@ -10,11 +10,11 @@ description = "Matrix chat"
 log = "0.4.14"
 num-derive = {version = "0.3.3", default-features = false}
 num-traits = {version = "0.2.14", default-features = false}
-xous = "0.9.30"
-xous-ipc = "0.9.30"
-log-server = { package = "xous-api-log", version = "0.1.25" }
-ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.25" }
-xous-names = { package = "xous-api-names", version = "0.9.27" }
+xous = "0.9.31"
+xous-ipc = "0.9.31"
+log-server = { package = "xous-api-log", version = "0.1.26" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.26" }
+xous-names = { package = "xous-api-names", version = "0.9.28" }
 gam = {path = "../../services/gam" }
 graphics-server = {path = "../../services/graphics-server" }
 trng = {path = "../../services/trng"}
@@ -29,6 +29,8 @@ codec = {path = "../../services/codec"}
 percent-encoding = "2.2"
 serde = { version = "1.0", features = [ "derive" ] }
 ureq = { version = "2.5", features = ["json"] }
+# Xous APIs
+pddb = {path = "../../services/pddb" }
 
 [features]
 default = []
