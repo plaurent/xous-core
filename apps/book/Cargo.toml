@@ -1,0 +1,26 @@
+[package]
+name = "book"
+version = "0.1.0"
+authors = ["bunnie <bunnie@kosagi.com>"]
+edition = "2018"
+description = "Ball demo app"
+
+# Dependency versions enforced by Cargo.lock.
+[dependencies]
+log = "0.4.14"
+num-derive = {version = "0.3.3", default-features = false}
+num-traits = {version = "0.2.14", default-features = false}
+xous = "0.9.31"
+xous-ipc = "0.9.31"
+log-server = { package = "xous-api-log", version = "0.1.26" }
+graphics-server = {path = "../../services/graphics-server" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.26" }
+xous-names = { package = "xous-api-names", version = "0.9.28" }
+gam = {path = "../../services/gam" }
+trng = {path = "../../services/trng"}
+modals = {path = "../../services/modals"}
+com = {path = "../../services/com"} # for the gyro read
+locales = {path = "../../locales"}
+
+[features]
+default = []

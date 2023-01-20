@@ -72,6 +72,7 @@ members = [
   "services/dns",
   "services/modals",
   "apps/ball",
+  "apps/book",
   "apps/hello",
   "apps/mtxcli",
   "apps/repl",

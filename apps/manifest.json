@@ -11,6 +11,14 @@
             }
         }
     },
+    "book": {
+        "context_name": "Book",
+        "menu_name": {
+            "appmenu.book": {
+                "en": "Book"
+            }
+        }
+    },
     "hello": {
         "context_name": "Hello World",
         "menu_name": {
