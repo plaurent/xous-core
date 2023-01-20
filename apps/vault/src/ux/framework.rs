@@ -35,8 +35,13 @@ impl ListItem {
             count: self.count,
         }
     }
+    /// This is made available for edit/delete routines to generate the key without having to
+    /// make a whole ListItem record (which is somewhat expensive).
+    pub fn key_from_parts(name: &str, guid: &str) -> String {
+        name.to_lowercase() + &guid.to_string()
+    }
     pub fn key(&self) -> String {
-        self.name.to_string() + &self.guid.to_string()
+        Self::key_from_parts(&self.name, &self.guid)
     }
 }
 impl Ord for ListItem {
@@ -679,7 +684,7 @@ impl VaultUx {
             VaultMode::Password => &il.pw,
         };
         for item in item_list.values() {
-            if item.name.starts_with(criteria) {
+            if item.name.to_lowercase().starts_with(criteria) {
                 let mut staged_item = item.clone();
                 staged_item.dirty = true;
                 self.filtered_list.push(staged_item);
