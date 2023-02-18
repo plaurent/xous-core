@@ -309,7 +309,7 @@ pub fn get_filter(user: &str, server: &str, room_id: &str, token: &str)
     url.push_str("/_matrix/client/v3/user/");
     url.push_str(&user_encoded);
     url.push_str("/filter");
-    log::info!("get_filter = {}", url);
+    log::info!("get_filter = {} using token {}", url, token);
     let filter_request = FilterRequest::new(room_id);
     if let Some(request_body) = serialize(&filter_request) {
         if let Some(value) = handle_response(post_string_auth(&url, &request_body, token)) {

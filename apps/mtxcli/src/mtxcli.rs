@@ -66,7 +66,7 @@ impl Mtxcli{
             content,
             gam,
             screensize,
-            bubble_width: ((screensize.x / 10) * 9) as u16, // 90% (was 80%) width for the text bubbles
+            bubble_width: ((screensize.x / 100) * 85) as u16, // (was 80%) width for the text bubbles
             margin: Point::new(4, 4),
             bubble_margin: Point::new(4, 4),
             bubble_radius: 4,

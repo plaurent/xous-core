@@ -31,6 +31,7 @@ impl ChatLayout {
         // get the height of various text regions to compute the layout
         let small_height: i16 = gfx.glyph_height_hint(GlyphStyle::Small).expect("couldn't get glyph height") as i16;
         let regular_height: i16 = gfx.glyph_height_hint(GlyphStyle::Regular).expect("couldn't get glyph height") as i16;
+        let large_height: i16 = gfx.glyph_height_hint(GlyphStyle::Large).expect("couldn't get glyph height") as i16;
         let margin = 4;
 
         // allocate canvases in structures, and record their GID for future reference
@@ -44,7 +45,7 @@ impl ChatLayout {
         let predictive_cr = predictive_canvas.clip_rect();
         canvases.insert(predictive_canvas.gid(), predictive_canvas);
 
-        let min_input_height = regular_height + margin*2;
+        let min_input_height = large_height + margin*2;
         let input_canvas = Canvas::new(
             Rectangle::new_v_stack(predictive_cr, -min_input_height),
             MISC_CONTEXT_DEFAULT_TRUST - TRUST_OFFSET, &trng, None, crate::api::CanvasType::ChatInput
