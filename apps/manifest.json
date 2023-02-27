@@ -67,5 +67,13 @@
             }
         },
         "submenu": 1
+    },
+    "transientdisk": {
+        "context_name": "Transient USB disk",
+        "menu_name": {
+            "appmenu.transientdisk": {
+                "en": "Transient USB disk"
+            }
+        }
     }
 }

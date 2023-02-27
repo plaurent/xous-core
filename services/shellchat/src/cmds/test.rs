@@ -466,6 +466,7 @@ impl<'a> ShellCmdApi<'a> for Test {
                     log::info!("initiating suspend");
                     env.ticktimer.sleep_ms(250).unwrap(); // give a moment for all the command queues to clear
                     susres.initiate_suspend().unwrap();
+                    log::info!("resumed");
                     env.ticktimer.sleep_ms(1000).unwrap(); // pause for the suspend/resume cycle
 
                     let timeout = 60_000;
@@ -627,6 +628,21 @@ impl<'a> ShellCmdApi<'a> for Test {
                             log::info!("CMD: if you can read this, ship mode failed!");
                         }
                         write!(ret, "Ship mode request denied").unwrap();
+                    }
+                }
+                #[cfg(feature="extra-tests")]
+                "timeblock" => {
+                    let time_cid = xous::connect(xous::SID::from_bytes(b"timeserverpublic").unwrap()).unwrap();
+                    let result = xous::send_message(time_cid,
+                        xous::Message::new_blocking_scalar(3, 0, 0, 0, 0)
+                    ).unwrap();
+                    match result {
+                        xous::Result::Scalar2(msb, lsb) => {
+                            log::info!("GetTimeUtc: {}, {}", msb, lsb);
+                        }
+                        _ => {
+                            log::info!("GetTimeUtc returned an unexpected result");
+                        }
                     }
                 }
                 #[cfg(feature="ditherpunk")]

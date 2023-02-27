@@ -78,6 +78,7 @@ members = [
   "apps/repl",
   "apps/vault",
   "apps/vault/tools/vaultbackup-rs",
+  "apps/transientdisk",
   "services/libstd-test",
   "services/ffi-test",
   "services/tts",
@@ -105,6 +106,8 @@ exclude = [
   "api/xous-api-names",
   "api/xous-api-susres",
   "api/xous-api-ticktimer",
+  # The "packing" crate is forked and is a separate workspace
+  "libs/mass-storage/packing",
 ]
 
 [profile.release]
