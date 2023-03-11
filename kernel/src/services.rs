@@ -22,6 +22,17 @@ const MAX_SERVER_COUNT: usize = 128;
 
 pub use crate::arch::process::{INITIAL_TID, MAX_PROCESS_COUNT};
 
+#[allow(dead_code)]
+const MINIELF_FLG_W: u8 = 1;
+#[allow(dead_code)]
+const MINIELF_FLG_NC: u8 = 2;
+#[allow(dead_code)]
+const MINIELF_FLG_X: u8 = 4;
+#[cfg(baremetal)]
+const MINIELF_FLG_EHF: u8 = 8;
+#[cfg(baremetal)]
+const MINIELF_FLG_EHH: u8 = 0x10;
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct ExceptionHandler {
     /// Address (in program space) where the exception handler is
@@ -330,7 +341,7 @@ impl SystemServices {
         let init_offsets = {
             let mut init_count = 1;
             for arg in args.iter() {
-                if arg.name == u32::from_le_bytes(*b"IniE") {
+                if arg.name == u32::from_le_bytes(*b"IniE") || arg.name == u32::from_le_bytes(*b"IniF") {
                     init_count += 1;
                 }
             }
@@ -341,6 +352,22 @@ impl SystemServices {
                 )
             }
         };
+
+        // we can *only* iterate through kernel args. We can't access it as a slice.
+        let mut arg_iter = args.iter().peekable();
+        loop {
+            if let Some(arg) = arg_iter.peek() {
+                println!("loop");
+                if arg.name == u32::from_le_bytes(*b"IniE") || arg.name == u32::from_le_bytes(*b"IniF") {
+                    println!("found!");
+                    break;
+                }
+            } else {
+                panic!("Could not re-discover start of user services");
+            }
+            arg_iter.next();
+        }
+        // at this point, arg.next() will have the offset of the first process argument.
 
         // Copy over the initial process list.  The pid is encoded in the SATP
         // value from the bootloader.  For each process, translate it from a raw
@@ -366,6 +393,29 @@ impl SystemServices {
             if pid == 1 {
                 process.state = ProcessState::Running(0);
             } else {
+                // This code makes the following assumption:
+                //   - Arguments are in the same order as processes
+                //   - All processes take the form of IniE/IniF such that the flags are in the last word
+                //   - Process #1 is the kernel
+                // Any changes to this will break this code!
+                let mut eh_frame = 0;
+                let mut eh_frame_size = 0;
+                let mut eh_frame_header = 0;
+                let mut eh_frame_header_size = 0;
+                if let Some(arg) = arg_iter.next() {
+                    for section in arg.data.chunks_exact(2) {
+                        let flags = (section[1] >> 24) as u8;
+                        if flags & MINIELF_FLG_EHF != 0 {
+                            eh_frame = section[0];
+                            eh_frame_size = section[1] & 0xFF_FFFF;
+                        } else if flags & MINIELF_FLG_EHH != 0 {
+                            eh_frame_header = section[0];
+                            eh_frame_header_size = section[1] & 0xFF_FFFF;
+                        }
+                    }
+                }
+
+                // end of assumption area
                 process.state = ProcessState::Setup(ThreadInit::new(
                     unsafe { core::mem::transmute::<usize, _>(init.entrypoint) },
                     unsafe {
@@ -375,10 +425,10 @@ impl SystemServices {
                         )
                         .unwrap()
                     },
-                    pid,
-                    0,
-                    0,
-                    0,
+                    eh_frame as _,
+                    eh_frame_size as _,
+                    eh_frame_header as _,
+                    eh_frame_header_size as _,
                 ));
             }
             // log_process_update(file!(), line!(), process, old_state);

@@ -10,9 +10,8 @@ use verifier::*;
 
 use std::env;
 
-/// gitrev of the current precursor SoC version targeted by this build. This must
-/// be manually updated every time the SoC version is bumped.
-const PRECURSOR_SOC_VERSION: &str = "70190e2";
+/// specifies the hardware target variant for the SoC
+const PRECURSOR_SOC_VERSION: &str = "pvt";
 
 /*
   Some notes on kernel versions versus backups.
@@ -41,7 +40,9 @@ const PRECURSOR_SOC_VERSION: &str = "70190e2";
 const MIN_XOUS_VERSION: &str = "v0.9.8-791";
 
 /// target triple for precursor builds
-const TARGET_TRIPLE: &str = "riscv32imac-unknown-xous-elf";
+pub(crate) const TARGET_TRIPLE_RISCV32: &str = "riscv32imac-unknown-xous-elf";
+/// target triple for ARM builds
+pub(crate) const TARGET_TRIPLE_ARM: &str = "armv7a-unknown-xous-elf";
 
 // because I have nowhere else to note this. The commit that contains the rkyv-enum derive
 // refactor to work around warnings thrown by Rust 1.64.0 is: f815ed85b58b671178fbf53b4cea34186fc406eb
@@ -117,12 +118,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // packages located on crates.io. For testing non-local build configs that are less
     // concerned about software supply chain and more focused on developer convenience.
     let base_pkgs_remote = [
-        "xous-log@0.1.25",         // "well known" service: debug logging
-        "xous-names@0.9.34",      // "well known" service: manage inter-server connection lookup
-        "xous-susres@0.1.33",     // ticktimer registers with susres to coordinate time continuity across sleeps
-        "xous-ticktimer@0.1.29",   // "well known" service: thread scheduling
+        "xous-log@0.1.26",         // "well known" service: debug logging
+        "xous-names@0.9.35",      // "well known" service: manage inter-server connection lookup
+        "xous-susres@0.1.34",     // ticktimer registers with susres to coordinate time continuity across sleeps
+        "xous-ticktimer@0.1.30",   // "well known" service: thread scheduling
     ].to_vec();
-    let xous_kernel_remote = "xous-kernel@0.9.32";
+    let xous_kernel_remote = "xous-kernel@0.9.36";
 
     // ---- extract position independent args ----
     let lkey = get_flag("--lkey")?;
@@ -159,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("install-toolkit") | Some("install-toolchain") => {
             let arg = env::args().nth(2);
             ensure_compiler(
-                &Some(TARGET_TRIPLE),
+                &Some(TARGET_TRIPLE_RISCV32),
                 true,
                 arg.map(|x| x == "--force").unwrap_or(false),
             )?
@@ -193,10 +194,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                    .add_services(&get_cratespecs());
             builder.add_loader_feature("renode-bypass")
                    .add_loader_feature("renode-minimal");
-            builder.add_service("net")
-                .add_service("com")
-                .add_service("llio")
-                .add_service("dns");
+            builder.add_service("net", false)
+                .add_service("com", false)
+                .add_service("llio", false)
+                .add_service("dns", false);
         }
         Some("renode-aes-test") => {
             builder.target_renode()
@@ -207,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             builder.target_renode()
                    .add_services(&gfx_base_pkgs.into_iter().map(String::from).collect())
                    .add_services(&get_cratespecs());
-            builder.add_service("ffi-test");
+            builder.add_service("ffi-test", false);
             builder.add_loader_feature("renode-bypass");
         }
         Some("renode-remote") => {
@@ -272,6 +273,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                    .add_feature("mass-storage") // add this in by default to help with testing
                    .add_apps(&get_cratespecs());
         }
+        Some("app-image-xip") => {
+            builder.target_precursor(PRECURSOR_SOC_VERSION)
+                   //.add_services(&user_pkgs.into_iter().map(String::from).collect())
+                   .add_feature("mass-storage"); // add this in by default to help with testing
+            for service in user_pkgs {
+                if (service != "shellchat") && (service != "ime-plugin-shell" && (service != "com") && (service != "status") && (service != "net")) {
+                    builder.add_service(service, false);
+                } else {
+                    builder.add_service(service, true);
+                }
+            }
+            for app in get_cratespecs() {
+                builder.add_app(&app, true);
+            }
+        }
         Some("perf-image") => {
             // `--feature vaultperf` will make `vault` the performance manager, in exclusion of shellchat
             if !builder.has_feature("shellperf") && !builder.has_feature("vaultperf") {
@@ -316,7 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             builder.add_services(&pkgs.into_iter().map(String::from).collect())
                 .add_apps(&get_cratespecs())
-                .add_service("espeak-embedded#https://ci.betrusted.io/job/espeak-embedded/lastSuccessfulBuild/artifact/target/riscv32imac-unknown-xous-elf/release/espeak-embedded")
+                .add_service("espeak-embedded#https://ci.betrusted.io/job/espeak-embedded/lastSuccessfulBuild/artifact/target/riscv32imac-unknown-xous-elf/release/espeak-embedded", false)
                 .override_locale("en-tts")
                 .add_feature("tts")
                 .add_feature("braille");
@@ -331,7 +347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                    .add_services(&base_pkgs.into_iter().map(String::from).collect())
                    .add_services(&get_cratespecs());
             //builder.add_service("usb-test");
-            builder.add_service("usb-device-xous");
+            builder.add_service("usb-device-xous", false);
         }
         Some("pddb-dev") => {
             builder.target_precursor(PRECURSOR_SOC_VERSION)
@@ -352,6 +368,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             builder.target_precursor(PRECURSOR_SOC_VERSION)
                    .add_services(&user_pkgs.into_iter().map(String::from).collect())
                    .add_feature("avalanchetest");
+        }
+
+        // ------ ARM hardware image configs ------
+        Some("arm-tiny") => {
+            builder.target_arm()
+                .add_services(&base_pkgs.into_iter().map(String::from).collect())
+                .add_services(&get_cratespecs());
         }
 
         // ---- other single-purpose commands ----
