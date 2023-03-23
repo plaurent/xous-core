@@ -93,6 +93,7 @@ static mut PROCESS_TABLE: ProcessTable = ProcessTable {
 
 #[repr(C)]
 #[cfg(baremetal)]
+#[derive(Debug, Copy, Clone)]
 /// The stage1 bootloader sets up some initial processes.  These are reported
 /// to us as (satp, entrypoint, sp) tuples, which can be turned into a structure.
 /// The first element is always the kernel.
@@ -106,6 +107,13 @@ pub struct InitialProcess {
 
     /// Address of the top of the stack
     pub sp: usize,
+}
+
+impl InitialProcess {
+    pub fn pid(&self) -> PID {
+        let pid = (self.satp >> 22) & ((1 << 9) - 1);
+        unsafe { PID::new_unchecked(pid as u8) }
+    }
 }
 
 #[repr(C)]

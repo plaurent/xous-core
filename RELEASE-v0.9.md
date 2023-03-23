@@ -346,6 +346,18 @@ perform the Xous firmware upgrade. This requires running manual update commands,
   - Phase 1 cleaned up and optimized
 - VexRiscv core patch to D$ virtual memory flush bug
   - Hopefully resolves issue #321
+- SoC yield bugs fixed
+  - Work-around Vivado tool issue where >10% of compilations were failing on some units
+  - Strip out unused logic to decongest the design
+  - Requires an update to usb_update.py, precursorupdater to work with the new SoC as the CPU debug port is replaced with a simple reset-halt mechanism for preventing bus traffic during USB updates
+  - Metastability harden I2C & TRNG
+  - Handle I2C timeouts. The I2C block is sensitive to hardware-specific thresholds, and on some devices it can fail to come up cleanly on boot. This code recovers from that more gracefully.
+  - Move I/O blocks into always-on domain to avoid clock stoppage during fire and forget I/O operation
+- More multi-platform support work
+  - Preliminary Cramium SoC and FPGA targets incorporated
+  - atsama5d27 target support via PRs from Foundation Devices (thank you!!). Xous is now booting on the ATSAMA5D27-SOM1-EK1 dev board!
+- Fix edge case in phase 1 loader (thanks to @southpawflow for reporting it and providing the test case files)
+- Implementations removed from crates.io (API crates still published) -- nobody is using the implementation crates it seems, and they are very hard to maintain.
 
 ## Roadmap
 - Lots of testing and bug fixes
