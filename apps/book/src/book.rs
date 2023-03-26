@@ -99,6 +99,18 @@ impl Book {
     pub(crate) fn rawkeys(&mut self, keys: [char; 4]) {
         log::debug!("got rawkey {:?}", keys); // you could use the raw keypresses, but modals are easier...
 
+        //let direction = if keys.iter().as_bytes().contains(8) {
+        let direction = if keys.contains(&char::from_u32(8).unwrap()) {
+            "prev"
+        }
+        else if keys.contains(&'-') || keys.contains(&'g') {
+            "less"
+        }
+        else if keys.contains(&'+') || keys.contains(&'h') {
+            "more"
+        } else {
+            "next"
+        };
         self.gam.draw_rectangle(self.gid,
             Rectangle::new_with_style(Point::new(0, 0), self.screensize,
             DrawStyle {
@@ -138,7 +150,7 @@ impl Book {
         //let mut message = String::from("This is page ");
         //message.push_str(self.counter.to_string().as_str());
 
-		let mut message = self.getpage();
+		let mut message = self.getpage(direction);
 		let mut text = String::from("");
 		let mut foundblank = false;
 		for line in message.lines() {
@@ -153,9 +165,12 @@ impl Book {
     }
 
 
-    pub(crate) fn getpage(&mut self) -> String {
+    pub(crate) fn getpage(&mut self, direction:&str) -> String {
 		let host = String::from("pipe.cat");
-		let path = "book?page=1";
+		let mut path = String::from("book/");
+        //next";
+        path.push_str(&direction);
+
         //use core::fmt::Write;
 		use std::io::Write;
 
