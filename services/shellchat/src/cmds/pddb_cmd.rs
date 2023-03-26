@@ -250,8 +250,12 @@ impl<'a> ShellCmdApi<'a> for PddbCmd {
                                 std::fs::create_dir_all(&keypath);
                             }
                             keypath.push(keyname);
-                            let mut value = String::<1024>::new();
-                            join_tokens(&mut value, &mut tokens);
+
+                            let mut value = std::string::String::from(tokens.next().unwrap());
+                            for (_, token)  in tokens.enumerate() {
+                                value.push_str(" ");
+                                value.push_str(token);
+                            }
                             match File::create(keypath) {
                                 Ok(mut file) => {
                                     match file.write_all(&value.as_bytes()) {
