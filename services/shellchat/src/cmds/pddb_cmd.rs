@@ -15,6 +15,10 @@ use sha2::Digest;
 #[cfg(feature="shellperf")]
 const FILE_ID_SERVICES_SHELLCHAT_SRC_CMDS_PDDB_CMD: u32 = 2;
 
+use std::fs::File;
+use std::path::PathBuf;
+
+
 pub struct PddbCmd {
     pddb: pddb::Pddb,
     #[cfg(feature="shellperf")]
@@ -232,6 +236,43 @@ impl<'a> ShellCmdApi<'a> for PddbCmd {
 
                         write!(ret, "Copy from {} to {} succeeded", srcdescriptor, dstdescriptor).unwrap();
                     })()
+                }
+                "overwrite" => {
+                    if let Some(descriptor) = tokens.next() {
+                        if let Some((dict, keyname)) = descriptor.split_once(':') {
+                            let mut keypath = PathBuf::new();
+                            keypath.push(dict);
+
+                            if std::fs::metadata(&keypath).is_ok() { // keypath exists
+                                // log::info!("dict '{}' exists", dict);
+                            } else {
+                                log::info!("dict '{}' does NOT exist.. creating it", dict);
+                                std::fs::create_dir_all(&keypath);
+                            }
+                            keypath.push(keyname);
+                            let mut value = String::<1024>::new();
+                            join_tokens(&mut value, &mut tokens);
+                            match File::create(keypath) {
+                                Ok(mut file) => {
+                                    match file.write_all(&value.as_bytes()) {
+                                        Ok(_) => {
+                                            write!(ret, "Wrote data {} to {}:{}", value, dict, keyname).unwrap();
+                                        }
+                                        Err(e) => {
+                                            write!(ret, "Error writing {}:{}: {:?}", dict, keyname, e).ok();
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    write!(ret, "Error creating path/file").unwrap();
+                                }
+                            }
+                        } else {
+                            write!(ret, "Query is of form 'dict:key'").unwrap();
+                        }
+                    } else {
+                        write!(ret, "Missing query of form 'dict:key'").unwrap();
+                    }
                 }
                 "write" => {
                     if let Some(descriptor) = tokens.next() {
