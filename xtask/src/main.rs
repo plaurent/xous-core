@@ -142,6 +142,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !language_set { // the default language is english
         track_language_changes("en")?;
     }
+    let gdb_stub = env::args().filter(|x| x == "--gdb-stub").count() != 0;
+    if gdb_stub {
+        builder.add_kernel_feature("gdb-stub");
+    }
 
     // ---- now process the verb plus position dependent arguments ----
     let mut args = env::args();
@@ -357,8 +361,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ------ ARM hardware image configs ------
         Some("arm-tiny") => {
             builder.target_arm()
-                .add_services(&base_pkgs.into_iter().map(String::from).collect())
-                .add_services(&get_cratespecs());
+                .add_services(&vec![
+                    "xous-log".to_string(),
+                    "xous-ticktimer".to_string(),
+                    "xous-names".to_string(),
+                    "ticktimer-test-client".to_string(),
+                ])
+                .add_kernel_feature("v2p") // required to use LCD DMA with lcd-console
+                .add_feature("atsama5d27")
+                .add_feature("lcd-console")
+                .add_services(&get_cratespecs())
+                .stream(BuildStream::Release);
         }
 
         // ---- other single-purpose commands ----
@@ -407,6 +420,7 @@ fn print_help() {
     [--service [cratespec]]
     [--no-timestamp]
     [--no-verify]
+    [--gdb-stub]
 
 [cratespecs] is a list of 0 or more items of the following syntax:
    [name]                crate 'name' to be built from local source
@@ -423,6 +437,7 @@ be merged in with explicit app/service treatment with the following flags:
 [--lkey] and [--kkey]    Paths to alternate private key files for loader and kernel key signing (defaults to developer key)
 [--no-timestamp]         Do not include a timestamp in the build. By default, `ticktimer` is rebuilt on every run to encode a timestamp.
 [--no-verify]            Do not verify that local sources match crates.io downloaded sources
+[--gdb-stub]             Build the kernel with GDB support
 
 - An 'app' must be enumerated in apps/manifest.json.
    A pre-processor configures the launch menu based on the list of specified apps.
@@ -456,7 +471,6 @@ Renode emulation:
  libstd-net              Renode test image for testing network functions. Bypasses sig checks, keys locked out.
  ffi-test                builds an image for testing C-FFI bindings and integration. [cratespecs] are services
  renode-aes-test         Renode image for AES emulation development. Extremely minimal.
- renode-remote           Renode test image that pulls its crates from crates.io
 
 Other commands:
  generate-locales        (re)generate the locales include for the language selected in xous-rs/src/locale.rs
