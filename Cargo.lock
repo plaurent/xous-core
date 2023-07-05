@@ -1318,6 +1318,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "edlin"
+version = "0.1.0"
+dependencies = [
+ "codec",
+ "com",
+ "content-plugin-api",
+ "cos_table",
+ "gam",
+ "graphics-server",
+ "ime-plugin-api",
+ "ime-plugin-shell",
+ "llio",
+ "locales",
+ "log",
+ "num-derive",
+ "num-traits",
+ "trng",
+ "xous 0.9.47 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous-api-log",
+ "xous-api-names",
+ "xous-api-ticktimer",
+ "xous-ipc 0.9.47 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "either"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
