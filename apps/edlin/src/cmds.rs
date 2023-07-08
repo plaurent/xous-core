@@ -220,7 +220,7 @@ impl CmdEnv {
 
             match self.edlin.mode {
                 EdlinMode::Command => {
-                    write!(ret, "* ");
+                    write!(ret, "");
                 }
                 EdlinMode::Inserting => {
                     write!(ret, " {}: ", self.edlin.line_cursor);
