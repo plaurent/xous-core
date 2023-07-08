@@ -1,6 +1,10 @@
 use xous::{MessageEnvelope};
 use xous_ipc::String;
 use core::fmt::Write;
+use std::fs::File;
+use std::io::{Write as StdWrite, Error};
+use std::path::PathBuf;
+
 
 use std::collections::HashMap;
 /////////////////////////// Common items to all commands
@@ -83,17 +87,48 @@ mod audio;     use audio::*;
 
 enum EdlinMode {
     Inserting,
-    Command
+    Command,
+    Editing
 }
 
 pub struct Edlin {
     data:Vec<std::string::String>,
     //data:Vec<String<512>>,
     mode:EdlinMode,
-    line_cursor: usize
+    line_cursor: usize,
+    gam: gam::Gam,
 }
 
 impl Edlin {
+
+
+    fn is_string_numeric(&mut self, str: &std::string::String) -> bool {
+        for c in str.chars() {
+            if !c.is_numeric() {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn save(&mut self) -> Result<(), Error> {
+            const EDLIN_DICT: &str = "edlin";
+
+            let mut keypath = PathBuf::new();
+            keypath.push(EDLIN_DICT);
+            if std::fs::metadata(&keypath).is_ok() { // keypath exists
+                // log::info!("dict '{}' exists", MTXCLI_DICT);
+            } else {
+                log::info!("dict '{}' does NOT exist.. creating it", EDLIN_DICT);
+                std::fs::create_dir_all(&keypath)?;
+            }
+            let key = "file1_line0";
+            let value = self.data.get(0).unwrap();
+            keypath.push(key);
+            File::create(keypath)?.write_all(value.as_bytes())?;
+            Ok(())
+    }
+
     pub fn process(&mut self, line:&std::string::String) -> Vec<std::string::String> {
 
         match self.mode {
@@ -102,11 +137,29 @@ impl Edlin {
                     self.mode = EdlinMode::Command;
                     return Vec::new();
                 } else {
-                    self.data.insert(self.line_cursor, std::string::String::from(line));  // TODO Insert line at current line_cursor
+                    self.data.insert(self.line_cursor, std::string::String::from(line));
                     self.line_cursor += 1;
                 }
             }
+            EdlinMode::Editing => {
+
+                self.data.remove(self.line_cursor);
+                self.data.insert(self.line_cursor, std::string::String::from(line));
+                self.mode = EdlinMode::Command;
+            }
             EdlinMode::Command => {
+                if self.is_string_numeric(line) {
+                    self.mode = EdlinMode::Editing;
+                    self.line_cursor = line.parse::<usize>().unwrap();
+                    match self.gam.type_chars(self.data.get(self.line_cursor).unwrap()) {
+                        Ok(_) => {
+                            //write!(ret, "Edit the value and press enter:").unwrap()
+                        }
+                        _ => {
+                            //write!(ret, "Couldn't type out write command.").unwrap()
+                        }
+                    }
+                }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
                     if !line.to_lowercase().starts_with("i") {
@@ -190,7 +243,8 @@ impl CmdEnv {
         let mut edlin = Edlin {
             data: Vec::new(),
             mode: EdlinMode::Command,
-            line_cursor: 0
+            line_cursor: 0,
+            gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
         };
         edlin.data.push(std::string::String::from("Hello world."));
         edlin.data.push(std::string::String::from("This is a test."));
@@ -220,6 +274,9 @@ impl CmdEnv {
 
             match self.edlin.mode {
                 EdlinMode::Command => {
+                    write!(ret, "");
+                }
+                EdlinMode::Editing => {
                     write!(ret, "");
                 }
                 EdlinMode::Inserting => {
