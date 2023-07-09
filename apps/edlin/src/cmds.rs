@@ -300,7 +300,7 @@ impl Edlin {
                     return self.data.clone()
                 }
                 if line.starts_with("#") {
-                    let LEN_FOR_WRAP = 40;
+                    let LEN_FOR_WRAP = 35;
                     let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
                     let words = one_long_string.split(" ");
                     self.data.clear();
@@ -363,15 +363,21 @@ impl Edlin {
                     return result;
                 }
                 if line.contains("n") || line.contains("N") {
+                    if !line.to_lowercase().starts_with("n") {
+                        let digits: Vec<&str> = line.matches(char::is_numeric).collect();
+                        let mut line_to_next_from = digits.join("").parse::<usize>().unwrap();
+                        self.line_cursor = line_to_next_from;
+                    }
+                    let NUM_LINES_PER_PAGE = 10;
                     let mut result: Vec<std::string::String> = Vec::new();
-                    let mut upto = self.line_cursor + 5;
-                    if upto > self.data.len() - 1 {
-                        upto = self.data.len() - 1;
+                    let mut upto = self.line_cursor + NUM_LINES_PER_PAGE;
+                    if upto > self.data.len()  {
+                        upto = self.data.len();
                     }
                     for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
                         result.insert(i, format!("{}: {}", self.line_cursor+i, line));
                     }
-                    self.line_cursor = self.line_cursor + 5;
+                    self.line_cursor = self.line_cursor + NUM_LINES_PER_PAGE;
                     if self.line_cursor > self.data.len()-1 {
                         self.line_cursor = self.data.len()-1;
                     }
