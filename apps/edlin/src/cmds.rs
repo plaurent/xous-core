@@ -327,7 +327,7 @@ impl Edlin {
                     }
                 }
                 if line.to_lowercase().starts_with("?"){
-                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\n# edit line")];
+                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\n# edit/select line\nl list all\np print\nn next n lines")];
                 }
                 if line.contains("*") {
                     return self.ls();
