@@ -135,6 +135,31 @@ impl Edlin {
         return result;
     }
 
+    fn rm(&mut self, filename: std::string::String) -> Result<(), Error> {
+        const EDLIN_DICT: &str = "edlin";
+        let mut keypath = PathBuf::new();
+        keypath.push(EDLIN_DICT);
+
+        for dir in std::fs::read_dir(&keypath) {
+            for entry in dir {
+                let path0 = entry.unwrap().path();
+                let path = path0.to_str().unwrap();
+                log::info!("path '{}'", path);
+                let needstartwith1 = format!("edlin/{}_", filename);
+                let needstartwith2 = format!("edlin:{}_", filename);
+                if path.starts_with(needstartwith1.as_str()) || path.starts_with(needstartwith2.as_str()) {
+                    log::info!("WOULD DELETE '{}'", path);
+                    std::fs::remove_file(&path0);
+                    //let row = format!("{}", std::string::String::from(path).replace("edlin/", "").replace("_line0", ""));
+                    //result.push(row);
+                } else {
+                    log::info!("not deleting '{}'", path);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn load(&mut self, filename: std::string::String) -> Result<(), Error> {
         self.data.clear();
         const EDLIN_DICT: &str = "edlin";
@@ -290,6 +315,15 @@ impl Edlin {
                         return vec![format!("*{}:", self.line_cursor)];
                     } else {
                         return vec![std::string::String::from("Please enter a filename after r.")];
+                    }
+                }
+                if line.to_lowercase().starts_with("x"){
+                    let filename = line.replacen("x ", "", 1).replacen("X ", "", 1);
+                    if filename.len() > 0 {
+                        self.rm(filename);
+                        return vec![std::string::String::from("Ok.")];
+                    } else {
+                        return vec![std::string::String::from("Please enter a filename after x.")];
                     }
                 }
                 if line.contains("*") {
