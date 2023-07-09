@@ -127,7 +127,7 @@ impl Edlin {
                 log::info!("path '{}'", path);
                 if path.ends_with("_line0") {
                     log::info!("LINE0 path '{}'", path);
-                    let row = format!("{}\n", std::string::String::from(path).replace("edlin/", "").replace("_line0", ""));
+                    let row = format!("{}", std::string::String::from(path).replace("edlin/", "").replace("_line0", ""));
                     result.push(row);
                 }
             }
