@@ -28,10 +28,8 @@
         "zh": "哔声开始..."
     },
     "replapp.greeting": {
-        "en": "Welcome to the simple REPL demo.",
-        "en-tts": "Welcome to the simple REPL demo.",
-        "fr": "Bienvenue à la démo simple de REPL",
-        "ja": "シンプルなREPLデモへようこそ",
-        "zh": "简单的 repl 演示活动"
+        "en": "Welcome to Edlin.",
+        "en-tts": "Welcome to Edlin.",
+        "fr": "Bienvenue à Edlin"
     }
 }
