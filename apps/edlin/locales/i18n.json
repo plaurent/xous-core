@@ -1,33 +1,33 @@
 {
-    "replapp.audio.completion_a": {
+    "edlinapp.audio.completion_a": {
         "en": "Playback stopped at",
         "en-tts": "Playback stopped at",
         "fr": "Lecture arrêtée à",
         "ja": "再生停止位置: ",
         "zh": "播放停止在"
     },
-    "replapp.audio.completion_b": {
+    "edlinapp.audio.completion_b": {
         "en": "frames",
         "en-tts": "frames",
         "fr": "cadres",
         "ja": "フレーム",
         "zh": "帧"
     },
-    "replapp.audio.help": {
+    "edlinapp.audio.help": {
         "en": "audio [tone [freq [duration]]]",
         "en-tts": "audio tone, then optional frequency plus optional duration.",
         "fr": "audio [tone [freq [duration]]]",
         "ja": "オーディオ [ トーン [ 周波数 [ 間隔 ]]]",
         "zh": "audio [tone [音频 [时长]]]"
     },
-    "replapp.audio.start": {
+    "edlinapp.audio.start": {
         "en": "tone started...",
         "en-tts": "tone started...",
         "fr": "ton a commencé",
         "ja": "トーン開始…",
         "zh": "哔声开始..."
     },
-    "replapp.greeting": {
+    "edlinapp.greeting": {
         "en": "Welcome to Edlin.",
         "en-tts": "Welcome to Edlin.",
         "fr": "Bienvenue à Edlin"
