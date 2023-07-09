@@ -299,6 +299,25 @@ impl Edlin {
                 if line.contains("p") || line.contains("P") {
                     return self.data.clone()
                 }
+                if line.starts_with("#") {
+                    let LEN_FOR_WRAP = 40;
+                    let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+                    let words = one_long_string.split(" ");
+                    self.data.clear();
+                    let mut line = std::string::String::new();
+                    for word in words {
+                        line.push_str(format!("{} ", word).as_str());
+                        log::info!("Adding line '{}' len is {} ", line, line.len());
+                        if line.len() > LEN_FOR_WRAP {
+                            self.data.push(line.clone());
+                            line = std::string::String::from("");
+                        }
+                    }
+                    if line.len() > 0 {
+                        self.data.push(line.clone());
+                    }
+                    return vec![std::string::String::from("Done wrapping.")];
+                }
                 if line.to_lowercase().starts_with("w") {
                     let filename = line.replacen("w ", "", 1).replacen("W ", "", 1);
                     if filename.len() > 0 {
@@ -327,7 +346,7 @@ impl Edlin {
                     }
                 }
                 if line.to_lowercase().starts_with("?"){
-                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\n# edit/select line\nl list all\np print\nn next n lines")];
+                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n# wrap text")];
                 }
                 if line.contains("*") {
                     return self.ls();
