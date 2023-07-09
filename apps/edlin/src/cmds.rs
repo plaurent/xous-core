@@ -114,7 +114,28 @@ impl Edlin {
     }
 
 
-    fn load(&mut self) -> Result<(), Error> {
+    fn ls(&mut self) -> Vec<std::string::String> {
+        let mut result: Vec<std::string::String> = Vec::new();
+        const EDLIN_DICT: &str = "edlin";
+        let mut keypath = PathBuf::new();
+        keypath.push(EDLIN_DICT);
+
+        for dir in std::fs::read_dir(&keypath) {
+            for entry in dir {
+                let path0 = entry.unwrap().path();
+                let path = path0.to_str().unwrap();
+                log::info!("path '{}'", path);
+                if path.ends_with("_line0") {
+                    log::info!("LINE0 path '{}'", path);
+                    let row = format!("{}\n", std::string::String::from(path).replace("edlin/", "").replace("_line0", ""));
+                    result.push(row);
+                }
+            }
+        }
+        return result;
+    }
+
+    fn load(&mut self, filename: std::string::String) -> Result<(), Error> {
         self.data.clear();
         const EDLIN_DICT: &str = "edlin";
         let mut keypath = PathBuf::new();
@@ -125,7 +146,7 @@ impl Edlin {
             self.line_cursor = 0;
 
             loop {
-                let key = format!("file1_line{}", self.line_cursor);
+                let key = format!("{}_line{}", filename, self.line_cursor);
                 let mut keypathline = keypath.clone();
                 keypathline.push(key);
 
@@ -152,7 +173,7 @@ impl Edlin {
 
     }
 
-    fn save(&mut self) -> Result<(), Error> {
+    fn save(&mut self, filename: std::string::String) -> Result<(), Error> {
             const EDLIN_DICT: &str = "edlin";
             let mut keypath = PathBuf::new();
             keypath.push(EDLIN_DICT);
@@ -166,7 +187,7 @@ impl Edlin {
 
             for (i, line) in self.data.iter().enumerate() {
                 log::info!("writing line '{}' {} ", i, line);
-                let key = format!("file1_line{}", i);
+                let key = format!("{}_line{}", filename, i);
                 let mut keypathline = keypath.clone();
                 keypathline.push(key);
                 File::create(keypathline)?.write_all(line.as_bytes())?;
@@ -253,13 +274,26 @@ impl Edlin {
                 if line.contains("p") || line.contains("P") {
                     return self.data.clone()
                 }
-                if line.contains("w") || line.contains("W") {
-                    self.save();
-                    return vec![format!("*{}:", self.line_cursor)];
+                if line.to_lowercase().starts_with("w") {
+                    let filename = line.replacen("w ", "", 1).replacen("W ", "", 1);
+                    if filename.len() > 0 {
+                        self.save(filename);
+                        return vec![format!("*{}:", self.line_cursor)];
+                    } else {
+                        return vec![std::string::String::from("Please enter a filename after w.")];
+                    }
                 }
-                if line.contains("r") || line.contains("R") {
-                    self.load();
-                    return vec![format!("*{}:", self.line_cursor)];
+                if line.to_lowercase().starts_with("r"){
+                    let filename = line.replacen("r ", "", 1).replacen("R ", "", 1);
+                    if filename.len() > 0 {
+                        self.load(filename);
+                        return vec![format!("*{}:", self.line_cursor)];
+                    } else {
+                        return vec![std::string::String::from("Please enter a filename after r.")];
+                    }
+                }
+                if line.contains("*") {
+                    return self.ls();
                 }
                 if line.contains("l") || line.contains("L") {
                     let mut result: Vec<std::string::String> = Vec::new();
