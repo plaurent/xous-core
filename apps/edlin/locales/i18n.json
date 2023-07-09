@@ -28,8 +28,8 @@
         "zh": "哔声开始..."
     },
     "edlinapp.greeting": {
-        "en": "Welcome to Edlin.",
-        "en-tts": "Welcome to Edlin.",
-        "fr": "Bienvenue à Edlin"
+        "en": "Welcome to Edlin. Type ? for help.",
+        "en-tts": "Welcome to Edlin. Type ? for help.",
+        "fr": "Bienvenue à Edlin. Pour de l'aide faites ?."
     }
 }
