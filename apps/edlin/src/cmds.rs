@@ -272,6 +272,21 @@ impl Edlin {
                     }
                     return result;
                 }
+                if line.contains("n") || line.contains("N") {
+                    let mut result: Vec<std::string::String> = Vec::new();
+                    let mut upto = self.line_cursor + 5;
+                    if upto > self.data.len() - 1 {
+                        upto = self.data.len() - 1;
+                    }
+                    for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
+                        result.insert(i, format!("{}: {}", self.line_cursor+i, line));
+                    }
+                    self.line_cursor = self.line_cursor + 5;
+                    if self.line_cursor > self.data.len()-1 {
+                        self.line_cursor = self.data.len()-1;
+                    }
+                    return result;
+                }
             }
         }
         return Vec::new();
