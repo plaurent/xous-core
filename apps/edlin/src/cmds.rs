@@ -135,17 +135,20 @@ impl Edlin {
             EdlinMode::Inserting => {
                 if line.trim().eq(".") {
                     self.mode = EdlinMode::Command;
-                    return Vec::new();
+                    return vec![format!(".")];
                 } else {
                     self.data.insert(self.line_cursor, std::string::String::from(line));
+                    let result = format!("*{}: {}", self.line_cursor, line);
+                    //let result = format!("{}", line);
                     self.line_cursor += 1;
+                    return vec![result];
                 }
             }
             EdlinMode::Editing => {
-
                 self.data.remove(self.line_cursor);
                 self.data.insert(self.line_cursor, std::string::String::from(line));
                 self.mode = EdlinMode::Command;
+                return vec![format!(".")];
             }
             EdlinMode::Command => {
                 if self.is_string_numeric(line) {
@@ -159,6 +162,7 @@ impl Edlin {
                             //write!(ret, "Couldn't type out write command.").unwrap()
                         }
                     }
+                    return vec![format!("?")];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
@@ -168,8 +172,9 @@ impl Edlin {
                         if line_to_insert_before >= self.data.len() {
                             line_to_insert_before = self.data.len()
                         }
-                        self.line_cursor = line_to_insert_before - 1
+                        self.line_cursor = line_to_insert_before;
                     }
+                    return vec![format!("*{}:", self.line_cursor)];
                 }
                 if line.to_lowercase().ends_with("d") {
                     let mut del_start = self.line_cursor-1;
@@ -196,7 +201,7 @@ impl Edlin {
                             self.line_cursor = self.data.len()
                         }
                     }
-
+                    return vec![format!("Deleted {} to {}", del_start, del_cease)];
                 }
                 if line.contains("p") || line.contains("P") {
                     return self.data.clone()
@@ -204,7 +209,11 @@ impl Edlin {
                 if line.contains("l") || line.contains("L") {
                     let mut result: Vec<std::string::String> = Vec::new();
                     for (i, line) in self.data.iter().enumerate() {
-                        result.insert(i, format!("{}: {}", i, line));
+                        if i == self.line_cursor {
+                            result.insert(i, format!("*{}: {}", i, line));
+                        } else {
+                            result.insert(i, format!(" {}: {}", i, line));
+                        }
                     }
                     return result;
                 }
@@ -274,20 +283,23 @@ impl CmdEnv {
 
             match self.edlin.mode {
                 EdlinMode::Command => {
-                    write!(ret, "");
                 }
                 EdlinMode::Editing => {
-                    write!(ret, "");
                 }
                 EdlinMode::Inserting => {
-                    write!(ret, " {}: ", self.edlin.line_cursor);
                 }
             }
             let line = std::string::String::from(cmdline.as_str().unwrap());
             let result = self.edlin.process(&line);
             //let result = self.edlin.process(&std::string::String::from(line.trim()));
-            for result_line in result {
-                write!(ret, "{}\n", result_line);
+
+            //for result_line in result {
+            for (i, result_line) in result.iter().enumerate() {  // self.data.iter().enumerate() {
+                if i < result.len()-1 {
+                    write!(ret, "{}\n", result_line);
+                } else {
+                    write!(ret, "{}", result_line);
+                }
             }
 
 
