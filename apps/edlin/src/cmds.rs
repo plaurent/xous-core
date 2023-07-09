@@ -326,6 +326,9 @@ impl Edlin {
                         return vec![std::string::String::from("Please enter a filename after x.")];
                     }
                 }
+                if line.to_lowercase().starts_with("?"){
+                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\n# edit line")];
+                }
                 if line.contains("*") {
                     return self.ls();
                 }
