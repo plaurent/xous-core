@@ -4,6 +4,8 @@ use core::fmt::Write;
 use std::fs::File;
 use std::io::{Write as StdWrite, Error};
 use std::path::PathBuf;
+use std::io::{Read, ErrorKind};
+
 
 
 use std::collections::HashMap;
@@ -111,9 +113,47 @@ impl Edlin {
         return true;
     }
 
+
+    fn load(&mut self) -> Result<(), Error> {
+        self.data.clear();
+        const EDLIN_DICT: &str = "edlin";
+        let mut keypath = PathBuf::new();
+        keypath.push(EDLIN_DICT);
+        if std::fs::metadata(&keypath).is_ok() { // keypath exists
+
+
+            self.line_cursor = 0;
+
+            loop {
+                let key = format!("file1_line{}", self.line_cursor);
+                let mut keypathline = keypath.clone();
+                keypathline.push(key);
+
+
+                if let Ok(mut file)= File::open(keypathline) {
+                    let mut value = std::string::String::new();
+                    file.read_to_string(&mut value)?;
+                    self.data.insert(self.line_cursor, std::string::String::from(value.as_str()));
+                    self.line_cursor += 1;
+                    log::info!("loaded lin '{}'", value.as_str());
+                } else {
+                    break;
+                }
+                log::info!("Loaded {} lines from files.", self.data.len());
+            }
+
+
+
+        } else {
+            log::info!("dict '{}' does NOT exist.. nothing has been saved", EDLIN_DICT);
+        }
+
+        Ok(())
+
+    }
+
     fn save(&mut self) -> Result<(), Error> {
             const EDLIN_DICT: &str = "edlin";
-
             let mut keypath = PathBuf::new();
             keypath.push(EDLIN_DICT);
             if std::fs::metadata(&keypath).is_ok() { // keypath exists
@@ -122,10 +162,17 @@ impl Edlin {
                 log::info!("dict '{}' does NOT exist.. creating it", EDLIN_DICT);
                 std::fs::create_dir_all(&keypath)?;
             }
-            let key = "file1_line0";
-            let value = self.data.get(0).unwrap();
-            keypath.push(key);
-            File::create(keypath)?.write_all(value.as_bytes())?;
+
+
+            for (i, line) in self.data.iter().enumerate() {
+                log::info!("writing line '{}' {} ", i, line);
+                let key = format!("file1_line{}", i);
+                let mut keypathline = keypath.clone();
+                keypathline.push(key);
+                File::create(keypathline)?.write_all(line.as_bytes())?;
+            }
+
+
             Ok(())
     }
 
@@ -205,6 +252,14 @@ impl Edlin {
                 }
                 if line.contains("p") || line.contains("P") {
                     return self.data.clone()
+                }
+                if line.contains("w") || line.contains("W") {
+                    self.save();
+                    return vec![format!("*{}:", self.line_cursor)];
+                }
+                if line.contains("r") || line.contains("R") {
+                    self.load();
+                    return vec![format!("*{}:", self.line_cursor)];
                 }
                 if line.contains("l") || line.contains("L") {
                     let mut result: Vec<std::string::String> = Vec::new();
