@@ -396,9 +396,9 @@ impl CmdEnv {
             line_cursor: 0,
             gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
         };
-        edlin.data.push(std::string::String::from("Hello world."));
-        edlin.data.push(std::string::String::from("This is a test."));
-        edlin.line_cursor = 2;
+        //edlin.data.push(std::string::String::from("Hello world."));
+        //edlin.data.push(std::string::String::from("This is a test."));
+        //edlin.line_cursor = 2;
 
 
 
