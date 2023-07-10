@@ -302,7 +302,12 @@ impl Edlin {
                     return self.data.clone()
                 }
                 if line.starts_with("#") {
-                    let LEN_FOR_WRAP = 35;
+                    let mut LEN_FOR_WRAP = 35;
+                    if !line.starts_with("#") {
+                        let digits: Vec<&str> = line.matches(char::is_numeric).collect();
+                        let mut number = digits.join("").parse::<usize>().unwrap();
+                        LEN_FOR_WRAP = number;
+                    }
                     let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
                     let words = one_long_string.split(" ");
                     self.data.clear();
