@@ -127,7 +127,8 @@ impl Edlin {
                 log::info!("path '{}'", path);
                 if path.ends_with("_line0") {
                     log::info!("LINE0 path '{}'", path);
-                    let row = format!("{}", std::string::String::from(path).replace("edlin/", "").replace("_line0", ""));
+                    // TODO use system path separator
+                    let row = format!("{}", std::string::String::from(path).replacen("edlin:", "", 1).replacen("edlin/", "", 1).replace("_line0", ""));
                     result.push(row);
                 }
             }
@@ -145,6 +146,7 @@ impl Edlin {
                 let path0 = entry.unwrap().path();
                 let path = path0.to_str().unwrap();
                 log::info!("path '{}'", path);
+                // TODO use system path separator
                 let needstartwith1 = format!("edlin/{}_", filename);
                 let needstartwith2 = format!("edlin:{}_", filename);
                 if path.starts_with(needstartwith1.as_str()) || path.starts_with(needstartwith2.as_str()) {
