@@ -50,7 +50,7 @@
     "edlin": {
         "context_name": "edlin text app",
         "menu_name": {
-            "appmenu.repl": {
+            "appmenu.edlin": {
                 "en": "Edlin text editor",
                 "en-tts": "Edlin text editor"
             }
