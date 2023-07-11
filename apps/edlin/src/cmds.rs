@@ -227,12 +227,12 @@ impl Edlin {
                 let needstartwith1 = format!("edlin/{}_", filename);
                 let needstartwith2 = format!("edlin:{}_", filename);
                 if path.starts_with(needstartwith1.as_str()) || path.starts_with(needstartwith2.as_str()) {
-                    log::info!("WOULD DELETE '{}'", path);
+                    //log::info!("WOULD DELETE '{}'", path);
                     std::fs::remove_file(&path0);
                     //let row = format!("{}", std::string::String::from(path).replace("edlin/", "").replace("_line0", ""));
                     //result.push(row);
                 } else {
-                    log::info!("not deleting '{}'", path);
+                    //log::info!("not deleting '{}'", path);
                 }
             }
         }
@@ -290,7 +290,7 @@ impl Edlin {
 
 
             for (i, line) in self.data.iter().enumerate() {
-                log::info!("writing line '{}' {} ", i, line);
+                //log::info!("writing line '{}' {} ", i, line);
                 let key = format!("{}_line{}", filename, i);
                 let mut keypathline = keypath.clone();
                 keypathline.push(key);
@@ -348,6 +348,7 @@ impl Edlin {
                     let mut number = digits.join("").parse::<u8>().unwrap();
                     self.current_backlight_setting = number;
                     self.com.set_backlight(self.current_backlight_setting, 0).unwrap();
+                    return vec![format!("Brightness set to {}/255.", self.current_backlight_setting)];
                 }
 
                 if line.starts_with("#") {
@@ -364,7 +365,7 @@ impl Edlin {
                     let mut line = std::string::String::new();
                     for word in words {
                         line.push_str(format!("{} ", word).as_str());
-                        log::info!("Adding line '{}' len is {} ", line, line.len());
+                        //log::info!("Adding line '{}' len is {} ", line, line.len());
                         if line.len() > LEN_FOR_WRAP {
                             self.data.push(line.clone());
                             line = std::string::String::from("");
@@ -373,7 +374,7 @@ impl Edlin {
                     if line.len() > 0 {
                         self.data.push(line.clone());
                     }
-                    return vec![std::string::String::from("Done wrapping.")];
+                    return vec![format!("Wrapped to {} lines.", self.data.len())];
                 }
                 if line.to_lowercase().starts_with("w") {
                     let filename = line.replacen("w ", "", 1).replacen("W ", "", 1);
