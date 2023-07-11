@@ -101,7 +101,9 @@ pub struct Edlin {
     //data:Vec<String<512>>,
     mode:EdlinMode,
     line_cursor: usize,
+    current_backlight_setting: u8,
     gam: gam::Gam,
+    com: com::Com,
 }
 
 impl Edlin {
@@ -151,8 +153,8 @@ impl Edlin {
         log::info!("my Path : {:?}", path);
         //use core::fmt::Write;
 		use std::io::Write;
-        const MAXLEN : usize = 100000;
-        const CHUNKLEN: usize = 100;
+        const MAXLEN : usize = 10000;
+        const CHUNKLEN: usize = 500;
 
         let mut ret = xous_ipc::String::<MAXLEN>::new();
 
@@ -321,7 +323,7 @@ impl Edlin {
                 return vec![format!(".")];
             }
             EdlinMode::Command => {
-                if self.is_string_numeric(line) {
+                if line.len() > 0 && self.is_string_numeric(line) {
                     self.mode = EdlinMode::Editing;
                     self.line_cursor = line.parse::<usize>().unwrap();
                     match self.gam.type_chars(self.data.get(self.line_cursor).unwrap()) {
@@ -341,6 +343,13 @@ impl Edlin {
                     self.data.insert(self.line_cursor, std::string::String::from(one_long_string));
                     return vec![std::string::String::from("Grabbed URL.")];
                 }
+                if line.starts_with("b") {  // set brightness
+                    let digits: Vec<&str> = line.matches(char::is_numeric).collect();
+                    let mut number = digits.join("").parse::<u8>().unwrap();
+                    self.current_backlight_setting = number;
+                    self.com.set_backlight(self.current_backlight_setting, 0).unwrap();
+                }
+
                 if line.starts_with("#") {
                     let mut LEN_FOR_WRAP = 35;
                     if !line.starts_with("#") {
@@ -349,7 +358,8 @@ impl Edlin {
                         LEN_FOR_WRAP = number;
                     }
                     let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-                    let words = one_long_string.split(" ");
+                    let remove_dup_spaces = one_long_string.replace("  ", " ");
+                    let words = remove_dup_spaces.split(" ");
                     self.data.clear();
                     let mut line = std::string::String::new();
                     for word in words {
@@ -393,7 +403,7 @@ impl Edlin {
                     }
                 }
                 if line.to_lowercase().starts_with("?"){
-                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n# wrap text")];
+                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n# wrap text\nu get http url\nb set brightness")];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
@@ -457,7 +467,7 @@ impl Edlin {
                         let mut line_to_next_from = digits.join("").parse::<usize>().unwrap();
                         self.line_cursor = line_to_next_from;
                     }
-                    let NUM_LINES_PER_PAGE = 10;
+                    let NUM_LINES_PER_PAGE = 5;
                     let mut result: Vec<std::string::String> = Vec::new();
                     let mut upto = self.line_cursor + NUM_LINES_PER_PAGE;
                     if upto > self.data.len()  {
@@ -508,7 +518,9 @@ impl CmdEnv {
             data: Vec::new(),
             mode: EdlinMode::Command,
             line_cursor: 0,
+            current_backlight_setting: 100,
             gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
+            com: com::Com::new(&xns).unwrap(),
         };
         //edlin.data.push(std::string::String::from("Hello world."));
         //edlin.data.push(std::string::String::from("This is a test."));
@@ -545,6 +557,8 @@ impl CmdEnv {
                 }
             }
             let line = std::string::String::from(cmdline.as_str().unwrap());
+            self.edlin.com.set_backlight(self.edlin.current_backlight_setting, 0).unwrap();
+
             let result = self.edlin.process(&line);
             //let result = self.edlin.process(&std::string::String::from(line.trim()));
 
