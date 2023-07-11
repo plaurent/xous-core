@@ -151,7 +151,8 @@ impl Edlin {
         log::info!("my Path : {:?}", path);
         //use core::fmt::Write;
 		use std::io::Write;
-        const MAXLEN : usize = 102400;
+        const MAXLEN : usize = 100000;
+        const CHUNKLEN: usize = 100;
 
         let mut ret = xous_ipc::String::<MAXLEN>::new();
 
@@ -176,18 +177,29 @@ impl Edlin {
 				write!(stream, "Connection: close\r\n").expect("stream error");
 				write!(stream, "\r\n").expect("stream error");
 				log::info!("fetching response....");
-				let mut buf = [0u8; MAXLEN];
-				match stream.read(&mut buf) {
-					Ok(len) => {
-						log::trace!("raw response ({}): {:?}", len, &buf[..len]);
-						write!(ret, "{}", std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])).ok(); // let it run off the end
-						log::info!("{}NET.TCPGET,{},{}",
-							xous::BOOKEND_START,
-							std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())]),
-							xous::BOOKEND_END);
-					}
-					Err(e) => write!(ret, "Didn't get response from host: {:?}", e).unwrap(),
-				}
+                loop {
+                    let mut buf = [0u8; CHUNKLEN];
+                    match stream.read(&mut buf) {
+                        Ok(len) => {
+                            //log::info!("raw response ({}): {:?}", len, &buf[..len]);
+                            write!(ret, "{}", std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])).ok(); // let it run off the end
+                            log::info!("{}NET.TCPGET,{},{}",
+                                xous::BOOKEND_START,
+                                std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())]),
+                                xous::BOOKEND_END);
+                            if len == 0 {
+                                log::info!("Len is 0, breaking.");
+                                break;
+                            }
+                            write!(stream, "\r\n").expect("stream error");
+                        }
+                        Err(e) => {
+                            log::info!("No response, breaking.");
+                            write!(ret, "Didn't get response from host: {:?}", e).unwrap();
+                            break;
+                        }
+                    }
+                }
 			}
 			Err(e) => {
 				log::info!("error connecting {}", e);
