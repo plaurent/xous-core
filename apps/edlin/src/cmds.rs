@@ -518,7 +518,7 @@ impl CmdEnv {
             data: Vec::new(),
             mode: EdlinMode::Command,
             line_cursor: 0,
-            current_backlight_setting: 100,
+            current_backlight_setting: 254,
             gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
             com: com::Com::new(&xns).unwrap(),
         };
