@@ -404,7 +404,7 @@ impl Edlin {
                     }
                 }
                 if line.to_lowercase().starts_with("?"){
-                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n# wrap text\nu get http url\nb set brightness")];
+                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
