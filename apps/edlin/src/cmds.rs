@@ -5,6 +5,9 @@ use std::fs::File;
 use std::io::{Write as StdWrite, Error};
 use std::path::PathBuf;
 use std::io::{Read, ErrorKind};
+use std::time::{Duration, Instant};
+use std::net::{IpAddr, TcpStream, TcpListener};
+
 
 
 
@@ -136,6 +139,66 @@ impl Edlin {
         return result;
     }
 
+
+    pub fn geturl(&mut self, url:&str) -> std::string::String {
+        let url0 = url.replace("http://", "").replace("https://", "");
+        let pieces = url0.split_once("/").unwrap();
+
+        let host = pieces.0;
+        let path = pieces.1;
+
+        log::info!("my Host: {:?}", host);
+        log::info!("my Path : {:?}", path);
+        //use core::fmt::Write;
+		use std::io::Write;
+        const MAXLEN : usize = 102400;
+
+        let mut ret = xous_ipc::String::<MAXLEN>::new();
+
+		match TcpStream::connect((host.clone(), 80)) {
+			Ok(mut stream) => {
+				log::trace!("stream open, setting timeouts");
+				stream.set_read_timeout(Some(Duration::from_millis(10_000))).unwrap();
+				stream.set_write_timeout(Some(Duration::from_millis(10_000))).unwrap();
+				log::debug!("read timeout: {:?}", stream.read_timeout().unwrap().unwrap().as_millis());
+				log::debug!("write timeout: {:?}", stream.write_timeout().unwrap().unwrap().as_millis());
+				log::info!("my socket: {:?}", stream.local_addr());
+				log::info!("peer addr: {:?}", stream.peer_addr());
+				log::info!("sending GET request");
+				match write!(stream, "GET /{} HTTP/1.1\r\n", path) {
+					Ok(_) => log::trace!("sent GET"),
+					Err(e) => {
+						log::error!("GET err {:?}", e);
+						write!(ret, "Error sending GET: {:?}", e).unwrap();
+					}
+				}
+				write!(stream, "Host: {}\r\nAccept: */*\r\nUser-Agent: Precursor/0.9.6\r\n", host).expect("stream error");
+				write!(stream, "Connection: close\r\n").expect("stream error");
+				write!(stream, "\r\n").expect("stream error");
+				log::info!("fetching response....");
+				let mut buf = [0u8; MAXLEN];
+				match stream.read(&mut buf) {
+					Ok(len) => {
+						log::trace!("raw response ({}): {:?}", len, &buf[..len]);
+						write!(ret, "{}", std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])).ok(); // let it run off the end
+						log::info!("{}NET.TCPGET,{},{}",
+							xous::BOOKEND_START,
+							std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())]),
+							xous::BOOKEND_END);
+					}
+					Err(e) => write!(ret, "Didn't get response from host: {:?}", e).unwrap(),
+				}
+			}
+			Err(e) => {
+				log::info!("error connecting {}", e);
+                write!(ret, "Couldn't connect to {}:80: {:?}", host, e).unwrap()
+            },
+		}
+		return ret.to_string();
+
+    }
+
+
     fn rm(&mut self, filename: std::string::String) -> Result<(), Error> {
         const EDLIN_DICT: &str = "edlin";
         let mut keypath = PathBuf::new();
@@ -259,47 +322,12 @@ impl Edlin {
                     }
                     return vec![format!("?")];
                 }
-                if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
-                    self.mode = EdlinMode::Inserting;
-                    if !line.to_lowercase().starts_with("i") {
-                        let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let mut line_to_insert_before = digits.join("").parse::<usize>().unwrap();
-                        if line_to_insert_before >= self.data.len() {
-                            line_to_insert_before = self.data.len()
-                        }
-                        self.line_cursor = line_to_insert_before;
-                    }
-                    return vec![format!("*{}:", self.line_cursor)];
-                }
-                if line.to_lowercase().ends_with("d") {
-                    let mut del_start = self.line_cursor-1;
-                    let mut del_cease = self.line_cursor;
-                    let mut without_d = line.to_lowercase().replace("d", "");
-                    if without_d.contains(",") {
-                        let pair: Vec<&str> = without_d.split(',').collect();
-                        del_start = pair[0].parse::<usize>().unwrap();
-                        del_cease = pair[1].parse::<usize>().unwrap() + 1;
-                    } else if without_d.len() > 0 {
-                        del_start = without_d.parse::<usize>().unwrap();
-                        del_cease = without_d.parse::<usize>().unwrap() + 1;
-                    }
-                    if del_cease > self.data.len() {
-                        del_cease = self.data.len();
-                    }
-                    if del_start >= del_cease {
-                        del_start = del_cease - 1;
-                    }
-                    println!("Deleting {} to {}", del_start, del_cease);
-                    for i in (del_start..del_cease).rev() {
-                        self.data.remove(i);
-                        if self.line_cursor > self.data.len() {
-                            self.line_cursor = self.data.len()
-                        }
-                    }
-                    return vec![format!("Deleted {} to {}", del_start, del_cease)];
-                }
-                if line.contains("p") || line.contains("P") {
-                    return self.data.clone()
+                if line.starts_with("u") {
+                    log::info!("--> grabbing {}", line);
+                    let url = line.replace("u ", "");
+                    let one_long_string = self.geturl(url.as_str());
+                    self.data.insert(self.line_cursor, std::string::String::from(one_long_string));
+                    return vec![std::string::String::from("Grabbed URL.")];
                 }
                 if line.starts_with("#") {
                     let mut LEN_FOR_WRAP = 35;
@@ -354,6 +382,48 @@ impl Edlin {
                 }
                 if line.to_lowercase().starts_with("?"){
                     return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n# wrap text")];
+                }
+                if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
+                    self.mode = EdlinMode::Inserting;
+                    if !line.to_lowercase().starts_with("i") {
+                        let digits: Vec<&str> = line.matches(char::is_numeric).collect();
+                        let mut line_to_insert_before = digits.join("").parse::<usize>().unwrap();
+                        if line_to_insert_before >= self.data.len() {
+                            line_to_insert_before = self.data.len()
+                        }
+                        self.line_cursor = line_to_insert_before;
+                    }
+                    return vec![format!("*{}:", self.line_cursor)];
+                }
+                if line.to_lowercase().ends_with("d") {
+                    let mut del_start = self.line_cursor-1;
+                    let mut del_cease = self.line_cursor;
+                    let mut without_d = line.to_lowercase().replace("d", "");
+                    if without_d.contains(",") {
+                        let pair: Vec<&str> = without_d.split(',').collect();
+                        del_start = pair[0].parse::<usize>().unwrap();
+                        del_cease = pair[1].parse::<usize>().unwrap() + 1;
+                    } else if without_d.len() > 0 {
+                        del_start = without_d.parse::<usize>().unwrap();
+                        del_cease = without_d.parse::<usize>().unwrap() + 1;
+                    }
+                    if del_cease > self.data.len() {
+                        del_cease = self.data.len();
+                    }
+                    if del_start >= del_cease {
+                        del_start = del_cease - 1;
+                    }
+                    println!("Deleting {} to {}", del_start, del_cease);
+                    for i in (del_start..del_cease).rev() {
+                        self.data.remove(i);
+                        if self.line_cursor > self.data.len() {
+                            self.line_cursor = self.data.len()
+                        }
+                    }
+                    return vec![format!("Deleted {} to {}", del_start, del_cease)];
+                }
+                if line.contains("p") || line.contains("P") {
+                    return self.data.clone()
                 }
                 if line.contains("*") {
                     return self.ls();
