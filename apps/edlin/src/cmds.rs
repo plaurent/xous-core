@@ -351,7 +351,7 @@ impl Edlin {
                     return vec![format!("Brightness set to {}/255.", self.current_backlight_setting)];
                 }
 
-                if line.starts_with("#") {
+                if line.ends_with("#") {
                     let mut LEN_FOR_WRAP = 35;
                     if !line.starts_with("#") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
