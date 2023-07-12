@@ -445,7 +445,7 @@ impl Edlin {
                     }
                     return vec![format!("Deleted {} to {}", del_start, del_cease)];
                 }
-                if line.contains("p") || line.contains("P") {
+                if line.contains("v") || line.contains("v") {
                     return self.data.clone()
                 }
                 if line.contains("*") {
@@ -476,6 +476,29 @@ impl Edlin {
                     }
                     for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
                         result.insert(i, format!("{}: {}", self.line_cursor+i, line));
+                    }
+                    self.line_cursor = self.line_cursor + NUM_LINES_PER_PAGE;
+                    if self.line_cursor > self.data.len()-1 {
+                        self.line_cursor = self.data.len()-1;
+                    }
+                    return result;
+                }
+                if line.contains("p") || line.contains("P") {
+                    // NOTE: Duplication of code for "n" except no line numbers are printed.
+                    // TODO remove duplication
+                    if !line.to_lowercase().starts_with("p") {
+                        let digits: Vec<&str> = line.matches(char::is_numeric).collect();
+                        let mut line_to_next_from = digits.join("").parse::<usize>().unwrap();
+                        self.line_cursor = line_to_next_from;
+                    }
+                    let NUM_LINES_PER_PAGE = 5;
+                    let mut result: Vec<std::string::String> = Vec::new();
+                    let mut upto = self.line_cursor + NUM_LINES_PER_PAGE;
+                    if upto > self.data.len()  {
+                        upto = self.data.len();
+                    }
+                    for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
+                        result.insert(i, format!("{}", line));
                     }
                     self.line_cursor = self.line_cursor + NUM_LINES_PER_PAGE;
                     if self.line_cursor > self.data.len()-1 {
