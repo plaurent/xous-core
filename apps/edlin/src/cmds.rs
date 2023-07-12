@@ -483,10 +483,11 @@ impl Edlin {
                     }
                     return result;
                 }
-                if line.contains("p") || line.contains("P") {
-                    // NOTE: Duplication of code for "n" except no line numbers are printed.
+                if line.contains("p") || line.contains("P") || line.eq("") {
+                    // NOTE: Duplication of some code for "n" except no line numbers are printed
+                    // and all lines are concatenated.
                     // TODO remove duplication
-                    if !line.to_lowercase().starts_with("p") {
+                    if !line.to_lowercase().starts_with("p") && !line.eq("") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
                         let mut line_to_next_from = digits.join("").parse::<usize>().unwrap();
                         self.line_cursor = line_to_next_from;
@@ -500,11 +501,15 @@ impl Edlin {
                     for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
                         result.insert(i, format!("{}", line));
                     }
+
+                    let one_long_string = result.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+                    let remove_dup_spaces = one_long_string.replace("  ", " ");
+
                     self.line_cursor = self.line_cursor + NUM_LINES_PER_PAGE;
                     if self.line_cursor > self.data.len()-1 {
                         self.line_cursor = self.data.len()-1;
                     }
-                    return result;
+                    return vec!(remove_dup_spaces);
                 }
             }
         }
