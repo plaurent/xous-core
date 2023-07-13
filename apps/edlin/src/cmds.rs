@@ -157,6 +157,7 @@ impl Edlin {
         const CHUNKLEN: usize = 500;
 
         let mut ret = xous_ipc::String::<MAXLEN>::new();
+        let mut result = std::string::String::new();
 
 		match TcpStream::connect((host.clone(), 80)) {
 			Ok(mut stream) => {
@@ -185,6 +186,8 @@ impl Edlin {
                         Ok(len) => {
                             //log::info!("raw response ({}): {:?}", len, &buf[..len]);
                             write!(ret, "{}", std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])).ok(); // let it run off the end
+                            result.push_str(ret.as_str().unwrap());
+                            let mut ret = xous_ipc::String::<MAXLEN>::new();
                             log::info!("{}NET.TCPGET,{},{}",
                                 xous::BOOKEND_START,
                                 std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())]),
@@ -208,7 +211,7 @@ impl Edlin {
                 write!(ret, "Couldn't connect to {}:80: {:?}", host, e).unwrap()
             },
 		}
-		return ret.to_string();
+		return result; // ret.to_string();
 
     }
 
