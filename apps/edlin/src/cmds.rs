@@ -8,6 +8,10 @@ use std::io::{Read, ErrorKind};
 use std::time::{Duration, Instant};
 use std::net::{IpAddr, TcpStream, TcpListener};
 
+const ACCEPT: &str = "Accept";
+const ACCEPT_JSON: &str = "application/json";
+
+use ureq;
 
 
 
@@ -139,6 +143,21 @@ impl Edlin {
             }
         }
         return result;
+    }
+
+
+    pub fn post_string(&mut self, url: &str, request_body: &str) -> Result<ureq::Response, ureq::Error> {
+    ureq::post(&url)
+        .set(ACCEPT, ACCEPT_JSON)
+        .send_string(request_body)
+    }
+
+    pub fn post_json(&mut self, url: &str, data: &str) -> Result<ureq::Response, ureq::Error> {
+    ureq::post(&url)
+        .set(ACCEPT, ACCEPT_JSON)
+        .send_json(ureq::json!({
+            "data": data
+        }))
     }
 
 
@@ -342,6 +361,15 @@ impl Edlin {
                     let one_long_string = self.geturl(url.as_str());
                     self.data.insert(self.line_cursor, std::string::String::from(one_long_string));
                     return vec![std::string::String::from("Grabbed URL.")];
+                }
+                if line.starts_with("t") {
+                    log::info!("--> posting {}", line);
+                    let url = line.replace("t ", "");
+
+                    let body= self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
+                    // let body = std::string::String::from("This is a test of data via json");
+                    let result = self.post_json(url.as_str(), body.as_str()).expect("Post didn't work");
+                    return vec![std::string::String::from(result.into_string().unwrap())];
                 }
                 if line.starts_with("b") {  // set brightness
                     let digits: Vec<&str> = line.matches(char::is_numeric).collect();

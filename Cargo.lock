@@ -2172,6 +2172,7 @@ dependencies = [
  "num-derive",
  "num-traits",
  "trng",
+ "ureq",
  "xous 0.9.47 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
  "xous-api-names",
