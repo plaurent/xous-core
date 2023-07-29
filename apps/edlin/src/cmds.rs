@@ -153,7 +153,7 @@ impl Edlin {
         log::info!("my Path : {:?}", path);
         //use core::fmt::Write;
 		use std::io::Write;
-        const MAXLEN : usize = 10000;
+        const MAXLEN : usize = 12000;
         const CHUNKLEN: usize = 500;
 
         let mut ret = xous_ipc::String::<MAXLEN>::new();
