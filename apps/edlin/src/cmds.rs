@@ -10,6 +10,7 @@ use std::net::{IpAddr, TcpStream, TcpListener};
 
 const ACCEPT: &str = "Accept";
 const ACCEPT_JSON: &str = "application/json";
+const ACCEPT_TEXTHTML: &str = "text/html";
 
 use ureq;
 
@@ -160,77 +161,21 @@ impl Edlin {
         }))
     }
 
-
-    pub fn geturl(&mut self, url:&str) -> std::string::String {
-        let url0 = url.replace("http://", "").replace("https://", "");
-        let pieces = url0.split_once("/").unwrap();
-
-        let host = pieces.0;
-        let path = pieces.1;
-
-        log::info!("my Host: {:?}", host);
-        log::info!("my Path : {:?}", path);
-        //use core::fmt::Write;
-		use std::io::Write;
-        const MAXLEN : usize = 12000;
-        const CHUNKLEN: usize = 500;
-
-        let mut ret = xous_ipc::String::<MAXLEN>::new();
-
-		match TcpStream::connect((host.clone(), 80)) {
-			Ok(mut stream) => {
-				log::trace!("stream open, setting timeouts");
-				stream.set_read_timeout(Some(Duration::from_millis(10_000))).unwrap();
-				stream.set_write_timeout(Some(Duration::from_millis(10_000))).unwrap();
-				log::debug!("read timeout: {:?}", stream.read_timeout().unwrap().unwrap().as_millis());
-				log::debug!("write timeout: {:?}", stream.write_timeout().unwrap().unwrap().as_millis());
-				log::info!("my socket: {:?}", stream.local_addr());
-				log::info!("peer addr: {:?}", stream.peer_addr());
-				log::info!("sending GET request");
-				match write!(stream, "GET /{} HTTP/1.1\r\n", path) {
-					Ok(_) => log::trace!("sent GET"),
-					Err(e) => {
-						log::error!("GET err {:?}", e);
-						write!(ret, "Error sending GET: {:?}", e).unwrap();
-					}
-				}
-				write!(stream, "Host: {}\r\nAccept: */*\r\nUser-Agent: Precursor/0.9.6\r\n", host).expect("stream error");
-				write!(stream, "Connection: close\r\n").expect("stream error");
-				write!(stream, "\r\n").expect("stream error");
-				log::info!("fetching response....");
-                loop {
-                    let mut buf = [0u8; CHUNKLEN];
-                    match stream.read(&mut buf) {
-                        Ok(len) => {
-                            //log::info!("raw response ({}): {:?}", len, &buf[..len]);
-                            write!(ret, "{}", std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])).ok(); // let it run off the end
-                            log::info!("{}NET.TCPGET,{},{}",
-                                xous::BOOKEND_START,
-                                std::string::String::from_utf8_lossy(&buf[..len.min(buf.len())]),
-                                xous::BOOKEND_END);
-                            if len == 0 {
-                                log::info!("Len is 0, breaking.");
-                                break;
-                            }
-                            write!(stream, "\r\n").expect("stream error");
-                        }
-                        Err(e) => {
-                            log::info!("No response, breaking.");
-                            write!(ret, "Didn't get response from host: {:?}", e).unwrap();
-                            break;
-                        }
-                    }
-                }
-			}
-			Err(e) => {
-				log::info!("error connecting {}", e);
-                write!(ret, "Couldn't connect to {}:80: {:?}", host, e).unwrap()
-            },
-		}
-		return ret.to_string();
-
+    pub fn get_json(url: &str) -> Result<ureq::Response, ureq::Error> {
+    ureq::get(&url)
+        .set(ACCEPT, ACCEPT_JSON)
+        .call()
     }
 
+    pub fn get_texthtml(&mut self, url: &str) -> Result<ureq::Response, ureq::Error> {
+    ureq::get(&url)
+        .set(ACCEPT, ACCEPT_TEXTHTML)
+        .call()
+    }
+
+    pub fn geturl(&mut self, url:&str) -> std::string::String {
+        return self.get_texthtml(url).unwrap().into_string().unwrap();
+    }
 
     fn rm(&mut self, filename: std::string::String) -> Result<(), Error> {
         const EDLIN_DICT: &str = "edlin";
