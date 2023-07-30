@@ -173,8 +173,31 @@ impl Edlin {
         .call()
     }
 
-    pub fn geturl(&mut self, url:&str) -> std::string::String {
-        return self.get_texthtml(url).unwrap().into_string().unwrap();
+    pub fn geturl(&mut self, url:&str) -> Option<std::string::String> {
+        let response = self.get_texthtml(url);
+        match response {
+            Ok(response) => {
+                if let Ok(body) = response.into_string() {
+                    Some(body)
+                } else {
+                    log::info!("Error: could not convert response into String");
+                    None
+                }
+            },
+            Err(ureq::Error::Status(code, response)) => {
+                /* the server returned an unexpected status
+                code (such as 400, 500 etc) */
+                let err_body = response.into_string().unwrap();
+                log::info!("ERROR code {} err_body = {}", code, err_body);
+                None
+            }
+            Err(e) => {
+                log::info!("ERROR in handle_response: {:?}", e);
+                None
+            }
+
+        }
+        //return self.get_texthtml(url).unwrap().into_string().unwrap();
     }
 
     fn rm(&mut self, filename: std::string::String) -> Result<(), Error> {
@@ -303,7 +326,7 @@ impl Edlin {
                 if line.starts_with("u") {
                     log::info!("--> grabbing {}", line);
                     let url = line.replace("u ", "");
-                    let one_long_string = self.geturl(url.as_str());
+                    let one_long_string = self.geturl(url.as_str()).unwrap();
                     self.data.insert(self.line_cursor, std::string::String::from(one_long_string));
                     return vec![std::string::String::from("Grabbed URL.")];
                 }
