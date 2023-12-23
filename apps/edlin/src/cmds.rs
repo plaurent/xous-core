@@ -245,6 +245,10 @@ impl Edlin {
                 if let Ok(mut file)= File::open(keypathline) {
                     let mut value = std::string::String::new();
                     file.read_to_string(&mut value)?;
+
+                    if self.line_cursor >= self.data.len() {
+                        self.line_cursor = self.data.len()
+                    }
                     self.data.insert(self.line_cursor, std::string::String::from(value.as_str()));
                     self.line_cursor += 1;
                     log::info!("loaded lin '{}'", value.as_str());
@@ -296,6 +300,9 @@ impl Edlin {
                     self.mode = EdlinMode::Command;
                     return vec![format!(".")];
                 } else {
+                    if self.line_cursor >= self.data.len() {
+                        self.line_cursor = self.data.len()
+                    }
                     self.data.insert(self.line_cursor, std::string::String::from(line));
                     let result = format!("*{}: {}", self.line_cursor, line);
                     //let result = format!("{}", line);
@@ -327,6 +334,9 @@ impl Edlin {
                     log::info!("--> grabbing {}", line);
                     let url = line.replace("u ", "");
                     let one_long_string = self.geturl(url.as_str()).unwrap();
+                    if self.line_cursor >= self.data.len() {
+                        self.line_cursor = self.data.len()
+                    }
                     self.data.insert(self.line_cursor, std::string::String::from(one_long_string));
                     return vec![std::string::String::from("Grabbed URL.")];
                 }
@@ -400,7 +410,8 @@ impl Edlin {
                     }
                 }
                 if line.to_lowercase().starts_with("?"){
-                    return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
+                    //return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
+                    return vec![format!("Edlin help. {} lines.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness", self.data.len())];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
@@ -432,14 +443,18 @@ impl Edlin {
                     if del_start >= del_cease {
                         del_start = del_cease - 1;
                     }
-                    println!("Deleting {} to {}", del_start, del_cease);
-                    for i in (del_start..del_cease).rev() {
-                        self.data.remove(i);
-                        if self.line_cursor > self.data.len() {
-                            self.line_cursor = self.data.len()
+                    if del_start < self.data.len() - 1 && del_cease < self.data.len() {
+                        println!("Deleting {} to {}", del_start, del_cease);
+                        for i in (del_start..del_cease).rev() {
+                            self.data.remove(i);
+                            if self.line_cursor > self.data.len() {
+                                self.line_cursor = self.data.len()
+                            }
                         }
+                        return vec![format!("Deleted {} to {}", del_start, del_cease)];
+                    } else {
+                        return vec![format!("Can't delete beyond {}", self.data.len())];
                     }
-                    return vec![format!("Deleted {} to {}", del_start, del_cease)];
                 }
                 if line.contains("v") || line.contains("v") {
                     return self.data.clone()
