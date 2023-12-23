@@ -72,17 +72,24 @@ members = [
   "services/dns",
   "services/modals",
   "services/early_settings",
+  "apps/app-loader",
+  "apps/app-loader/spawn",
   "apps/ball",
   "apps/hello",
+  "apps/mtxchat",
   "apps/mtxcli",
   "apps/repl",
-  "apps/edlin",
+  "apps/sigchat",
   "apps/vault",
   "apps/vault/tools/vaultbackup-rs",
   "apps/transientdisk",
+  "apps/chat-test",
   "services/libstd-test",
   "services/ffi-test",
   "services/tts",
+  "services/cram-console",
+  "services/cram-mbox1",
+  "services/cram-mbox2",
   #"services/test-spawn",
   #"services/test-spawn/spawn",
   "services/usb-test",
@@ -90,8 +97,11 @@ members = [
   "tools/perflib",
   "kernel",
   "loader",
+  "libs/chat",
   "libs/userprefs",
-  "libs/tls"
+  "libs/tls",
+  "libs/xous-pio",
+  "libs/xous-pl230",
 ]
 resolver = "2"
 
@@ -119,7 +129,7 @@ strip = false
 lto = "fat"
 incremental = true
 #panic = "abort" # Remove panic output, which can reduce file size
-#opt-level = 1  # z,s: Optimize for size instead of performance; 1 for easier debugging
+opt-level = "s"  # z,s: Optimize for size instead of performance; 1 for easier debugging; comment out for "best performance" (but in Rust 1.72 this causes regressions)
 
 # prefer hardware-accelerated versions of services
 [patch.crates-io.sha2]
@@ -142,8 +152,6 @@ git="https://github.com/betrusted-io/usb-device.git"
 branch="main"
 # local dev shortcuts
 #path = "../usb-device"
-#[patch.crates-io.usbd-human-interface-device]
-#path = "../usbd-human-interface-device"
 
 [patch.crates-io.getrandom]
 path = "imports/getrandom"
@@ -167,10 +175,10 @@ rev="4296c2e7904898766cf7d8d589759a129794783b" # use the commitref because we're
 #######################################################
 
 ### Selectively patch in these crates, or more, as needed depending on your dev activity
-# [patch.crates-io.utralib]
-# path = "./utralib"
-# [patch.crates-io.svd2utra]
-# path = "./svd2utra"
+[patch.crates-io.utralib]
+path = "./utralib"
+[patch.crates-io.svd2utra]
+path = "./svd2utra"
 # [patch.crates-io.xous]
 # path = "./xous-rs"
 # [patch.crates-io.xous-ipc]

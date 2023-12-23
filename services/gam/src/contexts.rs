@@ -130,6 +130,10 @@ impl ContextManager {
     pub(crate) fn claim_token(&mut self, name: &str) -> Option<[u32; 4]> {
         self.tm.claim_token(name)
     }
+    #[cfg(feature="unsafe-app-loading")]
+    pub(crate) fn register_name(&mut self, name: &str, auth_token: &[u32; 4]) {
+	    self.tm.register_name(name, auth_token);
+    }
     pub(crate) fn allow_untrusted_code(&self) -> bool {
         self.tm.allow_untrusted_code()
     }
@@ -161,7 +165,7 @@ impl ContextManager {
                         gotinput_id: registration.gotinput_id,
                         audioframe_id: registration.audioframe_id,
                         focuschange_id: registration.focuschange_id,
-                        rawkeys_id: None,
+                        rawkeys_id: registration.rawkeys_id,
                         vibe: false,
                         imef_menu_mode: false,
                         // this gets initialized on the first attempt to change predictors, not here
@@ -631,21 +635,21 @@ impl ContextManager {
         if self.imef_active {
             // use the IMEF
             self.imef.send_keyevent(keys).expect("couldn't send keys to the IMEF");
-        } else {
-            // forward the keyboard hits without any IME to the current context
-            log::debug!("forwarding raw key event");
-            if let Some(context) = self.focused_context() {
-                if let Some(rawkeys_id) = context.rawkeys_id {
-                    xous::send_message(context.listener,
-                        xous::Message::new_scalar(rawkeys_id as usize,
-                        keys[0] as u32 as usize,
-                        keys[1] as u32 as usize,
-                        keys[2] as u32 as usize,
-                        keys[3] as u32 as usize,
-                    )).expect("couldn't forward raw keys onto context listener");
-                }
-            }
         }
+        
+        // forward the keyboard hits to the current context
+        log::debug!("forwarding raw key event");
+        if let Some(context) = self.focused_context() {
+            if let Some(rawkeys_id) = context.rawkeys_id {
+                xous::send_message(context.listener,
+                    xous::Message::new_scalar(rawkeys_id as usize,
+                    keys[0] as u32 as usize,
+                    keys[1] as u32 as usize,
+                    keys[2] as u32 as usize,
+                    keys[3] as u32 as usize,
+                )).expect("couldn't forward raw keys onto context listener");
+            }
+        }        
     }
 
     fn focused_context(&'_ self) -> Option<&'_ UxContext> {

@@ -15,8 +15,8 @@ pub mod bitmap;
 #[cfg(feature="ditherpunk")]
 pub use bitmap::{Bitmap, Img, PixelType, DecodePng};
 
-use graphics_server::api::{TextOp, TextView};
-use graphics_server::api::{Gid, Line, Circle, RoundedRectangle, TokenClaim};
+pub use graphics_server::api::{TextOp, TextView};
+pub use graphics_server::api::{Gid, Line, Circle, RoundedRectangle, TokenClaim};
 pub use graphics_server::api::{Point, Rectangle};
 #[cfg(feature="ditherpunk")]
 pub use graphics_server::api::Tile;
@@ -31,6 +31,7 @@ use ime_plugin_api::{ImefCallback, ApiToken};
 
 #[doc = include_str!("../README.md")]
 
+pub const RATE_LIMIT_MS: usize = 33;
 pub const SYSTEM_STYLE: GlyphStyle = GlyphStyle::Tall;
 
 // Add names here and insert them into the EXPECTED_BOOT_CONTEXTS structure below.
@@ -153,6 +154,8 @@ impl Gam {
             api::Return::RenderReturn(tvr) => {
                 tv.bounds_computed = tvr.bounds_computed;
                 tv.cursor = tvr.cursor;
+                tv.overflow = tvr.overflow;
+                tv.busy_animation_state = tvr.busy_animation_state;
             }
             api::Return::NotCurrentlyDrawable => {
                 tv.bounds_computed = None;
@@ -174,6 +177,7 @@ impl Gam {
             api::Return::RenderReturn(tvr) => {
                 tv.bounds_computed = tvr.bounds_computed;
                 tv.cursor = tvr.cursor;
+                tv.overflow = tvr.overflow;
             }
             _ => panic!("GAM_API: bounds_compute_textview got a return value from the server that isn't expected or handled")
         }
@@ -308,6 +312,16 @@ impl Gam {
         let returned_claim = buf.to_original::<TokenClaim, _>().unwrap();
 
         Ok(returned_claim.token)
+    }
+    #[cfg(feature="unsafe-app-loading")]
+    pub fn register_name(&self, name: &str, auth_token: [u32; 4]) -> Result<(), xous::Error> {
+        let name_registration = NameRegistration {
+            name: String::<128>::from_str(name),
+            auth_token
+        };
+        let buf = Buffer::into_buf(name_registration).or(Err(xous::Error::InternalError))?;
+        buf.lend(self.conn, Opcode::RegisterName.to_u32().unwrap()).or(Err(xous::Error::InternalError))?;
+        Ok(())
     }
     pub fn set_predictor_api_token(&self, api_token: [u32; 4], gam_token: [u32; 4]) -> Result<(), xous::Error> {
         let at = ApiToken {

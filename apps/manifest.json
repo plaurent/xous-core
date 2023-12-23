@@ -1,4 +1,14 @@
 {
+    "app-loader": {
+        "context_name": "App Loader",
+        "menu_name": {
+            "appmenu.app-loader": {
+            "en": "App Loader",
+            "en-tts": "App Loader"
+            }
+        },
+        "submenu": 2
+    },
     "ball": {
         "context_name": "ball demo app",
         "menu_name": {
@@ -24,16 +34,34 @@
         }
     },
     "mtxcli": {
-        "context_name": "Matrix chat",
+        "context_name": "Matrix cli",
         "menu_name": {
             "appmenu.mtxcli": {
-                "en": "Matrix chat",
+                "en": "Matrix cli",
                 "en-tts": "MATRIX demo",
                 "fr": "Matrix messagerie",
                 "ja": "シンプルなMATRIXデモ",
                 "zh": "基本 MATRIX 演示"
             }
         }
+    },
+    "mtxchat": {
+        "context_name": "[matrix]",
+        "menu_name": {
+            "appmenu.mtxchat": {
+                "en": "[matrix]"
+            }
+        },
+        "submenu": 1
+    },
+    "chat-test": {
+        "context_name": "Chat UI test",
+        "menu_name": {
+            "appmenu.chat-test": {
+                "en": "Chat UI test"
+            }
+        },
+        "submenu": 1
     },
     "repl": {
         "context_name": "repl demo app",
@@ -54,7 +82,17 @@
                 "en": "Edlin text editor",
                 "en-tts": "Edlin text editor"
             }
-        }
+        },
+        "submenu": 1
+		},
+    "sigchat": {
+        "context_name": "signal",
+        "menu_name": {
+            "appmenu.sigchat": {
+                "en": "Signal"
+            }
+        },
+        "submenu": 1
     },
     "vault": {
         "context_name": "Key Vault",

@@ -140,6 +140,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             language_set = true;
         }
     }
+    let kern_features = get_flag("--kernel-feature")?;
+    for feature in kern_features {
+        builder.add_kernel_feature(&feature);
+    }
+
     if !language_set { // the default language is english
         track_language_changes("en")?;
     }
@@ -246,7 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             builder.target_hosted()
                    .add_services(&gfx_base_pkgs.into_iter().map(String::from).collect())
                    .add_services(&get_cratespecs())
-                   .add_feature("graphics-server/testing");
+                   .add_feature("graphics-server/gfx-testing");
         },
         Some("hosted-ci") => {
             builder.target_hosted()
@@ -357,6 +362,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             builder.target_precursor(PRECURSOR_SOC_VERSION)
                    .add_services(&user_pkgs.into_iter().map(String::from).collect())
                    .add_feature("avalanchetest");
+        }
+	Some("compile-apps") => {
+	    builder.target_precursor_no_image(PRECURSOR_SOC_VERSION)
+		.add_services(&gfx_base_pkgs.into_iter().map(String::from).collect());
+	}
+
+        // ------ Cramium hardware image configs ------
+        Some("cramium-fpga") | Some("cramium-soc") => {
+            let cramium_pkgs = [
+                "xous-log",
+                "xous-names",
+                "xous-ticktimer",
+                "cram-console",
+            ].to_vec();
+            match task.as_deref() {
+                Some("cramium-fpga") => builder.target_cramium_fpga(),
+                Some("cramium-soc") => builder.target_cramium_soc(),
+                _ => panic!("should be unreachable"),
+            };
+            builder.add_services(&get_cratespecs());
+            for service in cramium_pkgs {
+                builder.add_service(service, true);
+            }
         }
 
         // ------ ARM hardware image configs ------
@@ -478,6 +506,7 @@ Other commands:
  generate-locales        (re)generate the locales include for the language selected in locales/src/locale.rs
  wycheproof-import       generate binary test vectors for engine-25519 from whycheproof-import/x25519.json
  install-toolkit         installs Xous toolkit with no prompt, useful in CI. Specify `--force` to remove existing toolchains
+ compile-apps            Just compiles the apps specified in [cratespecs], for example in order to use app server
 
 Note: By default, the `ticktimer` will get rebuilt every time. You can skip this by appending `--no-timestamp` to the command.
 "
@@ -485,10 +514,6 @@ Note: By default, the `ticktimer` will get rebuilt every time. You can skip this
 }
 
 type DynError = Box<dyn std::error::Error>;
-
-enum MemorySpec {
-    SvdFile(String),
-}
 
 /// [cratespecs] are positional arguments, and is a list of 0 to N tokens that immediately
 /// follow [verb]
