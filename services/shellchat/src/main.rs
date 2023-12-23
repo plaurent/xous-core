@@ -174,7 +174,7 @@ impl Repl{
             content,
             gam,
             screensize,
-            bubble_width: ((screensize.x / 5) * 4) as u16, // 80% width for the text bubbles
+            bubble_width: ((screensize.x / 100) * 85) as u16, // (was 80%) width for the text bubbles
             margin: Point::new(4, 4),
             bubble_margin: Point::new(4, 4),
             bubble_radius: 4,
@@ -338,7 +338,8 @@ impl Repl{
             bubble_tv.draw_border = true;
             bubble_tv.clear_area = true;
             bubble_tv.rounded_border = Some(self.bubble_radius);
-            bubble_tv.style = gam::SYSTEM_STYLE;
+            bubble_tv.style = graphics_server::GlyphStyle::Large;
+            //bubble_tv.style = gam::SYSTEM_STYLE;
             bubble_tv.margin = self.bubble_margin;
             bubble_tv.ellipsis = false; bubble_tv.insertion = None;
             write!(bubble_tv.text, "{}", h.text.as_str()).expect("couldn't write history text to TextView");
