@@ -79,6 +79,7 @@ members = [
   "apps/mtxchat",
   "apps/mtxcli",
   "apps/repl",
+  "apps/edlin",
   "apps/sigchat",
   "apps/vault",
   "apps/vault/tools/vaultbackup-rs",

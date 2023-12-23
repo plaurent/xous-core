@@ -82,8 +82,7 @@
                 "en": "Edlin text editor",
                 "en-tts": "Edlin text editor"
             }
-        },
-        "submenu": 1
+				}
 		},
     "sigchat": {
         "context_name": "signal",
