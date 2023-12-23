@@ -632,8 +632,9 @@ fn wrapped_main() -> ! {
         Opcode::SuspendResume as u32, my_cid).expect("couldn't create suspend/resume object");
     loop {
         let mut msg = xous::receive_message(pddb_sid).unwrap();
-        // log::error!("got msg: {:x?}", msg);
-        match FromPrimitive::from_usize(msg.body.id() & 0xffff).unwrap_or(Opcode::InvalidOpcode) {
+        let op: Opcode = FromPrimitive::from_usize(msg.body.id() & 0xffff).unwrap_or(Opcode::InvalidOpcode);
+        log::debug!("{:x?}", op);
+        match op {
             Opcode::SuspendResume => xous::msg_scalar_unpack!(msg, token, _, _, _, {
                 basis_cache.suspend(&mut pddb_os);
                 susres.suspend_until_resume(token).expect("couldn't execute suspend/resume");
@@ -672,6 +673,12 @@ fn wrapped_main() -> ! {
             //    - code = 2 -> mount failed, because too many PINs were retried. `count` is the number of retries.
             // If we need more nuance out of this routine, consider creating a custom public enum type to help marshall this.
             Opcode::TryMount => xous::msg_blocking_scalar_unpack!(msg, _, _, _, _, {
+                let llio = llio::Llio::new(&xns);
+                while !llio.is_ec_ready() {
+                    // spin-wait while the EC is not ready -- so that a PDDB mount does not interfere with
+                    // on-going EC updates. Also causes the mount dialog to delay until the EC status has been checked.
+                    tt.sleep_ms(1000).ok();
+                }
                 if basis_cache.basis_count() > 0 {
                     xous::return_scalar2(msg.sender, 0, 0).expect("couldn't return scalar");
                 } else {
@@ -812,7 +819,8 @@ fn wrapped_main() -> ! {
                 if let Some(mem) = msg.body.memory_message_mut() {
                     mem.offset = None;
                     if let Some(name) = basis_cache.basis_latest() {
-                        for (src, dest) in name.as_bytes().iter().zip(mem.buf.as_slice_mut().iter_mut()) {
+                        // Safety: `u8` contains no undefined values
+                        for (src, dest) in unsafe { name.as_bytes().iter().zip(mem.buf.as_slice_mut().iter_mut()) } {
                             *dest = *src;
                         }
                         mem.offset = xous::MemorySize::new(name.len().min(mem.buf.len()));
@@ -878,7 +886,7 @@ fn wrapped_main() -> ! {
                                 ) {
                                     if basis_cache.basis_contains(&basis.name) {
                                         basis_cache.basis_unmount(&mut pddb_os, &basis.name).expect("couldn't unmount previously mounted basis of same name");
-                                        modals.show_notification(t!("pddb.unmount_previous", xous::LANG), None).expect("notification failed");
+                                        modals.show_notification(t!("pddb.unmount_previous", locales::LANG), None).expect("notification failed");
                                     }
                                     basis_cache.basis_add(basis);
                                     finished = true;
@@ -889,14 +897,14 @@ fn wrapped_main() -> ! {
                                     mgmt.code = PddbRequestCode::NoErr;
                                 } else {
                                     log::info!("{}PDDB.BADPASS,{},{}", xous::BOOKEND_START, mgmt.name.as_str().unwrap(), xous::BOOKEND_END);
-                                    modals.add_list_item(t!("pddb.yes", xous::LANG)).expect("couldn't build radio item list");
-                                    modals.add_list_item(t!("pddb.no", xous::LANG)).expect("couldn't build radio item list");
-                                    match modals.get_radiobutton(t!("pddb.badpass", xous::LANG)) {
+                                    modals.add_list_item(t!("pddb.yes", locales::LANG)).expect("couldn't build radio item list");
+                                    modals.add_list_item(t!("pddb.no", locales::LANG)).expect("couldn't build radio item list");
+                                    match modals.get_radiobutton(t!("pddb.badpass", locales::LANG)) {
                                         Ok(response) => {
-                                            if response.as_str() == t!("pddb.yes", xous::LANG) {
+                                            if response.as_str() == t!("pddb.yes", locales::LANG) {
                                                 finished = false;
                                                 // this will cause just another go-around
-                                            } else if response.as_str() == t!("pddb.no", xous::LANG) {
+                                            } else if response.as_str() == t!("pddb.no", locales::LANG) {
                                                 finished = true;
                                                 mgmt.code = PddbRequestCode::AccessDenied; // this will cause a return of AccessDenied
                                             } else {
@@ -1096,6 +1104,7 @@ fn wrapped_main() -> ! {
                         if let Err(e) = result {
                             xous::return_scalar(msg.sender, e as usize)
                         } else {
+                            fd_mapping.remove(&msg.sender.pid());
                             xous::return_scalar2(msg.sender, 0, 0)
                         }.ok();
                     }
@@ -1726,7 +1735,8 @@ fn wrapped_main() -> ! {
             Opcode::SeekKeyStd => {
                 let fd = (msg.body.id() >> 16) & 0xffff;
                 if let Some(scalar) = msg.body.scalar_message() {
-                    let seek_by = (((scalar.arg2 as u32) as u64) << 32) | ((scalar.arg3 as u32) as u64);
+                    // NOTE: endian swap for compatibility with `std`
+                    let seek_by = (((scalar.arg3 as u32) as u64) << 32) | ((scalar.arg2 as u32) as u64);
                     let result = libstd::seek_key(scalar.arg1, seek_by, fd_mapping.entry(msg.sender.pid()).or_default(), fd);
                     if msg.body.is_blocking() {
                         match result {
@@ -1805,7 +1815,7 @@ fn wrapped_main() -> ! {
 
             Opcode::MenuListBasis => {
                 let bases = basis_cache.basis_list();
-                let mut note = String::from(t!("pddb.menu.listbasis_response", xous::LANG));
+                let mut note = String::from(t!("pddb.menu.listbasis_response", locales::LANG));
                 for basis in bases.iter() {
                     note.push_str(basis);
                     note.push_str("\n");
@@ -1814,16 +1824,16 @@ fn wrapped_main() -> ! {
             },
             Opcode::MenuChangePin => {
                 if basis_cache.basis_count() == 0 {
-                    modals.show_notification(t!("pddb.changepin.mountfirst", xous::LANG), None)
+                    modals.show_notification(t!("pddb.changepin.mountfirst", locales::LANG), None)
                         .expect("couldn't show notification");
                     continue;
                 }
                 match pddb_os.pddb_change_pin(&modals) {
-                    Ok(_) => modals.show_notification(t!("pddb.changepin.success", xous::LANG), None)
+                    Ok(_) => modals.show_notification(t!("pddb.changepin.success", locales::LANG), None)
                                 .expect("couldn't show notification"),
                     Err(e) => {
                         log::error!("Error changing PIN: {:?}", e);
-                        modals.show_notification(t!("pddb.changepin.nochange", xous::LANG), None)
+                        modals.show_notification(t!("pddb.changepin.nochange", locales::LANG), None)
                         .expect("couldn't show notification");
                     }
                 }
@@ -1990,24 +2000,24 @@ fn ensure_password(modals: &modals::Modals, pddb_os: &mut PddbOs, _pw_cid: xous:
                     return PasswordState::ForcedAbort(failcount);
                 } else {
                     // check if the user wants to re-try or not.
-                    modals.add_list_item(t!("pddb.yes", xous::LANG)).expect("couldn't build radio item list");
-                    modals.add_list_item(t!("pddb.no", xous::LANG)).expect("couldn't build radio item list");
+                    modals.add_list_item(t!("pddb.yes", locales::LANG)).expect("couldn't build radio item list");
+                    modals.add_list_item(t!("pddb.no", locales::LANG)).expect("couldn't build radio item list");
                     let fail_string = format!(
                         "{}\n{}",
-                        t!("pddb.badpass", xous::LANG),
-                        t!("pddb.failed_attempts", xous::LANG)
+                        t!("pddb.badpass", locales::LANG),
+                        t!("pddb.failed_attempts", locales::LANG)
                         .replace("{fails}", &failcount.to_string())
                     );
                     let prompt = if failcount == 0 {
-                        t!("pddb.badpass", xous::LANG)
+                        t!("pddb.badpass", locales::LANG)
                     } else {
                         &fail_string
                     };
                     match modals.get_radiobutton(prompt) {
                         Ok(response) => {
-                            if response.as_str() == t!("pddb.yes", xous::LANG) {
+                            if response.as_str() == t!("pddb.yes", locales::LANG) {
                                 continue;
-                            } else if response.as_str() == t!("pddb.no", xous::LANG) {
+                            } else if response.as_str() == t!("pddb.no", locales::LANG) {
                                 return PasswordState::Incorrect(failcount);
                             } else {
                                 panic!("Got unexpected return from radiobutton");
@@ -2046,7 +2056,7 @@ fn try_mount_or_format(
 ) -> bool {
     log::info!("Attempting to mount the PDDB");
     if pw_state == PasswordState::Correct {
-        modals.dynamic_notification(Some(t!("pddb.waitmount", xous::LANG)), None).unwrap();
+        modals.dynamic_notification(Some(t!("pddb.waitmount", locales::LANG)), None).unwrap();
         if let Some(sys_basis) = pddb_os.pddb_mount() {
             log::info!("PDDB mount operation finished successfully");
             basis_cache.basis_add(sys_basis);
@@ -2063,15 +2073,15 @@ fn try_mount_or_format(
         #[cfg(any(feature = "precursor", feature = "renode", feature="test-rekey"))]
         {
             log::debug!("PDDB did not mount; requesting format");
-            modals.add_list_item(t!("pddb.okay", xous::LANG)).expect("couldn't build radio item list");
-            modals.add_list_item(t!("pddb.cancel", xous::LANG)).expect("couldn't build radio item list");
+            modals.add_list_item(t!("pddb.okay", locales::LANG)).expect("couldn't build radio item list");
+            modals.add_list_item(t!("pddb.cancel", locales::LANG)).expect("couldn't build radio item list");
             let do_format: bool;
             log::info!("{}PDDB.REQFMT,{}", xous::BOOKEND_START, xous::BOOKEND_END);
-            match modals.get_radiobutton(t!("pddb.requestformat", xous::LANG)) {
+            match modals.get_radiobutton(t!("pddb.requestformat", locales::LANG)) {
                 Ok(response) => {
-                    if response.as_str() == t!("pddb.okay", xous::LANG) {
+                    if response.as_str() == t!("pddb.okay", locales::LANG) {
                         do_format = true;
-                    } else if response.as_str() == t!("pddb.cancel", xous::LANG) {
+                    } else if response.as_str() == t!("pddb.cancel", locales::LANG) {
                         log::info!("PDDB format aborted by user");
                         do_format = false;
                     } else {
@@ -2083,13 +2093,13 @@ fn try_mount_or_format(
             if do_format {
                 let fast: bool;
                 if false {
-                    modals.add_list_item(t!("pddb.no", xous::LANG)).expect("couldn't build radio item list");
-                    modals.add_list_item(t!("pddb.yes", xous::LANG)).expect("couldn't build radio item list");
-                    match modals.get_radiobutton(t!("pddb.devbypass", xous::LANG)) {
+                    modals.add_list_item(t!("pddb.no", locales::LANG)).expect("couldn't build radio item list");
+                    modals.add_list_item(t!("pddb.yes", locales::LANG)).expect("couldn't build radio item list");
+                    match modals.get_radiobutton(t!("pddb.devbypass", locales::LANG)) {
                         Ok(response) => {
-                            if response.as_str() == t!("pddb.yes", xous::LANG) {
+                            if response.as_str() == t!("pddb.yes", locales::LANG) {
                                 fast = true;
-                            } else if response.as_str() == t!("pddb.no", xous::LANG) {
+                            } else if response.as_str() == t!("pddb.no", locales::LANG) {
                                 fast = false;
                             } else {
                                 panic!("Got unexpected return from radiobutton");
@@ -2113,7 +2123,7 @@ fn try_mount_or_format(
                         0, 0, 0, 0
                     )
                 ).expect("couldn't reset time");
-                modals.dynamic_notification(Some(t!("pddb.waitmount", xous::LANG)), None).unwrap();
+                modals.dynamic_notification(Some(t!("pddb.waitmount", locales::LANG)), None).unwrap();
                 if let Some(sys_basis) = pddb_os.pddb_mount() {
                     log::info!("PDDB mount operation finished successfully");
                     basis_cache.basis_add(sys_basis);
@@ -2125,7 +2135,7 @@ fn try_mount_or_format(
                 } else {
                     modals.dynamic_notification_close().unwrap();
                     log::error!("Despite formatting, no PDDB was found!");
-                    let mut err = String::from(t!("pddb.internalerror", xous::LANG));
+                    let mut err = String::from(t!("pddb.internalerror", locales::LANG));
                     err.push_str(" #1"); // punt and leave an error code, because this "should" be rare
                     modals.show_notification(err.as_str(), None).expect("notification failed");
                     false
@@ -2150,7 +2160,7 @@ fn try_mount_or_format(
                 true
             } else {
                 log::error!("Despite formatting, no PDDB was found!");
-                let mut err = String::from(t!("pddb.internalerror", xous::LANG));
+                let mut err = String::from(t!("pddb.internalerror", locales::LANG));
                 err.push_str(" #1"); // punt and leave an error code, because this "should" be rare
                 modals.show_notification(err.as_str(), None).expect("notification failed");
                 false

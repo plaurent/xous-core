@@ -10,7 +10,6 @@ use ime_plugin_api::{ImefCallback, ImefDescriptor, ImefOpcode};
 use log::{error, info};
 
 use graphics_server::{Gid, Line, PixelColor, Point, Rectangle, TextBounds, TextView, DrawStyle};
-use gam::GlyphStyle;
 use ime_plugin_api::{PredictionTriggers, PredictionPlugin, PredictionApi, ApiToken};
 
 use num_traits::{ToPrimitive,FromPrimitive};
@@ -262,6 +261,7 @@ impl InputTracker {
             input_tv.draw_border = false;
             input_tv.border_width = 1;
             input_tv.clear_area = true; // need this so that the insertion point is cleared and moved
+            input_tv.style = gam::SYSTEM_STYLE;
 
             let mut do_redraw = false;
             for &k in newkeys.iter() {
@@ -359,7 +359,7 @@ impl InputTracker {
                     }
                     '\u{0008}' => { // backspace
                         #[cfg(feature="tts")]
-                        self.tts.tts_simple(t!("input.delete-tts", xous::LANG)).unwrap();
+                        self.tts.tts_simple(t!("input.delete-tts", locales::LANG)).unwrap();
                         if (self.characters > 0) && (self.insertion == self.characters) {
                             if debug1{info!("simple backspace case")}
                             self.line.pop();
@@ -625,7 +625,7 @@ impl InputTracker {
                 empty_tv.draw_border = false;
                 empty_tv.border_width = 1;
                 empty_tv.clear_area = true;
-                write!(empty_tv.text, "{}", t!("input.greeting", xous::LANG)).expect("couldn't set up empty TextView");
+                write!(empty_tv.text, "{}", t!("input.greeting", locales::LANG)).expect("couldn't set up empty TextView");
                 if debug_canvas { info!("pc canvas {:?}", pc) }
                 self.gam.post_textview(&mut empty_tv).expect("can't draw prediction TextView");
             } else if update_predictor || force_redraw {
@@ -657,7 +657,7 @@ impl InputTracker {
                         p_tv.border_width = 1;
                         p_tv.clear_area = false;
                         p_tv.ellipsis = true;
-                        p_tv.style = GlyphStyle::Regular;
+                        p_tv.style = gam::SYSTEM_STYLE;
                         write!(p_tv.text, "{}", pred_str).expect("can't write the prediction string");
                         log::trace!("posting string with length {}", p_tv.text.as_str().unwrap().len());
                         self.gam.post_textview(&mut p_tv).expect("couldn't post prediction text");

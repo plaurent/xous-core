@@ -188,13 +188,14 @@ mod implementation {
             // Set EV_ENABLE, this starts pre-emption
             sr.os_timer.wfo(utra::timer0::EV_ENABLE_ZERO, 0b1);
 
+            sr
+        }
+        pub fn init(&mut self) {
             xous::claim_interrupt(
                 utra::susres::SUSRES_IRQ,
                 susres_handler,
-                (&mut sr) as *mut SusResHw as *mut usize,
+                self as *mut SusResHw as *mut usize,
             ).expect("couldn't claim IRQ");
-
-            sr
         }
         pub fn ignore_wfi(&mut self) {
             self.csr.wfo(utra::susres::WFI_OVERRIDE, 1);
@@ -219,10 +220,14 @@ mod implementation {
                 xous::yield_slice();
             } // block forever here
         }
-
-        pub fn setup_timeout_csr(&mut self, cid: xous::CID) -> Result<(), xous::Error> {
+        /// Safety: this should only be called once by the main suspend/resume loop
+        /// to create a copy of the timeout engine inside the timeout handler.
+        pub (crate) unsafe fn setup_timeout_csr(&mut self, cid: xous::CID) -> Result<(), xous::Error> {
             xous::send_message(cid,
-                xous::Message::new_scalar(crate::TimeoutOpcode::SetCsr.to_usize().unwrap(), self.csr.base as usize, 0, 0, 0)
+                xous::Message::new_scalar(
+                crate::TimeoutOpcode::SetCsr.to_usize().unwrap(),
+                self.csr.base() as usize,
+                0, 0, 0)
             ).map(|_| ())
         }
 
@@ -449,6 +454,7 @@ mod implementation {
         pub fn new() -> Self {
             SusResHw {}
         }
+        pub fn init(&mut self) {}
         pub fn reboot(&self, _reboot_soc: bool) {}
         pub fn set_reboot_vector(&self, _vector: u32) {}
         pub fn force_power_off(&mut self) {}
@@ -457,7 +463,7 @@ mod implementation {
         pub fn do_resume(&mut self) -> bool {
             false
         }
-        pub fn setup_timeout_csr(&mut self, cid: xous::CID) -> Result<(), xous::Error> {
+        pub (crate) unsafe fn setup_timeout_csr(&mut self, cid: xous::CID) -> Result<(), xous::Error> {
             xous::send_message(cid,
                 xous::Message::new_scalar(crate::TimeoutOpcode::SetCsr.to_usize().unwrap(), 0, 0, 0, 0)
             ).map(|_| ())
@@ -553,7 +559,8 @@ static SHOULD_RESUME: AtomicBool = AtomicBool::new(false);
 fn main() -> ! {
     // Start the OS timer which is responsible for setting up preemption.
     // os_timer::init();
-    let mut susres_hw = implementation::SusResHw::new();
+    let mut susres_hw = Box::new(implementation::SusResHw::new());
+    susres_hw.init();
 
     log_server::init_wait().unwrap();
     // debugging note: it's actually easiest to debug using client-side hooks. Search for
@@ -580,7 +587,12 @@ fn main() -> ! {
     let (sid0, sid1, sid2, sid3) = timeout_sid.to_u32();
     xous::create_thread_4(timeout_thread, sid0 as usize, sid1 as usize, sid2 as usize, sid3 as usize).expect("couldn't create timeout thread");
     let timeout_outgoing_conn = xous::connect(timeout_sid).expect("couldn't connect to our timeout thread");
-    susres_hw.setup_timeout_csr(timeout_outgoing_conn).expect("couldn't set hardware CSR for timeout thread");
+    // safety: we are cloning a CSR and handing to another thread that is coded to only
+    // operate on the registers disjoint from those used by the rest of the code (therefore
+    // no stomping on values).
+    unsafe{
+        susres_hw.setup_timeout_csr(timeout_outgoing_conn).expect("couldn't set hardware CSR for timeout thread");
+    }
 
     let mut suspend_requested: Option<Sender> = None;
     let mut timeout_pending = false;

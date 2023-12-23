@@ -83,6 +83,7 @@ impl TryFrom<[usize; 7]> for ProcessInit {
 }
 
 /// When a new process is created, this platform-specific structure is returned.
+#[repr(C)]
 #[derive(Debug, PartialEq)]
 pub struct ProcessStartup {
     /// The process ID of the new process
@@ -150,7 +151,7 @@ pub fn create_process_pre(args: &ProcessArgs) -> core::result::Result<ProcessIni
         spawn_stub_rounded,
         crate::MemoryFlags::R | crate::MemoryFlags::W | crate::MemoryFlags::X,
     )?;
-    for (dest, src) in spawn_memory.as_slice_mut().iter_mut().zip(args.stub) {
+    for (dest, src) in unsafe { spawn_memory.as_slice_mut().iter_mut().zip(args.stub) } {
         *dest = *src;
     }
     Ok(ProcessInit {

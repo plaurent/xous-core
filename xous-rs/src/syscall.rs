@@ -517,6 +517,20 @@ pub enum SysCall {
         usize,         /* how many args are valid (BlockingScalar) or usize::MAX (MemoryMessge) */
     ),
 
+    /// Returns the physical address corresponding to a virtual address for a given process, if such a mapping exists.
+    ///
+    /// ## Arguments
+    ///     * **pid**: The PID
+    ///     * **vaddr**: The virtual address to inspect
+    ///
+    /// ## Returns
+    /// Returns a Scalar1 containing the physical address
+    ///
+    /// ## Errors
+    ///     * **BadAddress**: The mapping does not exist
+    #[cfg(feature = "v2p")]
+    VirtToPhysPid(PID /* Process ID */, usize /* virtual address */),
+
     /// This syscall does not exist. It captures all possible
     /// arguments so detailed analysis can be performed.
     Invalid(usize, usize, usize, usize, usize, usize, usize),
@@ -565,6 +579,8 @@ pub enum SysCallNumber {
     VirtToPhys = 39,
     ReturnScalar5 = 40,
     ReplyAndReceiveNext = 41,
+    #[cfg(feature = "v2p")]
+    VirtToPhysPid = 42,
     Invalid,
 }
 
@@ -613,6 +629,8 @@ impl SysCallNumber {
             39 => VirtToPhys,
             40 => ReturnScalar5,
             41 => ReplyAndReceiveNext,
+            #[cfg(feature = "v2p")]
+            42 => VirtToPhysPid,
             _ => Invalid,
         }
     }
@@ -710,7 +728,7 @@ impl SysCall {
             SysCall::ReturnToParent(a1, a2) => [
                 SysCallNumber::ReturnToParent as usize,
                 a1.get() as usize,
-                *a2 as usize,
+                *a2,
                 0,
                 0,
                 0,
@@ -733,7 +751,7 @@ impl SysCall {
             SysCall::SwitchTo(a1, a2) => [
                 SysCallNumber::SwitchTo as usize,
                 a1.get() as usize,
-                *a2 as usize,
+                *a2,
                 0,
                 0,
                 0,
@@ -752,7 +770,7 @@ impl SysCall {
             ],
             SysCall::IncreaseHeap(a1, a2) => [
                 SysCallNumber::IncreaseHeap as usize,
-                *a1 as usize,
+                *a1,
                 a2.bits(),
                 0,
                 0,
@@ -762,7 +780,7 @@ impl SysCall {
             ],
             SysCall::DecreaseHeap(a1) => [
                 SysCallNumber::DecreaseHeap as usize,
-                *a1 as usize,
+                *a1,
                 0,
                 0,
                 0,
@@ -823,17 +841,17 @@ impl SysCall {
                     SysCallNumber::SendMessage as usize,
                     *a1 as usize,
                     a2.message_type(),
-                    mm.id as usize,
+                    mm.id,
                     mm.buf.as_ptr() as usize,
                     mm.buf.len(),
-                    mm.offset.map(|x| x.get()).unwrap_or(0) as usize,
-                    mm.valid.map(|x| x.get()).unwrap_or(0) as usize,
+                    mm.offset.map(|x| x.get()).unwrap_or(0),
+                    mm.valid.map(|x| x.get()).unwrap_or(0),
                 ],
                 Message::Scalar(sc) | Message::BlockingScalar(sc) => [
                     SysCallNumber::SendMessage as usize,
                     *a1 as usize,
                     a2.message_type(),
-                    sc.id as usize,
+                    sc.id,
                     sc.arg1,
                     sc.arg2,
                     sc.arg3,
@@ -896,17 +914,17 @@ impl SysCall {
                     SysCallNumber::TrySendMessage as usize,
                     *a1 as usize,
                     a2.message_type(),
-                    mm.id as usize,
+                    mm.id,
                     mm.buf.as_ptr() as usize,
                     mm.buf.len(),
-                    mm.offset.map(|x| x.get()).unwrap_or(0) as usize,
-                    mm.valid.map(|x| x.get()).unwrap_or(0) as usize,
+                    mm.offset.map(|x| x.get()).unwrap_or(0),
+                    mm.valid.map(|x| x.get()).unwrap_or(0),
                 ],
                 Message::Scalar(sc) | Message::BlockingScalar(sc) => [
                     SysCallNumber::TrySendMessage as usize,
                     *a1 as usize,
                     a2.message_type(),
-                    sc.id as usize,
+                    sc.id,
                     sc.arg1,
                     sc.arg2,
                     sc.arg3,
@@ -960,7 +978,7 @@ impl SysCall {
             ],
             SysCall::JoinThread(tid) => [
                 SysCallNumber::JoinThread as usize,
-                *tid as usize,
+                *tid,
                 0,
                 0,
                 0,
@@ -1002,6 +1020,10 @@ impl SysCall {
                 *arg5,
                 0,
             ],
+            #[cfg(feature = "v2p")]
+            SysCall::VirtToPhysPid(pid, vaddr) => {
+                [SysCallNumber::VirtToPhysPid as usize, pid.get() as usize, *vaddr, 0, 0, 0, 0, 0]
+            }
             SysCall::Invalid(a1, a2, a3, a4, a5, a6, a7) => [
                 SysCallNumber::Invalid as usize,
                 *a1,
@@ -1051,13 +1073,13 @@ impl SysCall {
                 MemoryAddress::new(a3),
             ),
             SysCallNumber::FreeInterrupt => SysCall::FreeInterrupt(a1),
-            SysCallNumber::SwitchTo => SysCall::SwitchTo(pid_from_usize(a1)?, a2 as usize),
+            SysCallNumber::SwitchTo => SysCall::SwitchTo(pid_from_usize(a1)?, a2),
             SysCallNumber::ReadyThreads => SysCall::ReadyThreads(pid_from_usize(a1)?),
             SysCallNumber::IncreaseHeap => SysCall::IncreaseHeap(
-                a1 as usize,
+                a1,
                 crate::MemoryFlags::from_bits(a2).ok_or(Error::InvalidSyscall)?,
             ),
-            SysCallNumber::DecreaseHeap => SysCall::DecreaseHeap(a1 as usize),
+            SysCallNumber::DecreaseHeap => SysCall::DecreaseHeap(a1),
             SysCallNumber::UpdateMemoryFlags => SysCall::UpdateMemoryFlags(
                 unsafe { MemoryRange::new(a1, a2) }?,
                 crate::MemoryFlags::from_bits(a3).ok_or(Error::InvalidSyscall)?,
@@ -1171,6 +1193,8 @@ impl SysCall {
             SysCallNumber::AdjustProcessLimit => SysCall::AdjustProcessLimit(a1, a2, a3),
             #[cfg(feature = "v2p")]
             SysCallNumber::VirtToPhys => SysCall::VirtToPhys(a1 as _),
+            #[cfg(feature = "v2p")]
+            SysCallNumber::VirtToPhysPid => SysCall::VirtToPhysPid(pid_from_usize(a1)?, a2 as _),
             SysCallNumber::ReturnScalar5 => {
                 SysCall::ReturnScalar5(MessageSender::from_usize(a1), a2, a3, a4, a5, a6)
             }
@@ -1962,7 +1986,7 @@ pub fn reply_and_receive_next(
 /// ## Arguments
 ///
 ///  * **server**: The SID of the server to receive messages from
-///  * **msg**: An Option<MessageEnvelope> specifying the message to return.
+///  * **msg**: An `Option<MessageEnvelope>` specifying the message to return.
 ///  * **return_type**: If 1 or 2, responds to a BlockingScalarMessage
 ///                 with a Scalar1 or a Scalar2. Otherwise, will respond
 ///                 as normal.
@@ -2047,6 +2071,18 @@ pub fn set_exception_handler(
 #[cfg(feature = "v2p")]
 pub fn virt_to_phys(va: usize) -> core::result::Result<usize, Error> {
     rsyscall(SysCall::VirtToPhys(va)).and_then(|result| {
+        if let Result::Scalar1(pa) = result {
+            Ok(pa)
+        } else {
+            Err(Error::BadAddress)
+        }
+    })
+}
+
+/// Translate a virtual address to a physical address for a given process
+#[cfg(feature = "v2p")]
+pub fn virt_to_phys_pid(pid: PID, va: usize) -> core::result::Result<usize, Error> {
+    rsyscall(SysCall::VirtToPhysPid(pid, va)).and_then(|result| {
         if let Result::Scalar1(pa) = result {
             Ok(pa)
         } else {

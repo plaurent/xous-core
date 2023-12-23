@@ -10,6 +10,17 @@ pub const FB_LINES: usize = LINES as usize;
 pub const FB_SIZE: usize = FB_WIDTH_WORDS * FB_LINES; // 44 bytes by 536 lines
 const CONFIG_CLOCK_FREQUENCY: u32 = 100_000_000;
 
+pub struct MainThreadToken(());
+
+pub enum Never {}
+
+#[inline]
+pub fn claim_main_thread(f: impl FnOnce(MainThreadToken) -> Never + Send + 'static) -> ! {
+    // Just call the closure - this backend will work on any thread
+    #[allow(unreachable_code)] // false positive
+    match f(MainThreadToken(())) {}
+}
+
 pub struct XousDisplay {
     fb: MemoryRange,
     hwfb: MemoryRange,
@@ -19,7 +30,7 @@ pub struct XousDisplay {
 }
 
 impl XousDisplay {
-    pub fn new() -> XousDisplay {
+    pub fn new(_main_thread_token: MainThreadToken) -> XousDisplay {
         let fb = xous::syscall::map_memory(
             None,
             None,
@@ -96,7 +107,7 @@ impl XousDisplay {
     pub unsafe fn hw_regs(&self) -> (u32, u32) {
         (
             self.hwfb.as_mut_ptr() as u32,
-            self.csr.base as u32
+            self.csr.base() as u32
         )
     }
 
@@ -112,7 +123,8 @@ impl XousDisplay {
         }
     }
     pub fn pop(&mut self) {
-        let fb: &mut [u32] = self.fb.as_slice_mut();
+        // Safety: `u32` contains no undefined values
+        let fb: &mut [u32] = unsafe { self.fb.as_slice_mut() };
         // skip copying the status bar, so that the status info is not overwritten by the pop.
         // this is "fixed" at 32 pixels high (2 * Cjk glyph height hint) per line 79 in gam/src/main.rs
         fb[FB_WIDTH_WORDS * 32..FB_SIZE].copy_from_slice(&self.srfb[FB_WIDTH_WORDS * 32..FB_SIZE]);
@@ -173,7 +185,8 @@ impl XousDisplay {
     }
     pub fn resume(&mut self) {
         self.susres.resume();
-        let fb: &mut [u32] = self.fb.as_slice_mut();
+        // Safety: `u32` contains no undefined values
+        let fb: &mut [u32] = unsafe { self.fb.as_slice_mut() };
         fb[..FB_SIZE].copy_from_slice(&self.srfb);
 
         self.redraw();
@@ -212,9 +225,6 @@ impl XousDisplay {
         log::trace!("redraw {}/{}", busy_count, dirty_count);
     }
 
-    // note: this API is used by emulation, don't remove calls to it
-    pub fn update(&mut self) {}
-
     pub fn native_buffer(&mut self) -> &mut [u32; FB_SIZE] {
         unsafe { &mut *(self.fb.as_mut_ptr() as *mut [u32; FB_SIZE]) }
     }
@@ -233,7 +243,8 @@ impl XousDisplay {
     }
 
     pub fn as_slice(&self) -> &[u32] {
-        &self.fb.as_slice::<u32>()[..FB_SIZE]
+        // Safety: all values of `[u32]` are valid
+        unsafe { &self.fb.as_slice::<u32>()[..FB_SIZE] }
     }
 
     /// Beneath this line are pure-HAL layer, and should not be user-visible

@@ -7,7 +7,6 @@ use xous_ipc::Buffer;
 use num_traits::*;
 
 pub mod protocols;
-pub use protocols::*;
 pub use smoltcp::time::Duration;
 pub use api::*;
 pub use smoltcp::wire::IpEndpoint;
@@ -59,6 +58,18 @@ impl NetManager {
             wifi_state_cid: None,
             wifi_state_sid: None,
         }
+    }
+    pub fn set_debug_level(&self, level: log::LevelFilter) {
+        let code = match level {
+            log::LevelFilter::Info => 0,
+            log::LevelFilter::Debug => 1,
+            log::LevelFilter::Trace => 2,
+            _ => 0,
+        };
+        send_message(
+            self.netconn.conn(),
+            Message::new_scalar(Opcode::SetDebug.to_usize().unwrap(), code, 0, 0, 0),
+        ).expect("couldn't set debug");
     }
     pub fn get_ipv4_config(&self) -> Option<Ipv4Conf> {
         let storage = Some(Ipv4Conf::default().encode_u16());
@@ -147,7 +158,7 @@ impl NetManager {
         }
         Ok(())
     }
-    pub fn wifi_get_ssid_list(&self) -> Result<Vec::<SsidRecord>, xous::Error> {
+    pub fn wifi_get_ssid_list(&self) -> Result<(Vec::<SsidRecord>, ScanState), xous::Error> {
         let alloc = SsidList::default();
         let mut buf = Buffer::into_buf(alloc).map_err(|_| xous::Error::InternalError)?;
         buf.lend_mut(self.netconn.conn(), Opcode::FetchSsidList.to_u32().unwrap())?;
@@ -158,7 +169,7 @@ impl NetManager {
                 ret.push(*item);
             }
         }
-        Ok(ret)
+        Ok((ret, ssid_list.state))
     }
     pub fn connection_manager_stop(&self) -> Result<(), xous::Error> {
         send_message(self.netconn.conn(),

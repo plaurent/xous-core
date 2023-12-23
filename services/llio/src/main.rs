@@ -35,7 +35,8 @@ fn i2c_thread(i2c_sid: xous::SID, power_csr_raw: u32, wfi_state: Arc::<AtomicBoo
     let xns = xous_names::XousNames::new().unwrap();
 
     let handler_conn = xous::connect(i2c_sid).expect("couldn't make handler connection for i2c");
-    let mut i2c = i2c::I2cStateMachine::new(handler_conn, power_csr_raw as *mut u32, wfi_state);
+    let mut i2c = Box::new(i2c::I2cStateMachine::new(handler_conn, power_csr_raw as *mut u32, wfi_state));
+    i2c.init();
 
     // register a suspend/resume listener
     let self_cid = xous::connect(i2c_sid).expect("couldn't create suspend callback connection");
@@ -250,7 +251,8 @@ fn main() -> ! {
 
     // Create a new llio object
     let handler_conn = xous::connect(llio_sid).expect("can't create IRQ handler connection");
-    let mut llio = Llio::new(handler_conn, gpio_base);
+    let mut llio = Box::new(Llio::new(handler_conn, gpio_base));
+    llio.init();
     llio.ec_power_on(); // ensure this is set correctly; if we're on, we always want the EC on.
 
     log::debug!("registered I2C thread with NS -- {:?}", i2c_sid);
@@ -282,6 +284,12 @@ fn main() -> ! {
     // create a self-connection to I2C to handle the public, non-security sensitive RTC API calls
     let mut i2c = llio::I2c::new(&xns);
     let tt = ticktimer_server::Ticktimer::new().unwrap();
+
+    // a variable to track if the EC has been registered as ready. This should be set by a call from
+    // whatever handles the EC updating routine: it is responsible for checking if the EC is up to date,
+    // and once it is brought into an up to date state, it then sets this variable. That routine is
+    // nominally domiciled in the status server.
+    let mut ec_ready = false;
 
     log::debug!("starting main loop");
     loop {
@@ -504,6 +512,12 @@ fn main() -> ! {
                     latest_activity += period / 20;
                     latest_activity %= period;
                 }
+            }),
+            Some(Opcode::EventEcSetReady) => msg_scalar_unpack!(msg, ready, _, _, _, {
+                ec_ready = ready != 0;
+            }),
+            Some(Opcode::EventEcIsReady) => msg_blocking_scalar_unpack!(msg, _, _, _, _, {
+                xous::return_scalar(msg.sender, if ec_ready {1} else {0}).ok();
             }),
             Some(Opcode::SetWakeupAlarm) => msg_blocking_scalar_unpack!(msg, delay, _, _, _, {
                 if delay > u8::MAX as usize {

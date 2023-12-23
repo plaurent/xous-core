@@ -7,6 +7,7 @@ pub struct Envelope {
     pub sender: MessageSender,
     pub body: Message,
 }
+unsafe impl Send for Envelope {}
 
 impl Envelope {
     pub fn to_usize(&self) -> [usize; 7] {
@@ -90,10 +91,10 @@ impl Envelope {
                     return Err((ManuallyDrop::into_inner(manual_self), e));
                 }
 
-                return Err((
+                Err((
                     ManuallyDrop::into_inner(manual_self),
                     crate::Error::MemoryInUse,
-                ));
+                ))
             }
             Message::BlockingScalar(_) => {
                 let result = crate::send_message(connection, body);
@@ -112,10 +113,10 @@ impl Envelope {
                     }
                     return Ok(());
                 }
-                return Err((
+                Err((
                     ManuallyDrop::into_inner(manual_self),
                     crate::Error::MemoryInUse,
-                ));
+                ))
             }
 
             Message::Borrow(_) | Message::MutableBorrow(_) | Message::Scalar(_) => {

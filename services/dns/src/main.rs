@@ -307,7 +307,7 @@ impl Message {
 
 pub struct Resolver {
     /// DnsServerManager is a service of the Net crate that automatically updates the DNS server list
-    mgr: net::DnsServerManager,
+    mgr: net::protocols::DnsServerManager,
     socket: UdpSocket,
     buf: [u8; DNS_PKT_MAX_LEN],
     trng: trng::Trng,
@@ -328,7 +328,7 @@ impl Resolver {
                                                 // blocking is probably what we actually want this time.
 
         Resolver {
-            mgr: net::DnsServerManager::register(&xns)
+            mgr: net::protocols::DnsServerManager::register(&xns)
                 .expect("Couldn't register the DNS server list auto-manager"),
             socket,
             buf: [0; DNS_PKT_MAX_LEN],
@@ -427,7 +427,7 @@ fn name_from_msg(env: &xous::MessageEnvelope) -> Result<&str, NameConversionErro
 fn fill_response(mut env: xous::MessageEnvelope, entries: &HashMap<IpAddr, u32>) -> Option<()> {
     let mem = env.body.memory_message_mut()?;
 
-    let s: &mut [u8] = mem.buf.as_slice_mut();
+    let s: &mut [u8] = unsafe { mem.buf.as_slice_mut() };
     let mut i = s.iter_mut();
 
     // First tag = 1 for "Error" -- we'll fill this in at the end when it's successful
@@ -472,7 +472,7 @@ fn fill_response(mut env: xous::MessageEnvelope, entries: &HashMap<IpAddr, u32>)
 fn fill_error(mut env: xous::MessageEnvelope, code: DnsResponseCode) -> Option<()> {
     let mem = env.body.memory_message_mut()?;
 
-    let s: &mut [u8] = mem.buf.as_slice_mut();
+    let s: &mut [u8] = unsafe { mem.buf.as_slice_mut() };
     let mut i = s.iter_mut();
 
     *i.next()? = 1;

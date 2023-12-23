@@ -40,10 +40,6 @@ pub(crate) fn write_address(address: IpAddress, data: &mut [u8]) -> Option<usize
             }
             Some(16)
         }
-        _ => {
-            *i.next()? = 0;
-            Some(1)
-        }
     }
 }
 
@@ -61,7 +57,7 @@ pub(crate) fn respond_with_error(mut env: xous::MessageEnvelope, code: NetError)
     };
 
     body.valid = None;
-    let s: &mut [u8] = body.buf.as_slice_mut();
+    let s: &mut [u8] = unsafe { body.buf.as_slice_mut() };
     let mut i = s.iter_mut();
 
     // Duplicate error to ensure it's seen as an error regardless of byte order/return type
@@ -85,7 +81,7 @@ pub(crate) fn respond_with_connected(
     remote_port: u16,
 ) {
     let body = env.body.memory_message_mut().unwrap();
-    let bfr = body.buf.as_slice_mut::<u16>();
+    let bfr = unsafe { body.buf.as_slice_mut::<u16>() };
 
     log::debug!("successfully connected: {}", idx);
     bfr[0] = 0;

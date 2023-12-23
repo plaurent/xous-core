@@ -102,10 +102,10 @@ pub(crate) fn prereqs(sid: xous::SID, time_conn: xous::CID) -> ([u32; 4], bool) 
                     title_text.clear_area = true;
                     title_text.style = GlyphStyle::Bold;
                     if !is_mounted {
-                        write!(title_text, "{}\n\n", t!("vault.error.mount_pddb", xous::LANG)).ok();
+                        write!(title_text, "{}\n\n", t!("vault.error.mount_pddb", locales::LANG)).ok();
                     }
                     if !time_init {
-                        write!(title_text, "{}", t!("vault.error.time_init", xous::LANG)).ok();
+                        write!(title_text, "{}", t!("vault.error.time_init", locales::LANG)).ok();
                     }
                     gam.post_textview(&mut title_text).expect("couldn't post title");
                 }
@@ -186,7 +186,7 @@ pub(crate) fn ntp_updater(time_conn: xous::CID) {
                     // check if we have a network connection. if not, repeat the loop, after a short delay
                     match netmgr.get_ipv4_config() {
                         Some(conf) => {
-                            if conf.dhcp != com_rs_ref::DhcpState::Bound {
+                            if conf.dhcp != com_rs::DhcpState::Bound {
                                 log::debug!("no DHCP");
                                 tt.sleep_ms(1000 * 31).unwrap();
                                 continue;

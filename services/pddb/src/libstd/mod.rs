@@ -44,7 +44,8 @@ pub(crate) fn stat_path(
     basis_cache: &mut BasisCache,
 ) -> Result<(), crate::PddbRetcode> {
     // Convert the memory to a Senres buffer
-    let mut backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let mut backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
 
     let reader = backing
@@ -148,7 +149,8 @@ pub(crate) fn list_path(
     basis_cache: &mut BasisCache,
 ) -> Result<(), crate::PddbRetcode> {
     // Convert the memory to a Senres buffer
-    let mut backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let mut backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
 
     let reader = backing
@@ -162,7 +164,6 @@ pub(crate) fn list_path(
         utils::split_basis_and_dict(path, || basis_cache.basis_latest().map(|m| m.to_owned()))
             .or(Err(crate::PddbRetcode::InternalError))?;
 
-    core::mem::drop(path);
     core::mem::drop(reader);
 
     let mut writer = backing
@@ -243,7 +244,8 @@ pub(crate) fn list_basis(
     let basis_list = basis_cache.basis_list();
 
     // Convert the memory to a Senres buffer
-    let mut backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let mut backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
 
     {
@@ -274,7 +276,8 @@ pub(crate) fn open_key(
     fds: &mut Vec<Option<crate::FileHandle>>,
 ) -> Result<(), crate::PddbRetcode> {
     // Convert the memory to a Senres buffer
-    let mut backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let mut backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
 
     let create_file: bool;
@@ -518,7 +521,6 @@ pub(crate) fn close_key(
             return Err(crate::PddbRetcode::UnexpectedEof);
         }
     };
-    core::mem::drop(file);
 
     // If this SID is unused, close the connection.
     if let Some(cid) = conn {
@@ -551,7 +553,8 @@ pub(crate) fn delete_key(
     all_fds: &mut std::collections::HashMap<Option<xous::PID>, Vec<Option<FileHandle>>>,
 ) -> Result<(), crate::PddbRetcode> {
     // Convert the memory to a Senres buffer
-    let backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
 
     let reader = backing
@@ -620,12 +623,13 @@ pub(crate) fn write_key(
             file.key
         );
         let length_to_write = mem.valid.map(|v| v.get()).unwrap_or_default();
+        // Safety: all `u8` values are valid
         if basis_cache
             .key_update(
                 pddb_os,
                 &file.dict,
                 &file.key,
-                &mem.buf.as_slice_mut()[0..length_to_write],
+                unsafe { &mem.buf.as_slice_mut()[0..length_to_write] },
                 // &mut pbuf.data[..pbuf.len as usize],
                 Some(file.offset as usize),
                 file.alloc_hint,
@@ -714,12 +718,13 @@ pub(crate) fn read_key(
             file.basis.as_ref().unwrap_or(basis),
             file.key
         );
+        // Safety: all u8 values are valid
         if let Ok(readlen) = basis_cache
             .key_read(
                 pddb_os,
                 &file.dict,
                 &file.key,
-                &mut mem.buf.as_slice_mut()[0..mem.valid.map(|v| v.get()).unwrap_or_default()],
+                unsafe { &mut mem.buf.as_slice_mut()[0..mem.valid.map(|v| v.get()).unwrap_or_default()] },
                 Some(file.offset as usize),
                 // this is a bit inefficient because if a specific basis is specified *and* the key does not exist,
                 // it'll retry the same basis for a number of times equal to the number of bases open.
@@ -758,7 +763,8 @@ pub(crate) fn list_dict(
     pddb_os: &mut PddbOs,
     basis_cache: &mut BasisCache,
 ) -> Result<(), crate::PddbRetcode> {
-    let mut backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let mut backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
     let bname;
     {
@@ -788,7 +794,8 @@ pub(crate) fn list_key(
     pddb_os: &mut PddbOs,
     basis_cache: &mut BasisCache,
 ) -> Result<(), crate::PddbRetcode> {
-    let mut backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let mut backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
     let bname;
     let key;
@@ -834,7 +841,8 @@ pub(crate) fn delete_dict(
     pddb_os: &mut PddbOs,
     basis_cache: &mut BasisCache,
 ) -> Result<(), crate::PddbRetcode> {
-    let backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
     let reader = backing
         .reader(*b"RmDQ")
@@ -878,7 +886,8 @@ pub(crate) fn create_dict(
     pddb_os: &mut PddbOs,
     basis_cache: &mut BasisCache,
 ) -> Result<(), crate::PddbRetcode> {
-    let backing = senres::Message::from_mut_slice(mem.buf.as_slice_mut())
+    // Safety: the memory message must be aligned, and we test for validity here
+    let backing = unsafe { senres::Message::from_mut_slice(mem.buf.as_slice_mut()) }
         .or(Err(crate::PddbRetcode::InternalError))?;
     let reader = backing
         .reader(*b"NuDQ")

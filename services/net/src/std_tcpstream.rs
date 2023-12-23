@@ -3,17 +3,15 @@ use ticktimer_server::Ticktimer;
 use std::convert::TryInto;
 
 use core::num::NonZeroU64;
-use smoltcp::socket::{
-    TcpSocket, TcpSocketBuffer,
-};
 use smoltcp::iface::{Interface, SocketHandle};
+use smoltcp::socket::tcp;
 use crate::*;
-use crate::device::NetPhy;
 
 pub(crate) fn std_tcp_connect(
     mut msg: xous::MessageEnvelope,
     local_port: u16,
-    iface: &mut Interface::<NetPhy>,
+    iface: &mut Interface,
+    sockets: &mut SocketSet,
     tcp_connect_waiting: &mut Vec<Option<(xous::MessageEnvelope, SocketHandle, u16, u16, u16)>>,
     our_sockets: &mut Vec<Option<SocketHandle>>,
 ) {
@@ -27,7 +25,7 @@ pub(crate) fn std_tcp_connect(
         }
     };
 
-    let bytes = body.buf.as_slice::<u8>();
+    let bytes = unsafe { body.buf.as_slice::<u8>() };
     let remote_port = u16::from_le_bytes([bytes[0], bytes[1]]);
     let timeout_ms = NonZeroU64::new(u64::from_le_bytes(bytes[2..10].try_into().unwrap()));
     let address = match parse_address(&bytes[10..]) {
@@ -41,20 +39,20 @@ pub(crate) fn std_tcp_connect(
 
     // initiates a new connection to a remote server consisting of an (Address:Port) tuple.
     // multiple connections can exist to a server, and they are further differentiated by the return port
-    let tcp_socket = TcpSocket::new(
-        TcpSocketBuffer::new(vec![0; TCP_BUFFER_SIZE]),
-        TcpSocketBuffer::new(vec![0; TCP_BUFFER_SIZE]),
-    );
-    let handle = iface.add_socket(tcp_socket);
-    let (tcp_socket, cx) = iface.get_socket_and_context::<TcpSocket>(handle);
+    let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; TCP_BUFFER_SIZE]);
+    let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; TCP_BUFFER_SIZE]);
+    let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
+
+    let handle = sockets.add(tcp_socket);
+    let cx = iface.context();
+    let tcp_socket = sockets.get_mut::<tcp::Socket>(handle);
 
     // Attempt to connect, returning the error if there is one
     if let Err(e) = tcp_socket
         .connect(cx, (address, remote_port), local_port)
         .map_err(|e| match e {
-            smoltcp::Error::Illegal => NetError::SocketInUse,
-            smoltcp::Error::Unaddressable => NetError::Unaddressable,
-            _ => NetError::LibraryError,
+            smoltcp::socket::tcp::ConnectError::InvalidState => NetError::SocketInUse,
+            smoltcp::socket::tcp::ConnectError::Unaddressable => NetError::Unaddressable,
         })
     {
         log::debug!("couldn't connect: {:?}", e);
@@ -77,7 +75,8 @@ pub(crate) fn std_tcp_connect(
 pub(crate) fn std_tcp_tx(
     mut msg: xous::MessageEnvelope,
     timer: &Ticktimer,
-    iface: &mut Interface::<NetPhy>,
+    _iface: &mut Interface,
+    sockets: &mut SocketSet,
     tcp_tx_waiting: &mut Vec<Option<WaitingSocket>>,
     our_sockets: &Vec<Option<SocketHandle>>,
 ) {
@@ -98,7 +97,7 @@ pub(crate) fn std_tcp_tx(
         }
     };
 
-    let socket = iface.get_socket::<TcpSocket>(*handle);
+    let socket = sockets.get_mut::<tcp::Socket>(*handle);
     // handle the case that the connection closed due to the receiver quitting
     if !socket.can_send() {
         log::trace!("tx can't send, will retry");
@@ -120,7 +119,7 @@ pub(crate) fn std_tcp_tx(
 
     // Perform the transfer
     let sent_octets = {
-        let data = body.buf.as_slice::<u8>();
+        let data = unsafe { body.buf.as_slice::<u8>() };
         let length = body
             .valid
             .map(|v| {
@@ -142,7 +141,7 @@ pub(crate) fn std_tcp_tx(
     };
 
     log::trace!("sent {}", sent_octets);
-    let response_data = body.buf.as_slice_mut::<u32>();
+    let response_data = unsafe { body.buf.as_slice_mut::<u32>() };
     response_data[0] = 0;
     response_data[1] = sent_octets as u32;
 }
@@ -150,7 +149,8 @@ pub(crate) fn std_tcp_tx(
 pub(crate) fn std_tcp_rx(
     mut msg: xous::MessageEnvelope,
     timer: &Ticktimer,
-    iface: &mut Interface::<NetPhy>,
+    _iface: &mut Interface,
+    sockets: &mut SocketSet,
     tcp_rx_waiting: &mut Vec<Option<WaitingSocket>>,
     our_sockets: &Vec<Option<SocketHandle>>,
     nonblocking: bool,
@@ -178,7 +178,7 @@ pub(crate) fn std_tcp_rx(
         }
     };
 
-    let socket = iface.get_socket::<TcpSocket>(*handle);
+    let socket = sockets.get_mut::<tcp::Socket>(*handle);
     if socket.can_recv() {
         log::debug!("receiving data right away");
         let buflen = if let Some(valid) = body.valid {
@@ -186,7 +186,7 @@ pub(crate) fn std_tcp_rx(
         } else {
             0
         };
-        match socket.recv_slice(&mut body.buf.as_slice_mut()[..buflen]) {
+        match socket.recv_slice(unsafe { &mut body.buf.as_slice_mut()[..buflen] }) {
             Ok(bytes) => {
                 // it's actually valid to receive 0 bytes, but the encoding of this field doesn't allow it.
                 // so, `None` is abused to represent the value of "0" bytes, which is what is naturally returned
@@ -227,7 +227,8 @@ pub(crate) fn std_tcp_rx(
 pub(crate) fn std_tcp_peek(
     mut msg: xous::MessageEnvelope,
     timer: &Ticktimer,
-    iface: &mut Interface::<NetPhy>,
+    _iface: &mut Interface,
+    sockets: &mut SocketSet,
     our_sockets: &Vec<Option<SocketHandle>>,
     tcp_peek_waiting: &mut Vec<Option<WaitingSocket>>,
     nonblocking: bool,
@@ -255,7 +256,7 @@ pub(crate) fn std_tcp_peek(
         }
     };
 
-    let socket = iface.get_socket::<TcpSocket>(*handle);
+    let socket = sockets.get_mut::<tcp::Socket>(*handle);
     if socket.can_recv() {
         log::debug!("peeking data right away");
         let buflen = if let Some(valid) = body.valid {
@@ -263,7 +264,7 @@ pub(crate) fn std_tcp_peek(
         } else {
             0
         };
-        match socket.peek_slice(&mut body.buf.as_slice_mut()[..buflen]) {
+        match socket.peek_slice(unsafe { &mut body.buf.as_slice_mut()[..buflen] }) {
             Ok(bytes) => {
                 // it's actually valid to receive 0 bytes, but the encoding of this field doesn't allow it.
                 // so, `None` is abused to represent the value of "0" bytes, which is what is naturally returned

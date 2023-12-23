@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use crate::{DynError, app_manifest::generate_app_menus, MemorySpec};
+use crate::{DynError, app_manifest::generate_app_menus};
 
 #[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
@@ -130,6 +130,8 @@ pub(crate) struct Builder {
     locale_stash: String,
     /// when set to true, hosted mode builds but does not run
     dry_run: bool,
+    /// when set to true, user selected packages are compiled but no image is created
+    no_image: bool,
 }
 
 impl Builder {
@@ -154,6 +156,7 @@ impl Builder {
             locale_override: None,
             locale_stash: String::new(),
             dry_run: false,
+	    no_image: false,
         }
     }
     /// Specify an alternate loader key, as a String that can encode a file name
@@ -237,12 +240,40 @@ impl Builder {
         self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
         self
     }
+    pub fn target_precursor_no_image<'a>(&'a mut self, soc_version: &str) -> &'a mut Builder {
+        self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.stream = BuildStream::Release;
+        self.utra_target = format!("precursor-{}", soc_version).to_string();
+        self.run_svd2repl = false;
+	self.no_image = true;
+        self
+    }
 
     /// Configure for ARM targets
     pub fn target_arm(&mut self) -> &mut Builder {
         self.target = Some(crate::TARGET_TRIPLE_ARM.to_string());
         self.stream = BuildStream::Debug;
         self.utra_target = "atsama5d27".to_string();
+        self.run_svd2repl = false;
+        self.loader = CrateSpec::Local("loader".to_string(), false);
+        self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
+        self
+    }
+
+    /// Configure various Cramium targets
+    pub fn target_cramium_fpga<'a>(&'a mut self) -> &'a mut Builder {
+        self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.stream = BuildStream::Release;
+        self.utra_target = "cramium-fpga".to_string();
+        self.run_svd2repl = false;
+        self.loader = CrateSpec::Local("loader".to_string(), false);
+        self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
+        self
+    }
+    pub fn target_cramium_soc<'a>(&'a mut self) -> &'a mut Builder {
+        self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.stream = BuildStream::Release;
+        self.utra_target = "cramium-soc".to_string();
         self.run_svd2repl = false;
         self.loader = CrateSpec::Local("loader".to_string(), false);
         self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
@@ -336,6 +367,7 @@ impl Builder {
         // the stream is specified separately here because the loader is special-case always release
         stream: BuildStream,
         extra_args: &Vec::<String>,
+        no_default_features: bool,
     ) -> Result<Vec::<String>, DynError> {
         // list of build artifacts, as full paths specific to the host OS
         let mut artifacts = Vec::<String>::new();
@@ -398,6 +430,9 @@ impl Builder {
                 local_args.push(pkg);
                 artifacts.push(format!("{}{}", &output_root, pkg));
             }
+            if no_default_features {
+                local_args.push("--no-default-features");
+            }
             if features.len() > 0 {
                 for feature in features {
                     local_args.push("--features");
@@ -422,6 +457,9 @@ impl Builder {
         }
         if remote_pkgs.len() > 0 {
             // remote packages are installed one at a time
+            if no_default_features {
+                local_args.push("--no-default-features");
+            }
             if features.len() > 0 {
                 for feature in features {
                     remote_args.push("--features");
@@ -528,6 +566,22 @@ impl Builder {
             self.kernel_features.push("atsama5d27".into());
             self.loader_features.push("atsama5d27".into());
             Some(crate::TARGET_TRIPLE_ARM)
+        } else if self.utra_target.contains("cramium-fpga") {
+            self.features.push("cramium-fpga".into());
+            self.features.push(format!("utralib/{}", &self.utra_target));
+            self.kernel_features.push("cramium-fpga".into());
+            self.kernel_features.push(format!("utralib/{}", &self.utra_target));
+            self.loader_features.push("cramium-fpga".into());
+            self.loader_features.push(format!("utralib/{}", &self.utra_target));
+            Some(crate::TARGET_TRIPLE_RISCV32)
+        } else if self.utra_target.contains("cramium-soc") {
+            self.features.push("cramium-soc".into());
+            self.features.push(format!("utralib/{}", &self.utra_target));
+            self.kernel_features.push("cramium-soc".into());
+            self.kernel_features.push(format!("utralib/{}", &self.utra_target));
+            self.loader_features.push("cramium-soc".into());
+            self.loader_features.push(format!("utralib/{}", &self.utra_target));
+            Some(crate::TARGET_TRIPLE_RISCV32)
         } else {
             return Err("Target unknown: please check your UTRA target".into());
         };
@@ -551,10 +605,16 @@ impl Builder {
             &target,
             self.stream,
             &vec![],
+            false
         )?;
 
-        // ------ either create an image, or launch hosted mode ------
-        if self.target.is_none() { // hosted mode doesn't specify a cross-compilation target!
+        // ------ either stop here, create an image, or launch hosted mode ------
+        if self.no_image {
+	    println!("The following apps/services were compiled:");
+	    for path in services_path {
+		println!("{}", path);
+	    }
+	} else if self.target.is_none() { // hosted mode doesn't specify a cross-compilation target!
             // throw a warning if prebuilts are specified for hosted mode
             for item in [&self.services[..], &self.apps[..]].concat() {
                 match item {
@@ -606,6 +666,7 @@ impl Builder {
                     &target,
                     self.stream,
                     &vec![],
+                    false,
                 )?;
                 println!("Dry run requested: only building and not running");
             }
@@ -621,6 +682,7 @@ impl Builder {
                 &target,
                 self.stream,
                 &kernel_extra,
+                false,
             )?;
 
             // ------ build the loader ------
@@ -645,6 +707,7 @@ impl Builder {
                 &target,
                 BuildStream::Release, // loader doesn't fit if you build with Debug
                 &loader_extra,
+                true, // loader builds without any default features
             )?;
             // restore the LTO settings
             if let Some(existing) = existing_lto {
@@ -674,8 +737,12 @@ impl Builder {
             let mut svd_spec_file = OpenOptions::new()
                 .read(true)
                 .open(&svd_spec_path)?;
-            let mut svd_path = String::new();
-            svd_spec_file.read_to_string(&mut svd_path)?;
+            let mut svd_path_str = String::new();
+            svd_spec_file.read_to_string(&mut svd_path_str)?;
+            let mut svd_paths = Vec::new();
+            for line in svd_path_str.lines() {
+                svd_paths.push(line.to_owned());
+            }
 
             // ---------- install any pre-built packages ----------
             services_path.append(&mut self.fetch_prebuilds()?);
@@ -687,7 +754,7 @@ impl Builder {
                 &kernel_path[0],
                 &inie,
                 &inif,
-                MemorySpec::SvdFile(svd_path)
+                svd_paths,
             )?;
             println!();
             println!(
@@ -780,7 +847,7 @@ impl Builder {
         kernel: &String,
         init: &[String],
         inif: &[String],
-        memory_spec: MemorySpec,
+        memory_spec: Vec::<String>,
     ) -> Result<PathBuf, DynError> {
         let stream = self.stream.to_str();
         let mut args = vec!["run", "--package", "tools", "--bin", "create-image", "--"];
@@ -805,10 +872,15 @@ impl Builder {
             args.push(i);
         }
 
-        match memory_spec {
-            MemorySpec::SvdFile(ref s) => {
-                args.push("--svd");
-                args.push(s);
+        if memory_spec.len() == 1 {
+            args.push("--svd");
+            args.push(&memory_spec[0])
+        } else {
+            args.push("--svd");
+            args.push(&memory_spec[0]);
+            for spec in memory_spec[1..].iter() {
+                args.push("--extra-svd");
+                args.push(&spec);
             }
         }
 
@@ -872,7 +944,7 @@ impl Builder {
             { // stash the existing locale
                 let mut locale_file = OpenOptions::new()
                     .read(true)
-                    .open("xous-rs/src/locale.rs")
+                    .open("locales/src/locale.rs")
                     .expect("Can't open locale file for reading");
                 locale_file.read_to_string(&mut self.locale_stash).unwrap();
             }
@@ -882,7 +954,7 @@ impl Builder {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open("xous-rs/src/locale.rs")
+                .open("locales/src/locale.rs")
                 .expect("Can't open locale for modification");
             write!(
                 locale_override,
@@ -899,7 +971,7 @@ impl Builder {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open("xous-rs/src/locale.rs")
+                .open("locales/src/locale.rs")
                 .expect("Can't open locale for modification");
             write!(
                 locale_restore,

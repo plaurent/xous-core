@@ -8,7 +8,6 @@ use num_traits::{ToPrimitive, FromPrimitive};
 
 use log::{error, info, trace};
 
-use com_rs_ref as com_rs;
 use com_rs::*;
 use com_rs::serdes::{STR_32_WORDS, STR_64_WORDS, StringSer, Ipv4Conf};
 
@@ -40,7 +39,6 @@ mod implementation {
     use crate::api::BattStats;
     use crate::return_battstats;
     use crate::WorkRequest;
-    use com_rs_ref as com_rs;
     use com_rs::*;
     use log::error;
     use utralib::generated::*;
@@ -76,28 +74,29 @@ mod implementation {
 
             let ticktimer = ticktimer_server::Ticktimer::new().expect("Couldn't connect to Ticktimer");
 
-            let mut xc = XousCom {
+            XousCom {
                 csr: CSR::new(csr.as_mut_ptr() as *mut u32),
                 susres: RegManager::new(csr.as_mut_ptr() as *mut u32),
                 ticktimer,
                 workqueue: Vec::new(),
                 busy: false,
                 stby_current: None,
-            };
+            }
+        }
 
+        pub fn init(&mut self) {
             xous::claim_interrupt(
                 utra::com::COM_IRQ,
                 handle_irq,
-                (&mut xc) as *mut XousCom as *mut usize,
+                self as *mut XousCom as *mut usize,
             )
             .expect("couldn't claim irq");
 
-            xc.susres.push(RegOrField::Reg(utra::com::CONTROL), None);
-            xc.susres.push_fixed_value(RegOrField::Reg(utra::com::EV_PENDING), 0xFFFF_FFFF);
-            xc.susres.push(RegOrField::Reg(utra::com::EV_ENABLE), None);
-
-            xc
+            self.susres.push(RegOrField::Reg(utra::com::CONTROL), None);
+            self.susres.push_fixed_value(RegOrField::Reg(utra::com::EV_PENDING), 0xFFFF_FFFF);
+            self.susres.push(RegOrField::Reg(utra::com::EV_ENABLE), None);
         }
+
         pub fn suspend(&mut self) {
             self.susres.suspend();
             self.csr.wo(utra::com::EV_ENABLE, 0);
@@ -253,7 +252,6 @@ mod implementation {
     use crate::api::BattStats;
     use crate::return_battstats;
     use crate::WorkRequest;
-    use com_rs_ref as com_rs;
     use com_rs::*;
     use log::error;
 
@@ -269,6 +267,7 @@ mod implementation {
                 busy: false,
             }
         }
+        pub fn init(&mut self) {}
         pub fn suspend(&self) {}
         pub fn resume(&self) {}
 
@@ -349,7 +348,8 @@ fn main() -> ! {
     trace!("registered with NS -- {:?}", com_sid);
 
     // Create a new com object
-    let mut com = XousCom::new();
+    let mut com = Box::new(XousCom::new());
+    com.init();
     let ticktimer = ticktimer_server::Ticktimer::new().unwrap();
 
     #[cfg(not(any(windows, unix)))] // avoid errors in hosted mode

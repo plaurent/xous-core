@@ -1,4 +1,6 @@
-mod generate;
+// SPDX-FileCopyrightText: 2020 Sean Cross <sean@xobs.io>
+// SPDX-FileCopyrightText: 2020 bunnie <bunnie@kosagi.com>
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().count() != 3 {
@@ -9,8 +11,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generated_filename = std::env::args().nth(2).ok_or("Must specify destination utralib filename")?;
 
     let mut dest_file = std::fs::File::create(generated_filename).expect("couldn't open dest file");
+    let src_file = std::fs::File::open(svd_filename).expect("couldn't open source file");
 
-    generate::generate(svd_filename, &mut dest_file)?;
+    svd2utra::generate(vec![src_file], &mut dest_file)?;
 
     Ok(())
 }

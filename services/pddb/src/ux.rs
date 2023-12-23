@@ -78,9 +78,9 @@ pub(crate) fn password_ux_manager(
         Modal::new(
             gam::PDDB_MODAL_NAME,
             ActionType::TextEntry(password_action.clone()),
-            Some(t!("pddb.password", xous::LANG)),
+            Some(t!("pddb.password", locales::LANG)),
             None,
-            GlyphStyle::Regular,
+            gam::SYSTEM_STYLE,
             8
         );
     pddb_modal.spawn_helper(ux_sid, pddb_modal.sid,
@@ -104,8 +104,8 @@ pub(crate) fn password_ux_manager(
                 };
                 pddb_modal.modify(
                     Some(ActionType::TextEntry(password_action.clone())),
-                    Some(t!("pddb.password", xous::LANG)), false,
-                    Some(format!("{}'{}'", t!("pddb.password_for", xous::LANG), db_name.as_str().unwrap()).as_str()), false, None
+                    Some(t!("pddb.password", locales::LANG)), false,
+                    Some(format!("{}'{}'", t!("pddb.password_for", locales::LANG), db_name.as_str().unwrap()).as_str()), false, None
                 );
                 log::info!("{}PDDB.REQPW,{},{}", xous::BOOKEND_START, db_name.as_str().unwrap(), xous::BOOKEND_END);
                 pddb_modal.activate();

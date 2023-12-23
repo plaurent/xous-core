@@ -321,9 +321,10 @@ pub fn start_time_server() {
                             start_rtc_secs as i64 * 1000i64
                             + (tt.elapsed_ms() - start_tt_ms) as i64;
                         log::debug!("hw only UTC ms {}", t);
+                        // NOTE: endian swap for compatibility with `std`
                         xous::return_scalar2(msg.sender,
-                            (((t as u64) >> 32) & 0xFFFF_FFFF) as usize,
                             (t as u64 & 0xFFFF_FFFF) as usize,
+                            (((t as u64) >> 32) & 0xFFFF_FFFF) as usize,
                         ).expect("couldn't respond to GetUtcTimeMs");
                     }),
                     Some(TimeOp::GetLocalTimeMs) => xous::msg_blocking_scalar_unpack!(msg, _, _, _, _, {
@@ -398,9 +399,10 @@ pub fn start_time_server() {
                             utc_offset_ms = 0;
                         }
                         log::trace!("utc ms {}", t);
+                        // NOTE: endian swap for compatibility with `std`
                         xous::return_scalar2(msg.sender,
-                            (((t as u64) >> 32) & 0xFFFF_FFFF) as usize,
                             (t as u64 & 0xFFFF_FFFF) as usize,
+                            (((t as u64) >> 32) & 0xFFFF_FFFF) as usize,
                         ).expect("couldn't respond to GetUtcTimeMs");
                     }),
                     Some(TimeOp::GetLocalTimeMs) => xous::msg_blocking_scalar_unpack!(msg, _, _, _, _, {
@@ -456,7 +458,7 @@ pub fn start_time_server() {
                         }
                     }),
                     Some(TimeOp::WallClockTimeInit) => xous::msg_blocking_scalar_unpack!(msg, _, _, _, _, {
-                        if utc_offset_ms == 0 || tz_offset_ms == 0 {
+                        if utc_offset_ms == 0 {
                             xous::return_scalar(msg.sender, 0).unwrap();
                         } else {
                             xous::return_scalar(msg.sender, 1).unwrap();
@@ -568,7 +570,7 @@ pub (crate) fn start_time_ux() {
                 match FromPrimitive::from_usize(msg.body.id()) {
                     Some(crate::TimeUxOp::SetTime) => xous::msg_scalar_unpack!(msg, _, _, _, _, {
                         if !pddb_poller.is_mounted_nonblocking() {
-                            modals.show_notification(t!("stats.please_mount", xous::LANG), None).expect("couldn't show notification");
+                            modals.show_notification(t!("stats.please_mount", locales::LANG), None).expect("couldn't show notification");
                             continue;
                         }
                         let mut tz_set = false;
@@ -593,7 +595,7 @@ pub (crate) fn start_time_ux() {
                         // a key exists, but nothing was written to it (length of key was 0 or inappropriate)
                         if !tz_set {
                             log::info!("{}RTC.TZ,{}", xous::BOOKEND_START, xous::BOOKEND_END);
-                            let tz_str = modals.alert_builder(t!("rtc.timezone", xous::LANG))
+                            let tz_str = modals.alert_builder(t!("rtc.timezone", locales::LANG))
                                 .field(None, Some(tz_ux_validator))
                                 .build()
                                 .expect("couldn't get timezone")
@@ -613,12 +615,12 @@ pub (crate) fn start_time_ux() {
 
                         // see if we want to try to use NTP or not
                         log::info!("{}RTC.NTP,{}", xous::BOOKEND_START, xous::BOOKEND_END);
-                        modals.add_list_item(t!("pddb.yes", xous::LANG)).expect("couldn't build radio item list");
-                        modals.add_list_item(t!("pddb.no", xous::LANG)).expect("couldn't build radio item list");
+                        modals.add_list_item(t!("pddb.yes", locales::LANG)).expect("couldn't build radio item list");
+                        modals.add_list_item(t!("pddb.no", locales::LANG)).expect("couldn't build radio item list");
                         let mut try_ntp = true;
-                        match modals.get_radiobutton(t!("rtc.try_ntp", xous::LANG)) {
+                        match modals.get_radiobutton(t!("rtc.try_ntp", locales::LANG)) {
                             Ok(selection) => {
-                                if selection == t!("pddb.no", xous::LANG) {
+                                if selection == t!("pddb.no", locales::LANG) {
                                     try_ntp = false;
                                 }
                             },
@@ -654,7 +656,7 @@ pub (crate) fn start_time_ux() {
                                 Err(err) => {
                                     log::info!("Err: {:?}", err);
                                     log::info!("{}RTC.NTPFAIL,{}", xous::BOOKEND_START, xous::BOOKEND_END);
-                                    modals.show_notification(t!("rtc.ntp_fail", xous::LANG), None).expect("couldn't show NTP error");
+                                    modals.show_notification(t!("rtc.ntp_fail", locales::LANG), None).expect("couldn't show NTP error");
                                 },
                             }
                         }
@@ -666,13 +668,13 @@ pub (crate) fn start_time_ux() {
                         let mut days: u8 = 0;
                         let mut years: u8 = 0;
 
-                        let date = modals.alert_builder(t!("rtc.set_time_modal", xous::LANG))
-                            .field(Some(String::from(t!("rtc.month", xous::LANG))), Some(rtc_ux_validate_month))
-                            .field(Some(String::from(t!("rtc.day", xous::LANG))), Some(rtc_ux_validate_day))
-                            .field(Some(String::from(t!("rtc.year", xous::LANG))), Some(rtc_ux_validate_year))
-                            .field(Some(String::from(t!("rtc.hour", xous::LANG))), Some(rtc_ux_validate_hour))
-                            .field(Some(String::from(t!("rtc.minute", xous::LANG))), Some(rtc_ux_validate_minute))
-                            .field(Some(String::from(t!("rtc.seconds", xous::LANG))), Some(rtc_ux_validate_seconds))
+                        let date = modals.alert_builder(t!("rtc.set_time_modal", locales::LANG))
+                            .field(Some(String::from(t!("rtc.month", locales::LANG))), Some(rtc_ux_validate_month))
+                            .field(Some(String::from(t!("rtc.day", locales::LANG))), Some(rtc_ux_validate_day))
+                            .field(Some(String::from(t!("rtc.year", locales::LANG))), Some(rtc_ux_validate_year))
+                            .field(Some(String::from(t!("rtc.hour", locales::LANG))), Some(rtc_ux_validate_hour))
+                            .field(Some(String::from(t!("rtc.minute", locales::LANG))), Some(rtc_ux_validate_minute))
+                            .field(Some(String::from(t!("rtc.seconds", locales::LANG))), Some(rtc_ux_validate_seconds))
                             .build()
                             .expect("cannot get date from user");
 
@@ -703,11 +705,11 @@ pub (crate) fn start_time_ux() {
                     }),
                     Some(crate::TimeUxOp::SetTimeZone) => xous::msg_scalar_unpack!(msg, _, _, _, _, {
                         if !pddb_poller.is_mounted_nonblocking() {
-                            modals.show_notification(t!("stats.please_mount", xous::LANG), None).expect("couldn't show notification");
+                            modals.show_notification(t!("stats.please_mount", locales::LANG), None).expect("couldn't show notification");
                             continue;
                         }
 
-                        let tz_str = modals.alert_builder(t!("rtc.timezone", xous::LANG))
+                        let tz_str = modals.alert_builder(t!("rtc.timezone", locales::LANG))
                             .field(None, Some(tz_ux_validator))
                             .build()
                             .expect("couldn't get timezone")
@@ -755,9 +757,9 @@ fn tz_ux_validator(input: TextEntryPayload) -> Option<ValidatorErr> {
 
     match simple_kilofloat_parse(text_str) {
         Ok(input) => if input < -12_000 || input > 14_000 {
-            return Some(ValidatorErr::from_str(t!("rtc.range_err", xous::LANG)));
+            return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
         },
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", xous::LANG))),
+        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
     }
     None
 }
@@ -767,11 +769,11 @@ fn rtc_ux_validate_month(input: TextEntryPayload) -> Option<ValidatorErr> {
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", xous::LANG))),
+        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input < 1 || input > 12 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", xous::LANG)))
+        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)))
     }
 
     None
@@ -782,11 +784,11 @@ fn rtc_ux_validate_day(input: TextEntryPayload) -> Option<ValidatorErr> {
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", xous::LANG))),
+        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input < 1 || input > 31 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", xous::LANG)))
+        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)))
     }
 
     None
@@ -797,11 +799,11 @@ fn rtc_ux_validate_year(input: TextEntryPayload) -> Option<ValidatorErr> {
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", xous::LANG))),
+        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 99 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", xous::LANG)))
+        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)))
     }
 
     None
@@ -812,11 +814,11 @@ fn rtc_ux_validate_hour(input: TextEntryPayload) -> Option<ValidatorErr> {
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", xous::LANG))),
+        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 23 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", xous::LANG)))
+        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)))
     }
 
     None
@@ -827,11 +829,11 @@ fn rtc_ux_validate_minute(input: TextEntryPayload) -> Option<ValidatorErr> {
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", xous::LANG))),
+        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 59 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", xous::LANG)))
+        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)))
     }
 
     None
@@ -842,11 +844,11 @@ fn rtc_ux_validate_seconds(input: TextEntryPayload) -> Option<ValidatorErr> {
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", xous::LANG))),
+        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 59 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", xous::LANG)))
+        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)))
     }
 
     None

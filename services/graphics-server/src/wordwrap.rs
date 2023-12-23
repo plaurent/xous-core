@@ -16,7 +16,7 @@ use crate::backend::{FB_SIZE, FB_WIDTH_PIXELS, FB_LINES};
 /// defined by a `bounds` record.
 ///
 /// The exact GlyphSprite chosen is picked based on a hierarchy that starts with a hint based on
-/// `xous::LANG`, then rules based on the `base_style: GlyphStyle` field, which allows for all the text within
+/// `locales::LANG`, then rules based on the `base_style: GlyphStyle` field, which allows for all the text within
 /// a given string to be eg. small, regular, monospace, bold (mixing of different styles is not yet supported,
 /// but could be in the future if we add some sort of markup parsing to the text stream).
 ///
@@ -93,13 +93,15 @@ pub(crate) struct ComposedType {
     words: Vec::<TypesetWord>,
     bounding_box: ClipRect,
     cursor: Cursor,
+    overflow: bool,
 }
 impl ComposedType {
-    pub fn new(words: Vec::<TypesetWord>, bounds: ClipRect, cursor: Cursor) -> Self {
+    pub fn new(words: Vec::<TypesetWord>, bounds: ClipRect, cursor: Cursor, overflow: bool) -> Self {
         ComposedType {
             words,
             bounding_box: bounds,
             cursor,
+            overflow,
         }
     }
     pub fn bb_width(&self) -> i16 {
@@ -141,7 +143,15 @@ impl ComposedType {
                         clip_rect.tl().x, clip_rect.tl().y,
                         clip_rect.br().x, clip_rect.br().y
                     );
-                    if !glyph.double {
+                    if glyph.large {
+                        blitstr2::xor_glyph_large(
+                            frbuf,
+                            &Point::new(maybe_x, maybe_y),
+                            *glyph,
+                            glyph.invert ^ invert,
+                            cr
+                        );
+                    } else if !glyph.double {
                         blitstr2::xor_glyph(
                             frbuf,
                             &Point::new(maybe_x, maybe_y),
@@ -176,6 +186,9 @@ impl ComposedType {
     }
     pub fn final_cursor(&self) -> Cursor {
         self.cursor
+    }
+    pub fn final_overflow(&self) -> bool {
+        self.overflow
     }
 }
 /// Typesetter takes a string and attempts to lay it out within a region defined by
@@ -261,13 +274,14 @@ impl Typesetter {
         // going out of scope at the end of the call.
         let mut composition = Vec::<TypesetWord>::new();
 
-        if self.bb.max.x - self.bb.min.y < glyph_to_height_hint(GlyphStyle::Regular) as i16 {
+        if self.bb.max.x - self.bb.min.x < glyph_to_height_hint(GlyphStyle::Regular) as i16 {
             // we flag this because the typesetter algorithm may never converge if it can't set any characters
             // because the region is just too narrow.
             log::error!("Words cannot be typset because the width of the typset region is too narrow.");
             return ComposedType::new(composition,
                 ClipRect::new(self.bb.min.x, self.bb.min.y, self.bb.min.x, self.bb.min.y),
-                self.cursor
+                self.cursor,
+                true,
             );
         }
         // algorithm:
@@ -422,7 +436,8 @@ impl Typesetter {
                 self.bb.min.x, self.bb.min.y,
                 self.max_width as i16, self.cursor.pt.y + self.last_line_height as i16,
             ),
-            self.cursor
+            self.cursor,
+            self.overflow,
         );
         // cleanup any state based on the overflow strategy
         match strat {
@@ -565,7 +580,7 @@ fn tsw_debug(tsw: &TypesetWord) {
 
 /// Find glyph for char using latin regular, emoji, ja, zh, and kr font data
 pub fn style_glyph(ch: char, base_style: &GlyphStyle) -> GlyphSprite {
-    match xous::LANG {
+    match locales::LANG {
         "zh" => {
             style_wrapper!(zh_rules, base_style, ch)
         }

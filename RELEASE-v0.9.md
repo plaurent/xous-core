@@ -375,6 +375,62 @@ perform the Xous firmware upgrade. This requires running manual update commands,
 - Add USB serial support
   - console logs can now be viewed via USB serial with the shellchat command `usb console` (`usb noconsole` to turn off). You will need a terminal client that is capable of CRLF translations.
   - TRNG can be set to emit raw binary data over USB serial with `usb trng` (`usb notrng` to turn off). This should be compatible with existing methods to extract randomness from USB dongles such as the OneRNG (looking for an existing HW RNG dongle user to test and confirm compatibility with their existing system!).
+- "Lock device" now sleeps after reboot (thanks to patches by @gsora)
+- Hosted mode now runs more smoothly, with less lag (thanks @yvt for the patch!)
+
+## New in 0.9.14
+- `gdb-stub` on hardware is now quite reliable, thanks to some performance improvements by @xobs. Just remember that single stepping does not work on XIP images (and by default now, apps are compiled as `xip`)
+- "Notes" fields in `vault` app that start with the keyword 'bip39' will trigger a BIP39 password entry box (if the password field is blank), or BIP39 rendering of the hex data. Password generation prompt also uses the password 'bip39' to trigger the BIP39 generation sequence. It does mean that you can't use just 'bip39' as a regular password but...
+- Add multi-line text editing to `vault` password fields, as well as left/right cursor movement to call up an insertion point that can be used to insert and delete characters in the middle of a field.
+- Extra characters added to arrow keys and Fn keys from MacOS hosted mode cleaned up (thanks @wizzard0)
+- Device will not try to suspend on lock if it is plugged in
+- Autosleep timer option added. By default it is 0 (disabled). It is adjustable in increments of minutes. Note that if you try to lock the device while plugged in, and then unplug it without unlocking it, the system will stay "awake" because it can't consult the PDDB to know what the autosleep setting is.
+- Autosleep can also optionally lock the device on sleep. However, by default it just sleeps.
+- Add "lefty mode" option for `vault` (flips deny key from F1 to F4)
+- Add "autotype delay" setting. The default is 30ms, but some computers can't handle key strokes that fast (password characters will be dropped). This allows users to tune this down, to a maximum of 500ms (at which point you may actually get multiple key entries depending on your hold-to-repeat delay). Probably a setting of 80ms should be fine to deal with deeply virtualized USB stacks running on slower computers.
+- Fix #325, u2f authentication requests now sunset even when the host stops polling
+- #388 via @eupn adds physical address resolution for a remote virtual memory process, allowing for coordination with remote DMA initiators. Does introduce some potential security problems, so gated behind the `v2p` flag.
+- Fix #339 by adjusting the shellchat API call to match what is done in status bar
+- Improved wifi scanning (fixes #336) - scans are now sorted by strength; old APs are retired; and the UX will pause while the scan occurs. Repeated scans still require going through the entire menu tree again; this is because modal radio-box lists aren't dynamically updateable.
+- Improve performance of filtering operations in `vault` by ~100x by refactoring the item cache to work on `Vec` that is repeatedly sorted, instead of on a `BTreeMap` that is referenced. Turns out that sorting is a far cheaper operation than reference-counted shared references, or copying data to the heap (to avoid the shared reference). See PR#389 for details.
+- @jeandudey contributed #390 and #391 which improve interoperability of svd2utra across build hosts and modularizes the language to the locales crate. Unused assembly code was also stripped out of xous-rs.
+- @samblenny contributed a Tall font. NOTE: if you are doing kernel development, you *must* update the loader with this change, otherwise some fonts will not render correctly.
+- The rendering subsystem has been updated to handle this and the default system font is now Tall, which should improve readability without sacrificing user prompts (i.e. dialog boxes should still fit on the screen). Please create issues for dialog boxes that are broken by this change. Also, a deliberate choice was made to leave selection lists in the original more dense font, as selection lists benefit from vertical density.
+- A proper TLS library for incorporation into apps that require it has been created by @nhoj. You can find it in `libs/tls`.
+- Issue #341 closed (support open wifi networks) - requires EC update.
+- Rust 1.71.0 support - @xobs discovered that Rust 1.71.0 now shifts the address around of hardware management structures such that when we bind them to interrupt handlers, the final address of the interrupt handler is different from the address we see inside the `new()` function. It's actually allowed to do this. @xobs has created the "deferred-init + Box" pattern to harden against this. Deferred-init refers to binding the address of the hardware structure to the interrupt handler *after* `new()` has returned. This ensures that at least all the optimization that may happen inside `new()` are finalized. Additionally, wrapping the result of `new()` inside `Box()` ensures that the resulting structure is put on the heap. Because `Box` also implements `Pin`, the compiler won't muck with the address any further and should prevent future incompatibilities with Rust. The only place this pattern could not be applied is in the USB stack, because the USB crate we use expects to have an un-Box'd hardware management structure. However, deferred-init alone seems to be good enough, at least for now, to allow this to work.
+- Fix (hopefully for real this time?) a bug in the "flush cache" instruction for Vex that affected specifically virtual memory configurations like ours. This will require a firmware update.
+- More cramium SoC target integration and libraries; support multi-SVD targets in `utralib`
+- Add menu option in `vault` to type usernames (in addition to passwords)
+- Fix minor issue in precursorupdater where `--config` argument would not quit and run an update instead
+- Fix issue in `ProcessStartup` where `repr(C)` was missing, thanks to @vihaanjim for finding that subtle bug!
+
+## New in v0.9.15
+- refresh item cache after leaving vault host readout mode
+- Regressions have bee found in Rust 1.72. We suspect the llvm back-end for RV32 is emitting invalid code, see issue #416 and #417 for more details. For now, the optimization level has been set to `s` as a work-around.
+- Network stack is updated to work with the `main` branch of `smoltcp`. This is not intended as a release configuration -- this note is here so that when a release is snapshotted out, we remember to pin to a particular commit (or ideally an official release, if one happens in time).
+  - This fixes a number of long-standing issues, including #210 and #407.
+  - Fairly major overhaul to the network stack. We now use mspc primitives to implement the wait/poll loop, which should make the net stack much more efficient and robust.
+- mtxchat project kicked off by @nohj - see https://github.com/orgs/betrusted-io/projects/3/views/1 for project tracker
+- mutex & condvar refactor in ticktimer thanks to @xobs - improves performance and stability
+- App loader example code added thanks to @vihaanjim
+- Add "busy spinner" primitive to text boxes to the GAM. This allows UIs to show that something is happening without having to explicitly implement that.
+- sigchat skeleton added thanks to @nhoj
+- usbd-human-interface-device bumped to latest in preparation for a fork
+- Fix #446 - add support for numeric-only passwords in `vault`
+- Fork usbd-human-interface-device to xous-usb-hid
+- Harden EC against power glitches during updates (requires EC update - do not plug or unplug USB during an update until this patch is finished updating)
+- Some housekeeping on the Xous wiki. Much more work is needed.
+- Delay PDDB mount dialogs until all update checks are completed. This is done with a call named `is_ec_ready` and `set_ec_ready` in the `llio`. Nominally, it can be set/unset to indicate if the EC is going into an update state. Initially it is unset, and it is set by the status loop once all the update activities are completed. But it could be set later on by a routine that manually initiates EC updates (although there is no sanctioned way to do that at the moment).
+- Fix validator to accept `tz_offset` == 0 as valid.
+- Rust 1.74 rolled out. Xous now has much more native `std` support in mainline Rust, thanks to a huge effort by @xobs
+  - Fix regressions in libstd `lend_impl` and PDDB `WriteKeyStd`
+  - Fix bug in `Seek`
+- Fix issue with `mpsc::channel` implementation that would lead to threads hanging under a race condition where `unpark()` is called in the middle of a `park_timeout()` call
+- Cleanup areas where `net` could block on a hung `connection_manager`
+- Stop running CI on `betrusted-soc` commits: there have been no changes to the design, all of the recent commits are fixing breaking changes in CI tooling. We should not force users to update their `soc` for a design that hasn't actually changed. Thus, users may note that the `soc` commit is not parallel with HEAD on `main`. CI & release staging will from now on be manually triggered only when an actual design change is made.
+- `smoltcp` is pinned to a branch. A lot of significant fixes have occurred since their last release in June, and we'd like to get this baked into 0.9.15. It's unclear when they will tag out a release, so this is a temporary fix to allow us to move ahead. Will revert to an officially blessed release once it's available!
+- fix #227 (make wlan status sends fail gracefully)
 
 ## Roadmap
 - Lots of testing and bug fixes

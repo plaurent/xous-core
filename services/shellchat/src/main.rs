@@ -36,7 +36,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use gam::UxRegistration;
 use graphics_server::{Gid, Point, Rectangle, TextBounds, TextView, DrawStyle, PixelColor};
-use graphics_server::api::GlyphStyle;
 use xous::MessageEnvelope;
 use xous_ipc::Buffer;
 
@@ -53,6 +52,7 @@ mod oqc_test;
 #[cfg(feature="nettest")]
 mod nettests;
 
+#[cfg(target_os = "xous")] // only draw "please wait" when not in hosted mode
 use locales::t;
 #[cfg(feature="tts")]
 use tts_frontend::*;
@@ -232,7 +232,7 @@ impl Repl{
             if let Some(res) = self.env.dispatch(Some(&mut xous_ipc::String::<1024>::from_str(&local)), None).expect("command dispatch failed") {
                 #[cfg(feature="tts")]
                 {
-                    let mut output = t!("shellchat.output-tts", xous::LANG).to_string();
+                    let mut output = t!("shellchat.output-tts", locales::LANG).to_string();
                     output.push_str(res.as_str().unwrap_or("UTF-8 error"));
                     self.tts.tts_simple(&output).unwrap();
                 }
@@ -249,7 +249,7 @@ impl Repl{
             if let Some(res) = self.env.dispatch(None, Some(msg)).expect("callback failed") {
                 #[cfg(feature="tts")]
                 {
-                    let mut output = t!("shellchat.output-tts", xous::LANG).to_string();
+                    let mut output = t!("shellchat.output-tts", locales::LANG).to_string();
                     output.push_str(res.as_str().unwrap_or("UTF-8 error"));
                     self.tts.tts_simple(&output).unwrap();
                 }
@@ -289,11 +289,12 @@ impl Repl{
             }
         )).expect("can't clear content area");
     }
-    fn redraw(&mut self, init_done: bool) -> Result<(), xous::Error> {
+    fn redraw(&mut self, _init_done: bool) -> Result<(), xous::Error> {
         log::trace!("going into redraw");
         self.clear_area();
 
-        if !init_done {
+        #[cfg(target_os = "xous")] // only draw "please wait" if we're not in hosted mode
+        if !_init_done {
             let mut init_tv = TextView::new(
                 self.content,
                 TextBounds::CenteredTop(
@@ -303,9 +304,9 @@ impl Repl{
                     )
                 )
             );
-            init_tv.style = GlyphStyle::Bold;
+            init_tv.style = graphics_server::GlyphStyle::Bold;
             init_tv.draw_border = false;
-            write!(init_tv.text, "{}", t!("shellchat.bootwait", xous::LANG)).ok();
+            write!(init_tv.text, "{}", t!("shellchat.bootwait", locales::LANG)).ok();
             self.gam.post_textview(&mut init_tv).expect("couldn't render wait text");
             self.gam.redraw().expect("couldn't redraw screen");
         }
@@ -338,6 +339,7 @@ impl Repl{
             bubble_tv.clear_area = true;
             bubble_tv.rounded_border = Some(self.bubble_radius);
             bubble_tv.style = GlyphStyle::Large;
+            //bubble_tv.style = gam::SYSTEM_STYLE;
             bubble_tv.margin = self.bubble_margin;
             bubble_tv.ellipsis = false; bubble_tv.insertion = None;
             write!(bubble_tv.text, "{}", h.text.as_str()).expect("couldn't write history text to TextView");
@@ -445,7 +447,7 @@ fn wrapped_main() -> ! {
                 log::trace!("shell got input line: {}", s.as_str());
                 #[cfg(feature="tts")]
                 {
-                    let mut input = t!("shellchat.input-tts", xous::LANG).to_string();
+                    let mut input = t!("shellchat.input-tts", locales::LANG).to_string();
                     input.push_str(s.as_str());
                     tts.tts_simple(&input).unwrap();
                 }

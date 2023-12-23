@@ -52,8 +52,8 @@ pub const BASE_QUANTA_MS: u32 = 10;
 // where _|TT|_ and _|TE|_ are bookends around the data to be reported
 // <ident> is a single-word identifier that routes the data to a given parser
 // <data> is free-form data, which will be split at comma boundaries by the parser
-pub const BOOKEND_START: &'static str = "_|TT|_";
-pub const BOOKEND_END: &'static str = "_|TE|_";
+pub const BOOKEND_START: &str = "_|TT|_";
+pub const BOOKEND_END: &str = "_|TE|_";
 
 #[cfg(not(target_os = "xous"))]
 use core::sync::atomic::AtomicU64;
@@ -72,6 +72,9 @@ pub use exceptions::*;
 
 pub mod memoryflags;
 pub use memoryflags::*;
+
+pub mod memoryrange;
+pub use memoryrange::*;
 
 pub mod messages;
 pub use messages::*;
@@ -154,12 +157,6 @@ pub type TID = usize;
 
 /// Equivalent to a RISC-V Hart ID
 pub type CpuID = usize;
-
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub struct MemoryRange {
-    pub(crate) addr: MemoryAddress,
-    pub(crate) size: MemorySize,
-}
 
 pub fn pid_from_usize(src: usize) -> core::result::Result<PID, Error> {
     if src > u8::MAX as _ {
@@ -274,75 +271,6 @@ impl Error {
 pub struct Context {
     stack: StackPointer,
     pid: PID,
-}
-
-impl MemoryRange {
-    /// # Safety
-    ///
-    /// This allows for creating a `MemoryRange` from any arbitrary pointer,
-    /// so it is imperitive that this only be used to point to valid, page-aligned
-    /// ranges.
-    pub unsafe fn new(addr: usize, size: usize) -> core::result::Result<MemoryRange, Error> {
-        Ok(MemoryRange {
-            addr: MemoryAddress::new(addr).ok_or(Error::BadAddress)?,
-            size: MemorySize::new(size).ok_or(Error::BadAddress)?,
-        })
-    }
-
-    #[deprecated(since = "0.8.4", note = "Please use `new(addr, size)` instead")]
-    pub fn from_parts(addr: MemoryAddress, size: MemorySize) -> MemoryRange {
-        MemoryRange { addr, size }
-    }
-
-    pub fn len(&self) -> usize {
-        self.size.get()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.size.get() > 0
-    }
-
-    pub fn as_ptr(&self) -> *const u8 {
-        self.addr.get() as *const u8
-    }
-
-    pub fn as_mut_ptr(&self) -> *mut u8 {
-        self.addr.get() as *mut u8
-    }
-
-    /// Return this memory as a slice of values. The resulting slice
-    /// will cover the maximum number of elements given the size of `T`.
-    /// For example, if the allocation is 4096 bytes, then the resulting
-    /// `&[u8]` would have 4096 elements, `&[u16]` would have 2048, and
-    /// `&[u32]` would have 1024. Values are rounded down.
-    pub fn as_slice<T>(&self) -> &[T] {
-        // This is safe because the pointer and length are guaranteed to
-        // be valid, as long as the user hasn't already called `as_ptr()`
-        // and done something unsound with the resulting pointer.
-        unsafe {
-            core::slice::from_raw_parts(
-                self.as_ptr() as *const T,
-                self.len() / core::mem::size_of::<T>(),
-            )
-        }
-    }
-
-    /// Return this memory as a slice of mutable values. The resulting slice
-    /// will cover the maximum number of elements given the size of `T`.
-    /// For example, if the allocation is 4096 bytes, then the resulting
-    /// `&[u8]` would have 4096 elements, `&[u16]` would have 2048, and
-    /// `&[u32]` would have 1024. Values are rounded down.
-    pub fn as_slice_mut<T>(&mut self) -> &mut [T] {
-        // This is safe because the pointer and length are guaranteed to
-        // be valid, as long as the user hasn't already called `as_ptr()`
-        // and done something unsound with the resulting pointer.
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                self.as_mut_ptr() as *mut T,
-                self.len() / core::mem::size_of::<T>(),
-            )
-        }
-    }
 }
 
 /// Which memory region the operation should affect.
@@ -497,7 +425,7 @@ impl Result {
                     9, me_enc[0], me_enc[1], me_enc[2], me_enc[3], me_enc[4], me_enc[5], me_enc[6],
                 ]
             }
-            Result::ThreadID(ctx) => [10, *ctx as usize, 0, 0, 0, 0, 0, 0],
+            Result::ThreadID(ctx) => [10, *ctx, 0, 0, 0, 0, 0, 0],
             Result::ProcessID(pid) => [11, pid.get() as _, 0, 0, 0, 0, 0, 0],
             Result::Unimplemented => [21, 0, 0, 0, 0, 0, 0, 0],
             Result::BlockedProcess => [13, 0, 0, 0, 0, 0, 0, 0],

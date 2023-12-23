@@ -227,10 +227,10 @@ impl<'a> RootKeys {
             xous::MemoryFlags::R | xous::MemoryFlags::W,
         ).expect("couldn't map sensitive data page");
         // make sure the caches start out as zeros
-        for w in pass_cache.as_slice_mut::<u32>().iter_mut() {
+        for w in unsafe { pass_cache.as_slice_mut::<u32>().iter_mut() } {
             *w = 0;
         }
-        for w in sensitive_data.as_slice_mut::<u32>().iter_mut() {
+        for w in unsafe { sensitive_data.as_slice_mut::<u32>().iter_mut() } {
             *w = 0;
         }
 
@@ -282,19 +282,19 @@ impl<'a> RootKeys {
         keys
     }
     pub fn gateware(&self) -> &[u8] {
-        self.gateware_mr.as_slice::<u8>()
+        unsafe { self.gateware_mr.as_slice::<u8>() }
     }
     pub fn gateware_base(&self) -> u32 { self.gateware_base }
     pub fn staging(&self) -> &[u8] {
-        self.staging_mr.as_slice::<u8>()
+        unsafe { self.staging_mr.as_slice::<u8>() }
     }
     pub fn staging_base(&self) -> u32 { self.staging_base }
     pub fn loader_code(&self) -> &[u8] {
-        self.loader_code_mr.as_slice::<u8>()
+        unsafe { self.loader_code_mr.as_slice::<u8>() }
     }
     pub fn loader_base(&self) -> u32 { self.loader_code_base }
     pub fn kernel(&self) -> &[u8] {
-        self.kernel_mr.as_slice::<u8>()
+        unsafe { self.kernel_mr.as_slice::<u8>() }
     }
     pub fn kernel_base(&self) -> u32 { self.kernel_base }
 
@@ -634,13 +634,13 @@ impl<'a> RootKeys {
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
     pub fn purge_sensitive_data(&mut self) {
-        for d in self.sensitive_data.borrow_mut().as_slice_mut::<u32>().iter_mut() {
+        for d in unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>().iter_mut() } {
             *d = 0;
         }
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
     fn populate_sensitive_data(&mut self) {
-        for (addr, d) in self.sensitive_data.borrow_mut().as_slice_mut::<u32>().iter_mut().enumerate() {
+        for (addr, d) in unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>().iter_mut().enumerate() } {
             if addr > 255 {
                 break;
             }
@@ -664,13 +664,13 @@ impl<'a> RootKeys {
         // now encrypt the key, and store it into the sensitive_data for access later on by the patching routine
         if self.is_initialized() {
             for (dst, (key, pw)) in
-            self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize .. KeyRomLocs::FPGA_KEY as usize + 8].iter_mut().zip(
+            unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize .. KeyRomLocs::FPGA_KEY as usize + 8].iter_mut() }.zip(
             pcache.fpga_key.chunks(4).into_iter().zip(pcache.hashed_update_pw.chunks(4).into_iter())) {
                 *dst = u32::from_be_bytes(key[0..4].try_into().unwrap()) ^ u32::from_be_bytes(pw[0..4].try_into().unwrap());
             }
         } else {
             for (dst, key) in
-            self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize .. KeyRomLocs::FPGA_KEY as usize + 8].iter_mut().zip(
+            unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize .. KeyRomLocs::FPGA_KEY as usize + 8].iter_mut() }.zip(
             pcache.fpga_key.chunks(4).into_iter()) {
                 *dst = u32::from_be_bytes(key[0..4].try_into().unwrap());
             }
@@ -830,7 +830,7 @@ impl<'a> RootKeys {
     fn read_staged_key_256(&mut self, index: u8) -> [u8; 32] {
         let mut key: [u8; 32] = [0; 32];
         for (addr, word) in key.chunks_mut(4).into_iter().enumerate() {
-            let keyword = self.sensitive_data.borrow().as_slice::<u32>()[index as usize + addr];
+            let keyword = unsafe { self.sensitive_data.borrow().as_slice::<u32>()[index as usize + addr] };
             for (&byte, dst) in keyword.to_be_bytes().iter().zip(word.iter_mut()) {
                 *dst = byte;
             }
@@ -847,7 +847,7 @@ impl<'a> RootKeys {
             // we're not initialized, use the salt that should already be in the staging area
             let mut key: [u8; 16] = [0; 16];
             for (word, &keyword) in key.chunks_mut(4).into_iter()
-            .zip(self.sensitive_data.borrow_mut().as_slice::<u32>() // get the sensitive_data as a slice &mut[u32]
+            .zip(unsafe { self.sensitive_data.borrow_mut().as_slice::<u32>() } // get the sensitive_data as a slice &mut[u32]
             [KeyRomLocs::PEPPER as usize..KeyRomLocs::PEPPER as usize + 128/(size_of::<u32>()*8)].iter()) {
                 for (&byte, dst) in keyword.to_be_bytes().iter().zip(word.iter_mut()) {
                     *dst = byte;
@@ -904,11 +904,11 @@ impl<'a> RootKeys {
         // make a copy of the KEYROM to hold the new mods, in the sensitive data area
         for addr in 0..256 {
             self.keyrom.wfo(utra::keyrom::ADDRESS_ADDRESS, addr);
-            self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[addr as usize] = self.keyrom.rf(utra::keyrom::DATA_DATA);
+            unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[addr as usize] = self.keyrom.rf(utra::keyrom::DATA_DATA) };
         }
 
         // provision the pepper
-        for keyword in self.sensitive_data.borrow_mut().as_slice_mut::<u32>()
+        for keyword in unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>() }
         [KeyRomLocs::PEPPER as usize..KeyRomLocs::PEPPER as usize + 128/(size_of::<u32>()*8)].iter_mut() {
             *keyword = self.trng.get_u32().expect("couldn't get random number");
         }
@@ -919,8 +919,8 @@ impl<'a> RootKeys {
         self.susres.set_suspendable(false).expect("couldn't block suspend/resume");
 
         // populate the staging area, in particular we are interested in the "pepper" so passwords work correctly.
-        self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[..256]
-        .copy_from_slice(&rom.0);
+        unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[..256]
+        .copy_from_slice(&rom.0) };
 
         let pcache: &mut PasswordCache = unsafe{&mut *(self.pass_cache.as_mut_ptr() as *mut PasswordCache)};
         // copy the plaintext FPGA key to the pcache
@@ -928,8 +928,8 @@ impl<'a> RootKeys {
         pcache.fpga_key_valid = 1;
 
         // stage the plaintext FPGA key into the keyrom area for encryption by the key_init routine.
-        self.sensitive_data.borrow_mut().as_slice_mut::<u8>()[KeyRomLocs::FPGA_KEY as usize..KeyRomLocs::FPGA_KEY as usize + 32]
-            .copy_from_slice(&key.0);
+        unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u8>()[KeyRomLocs::FPGA_KEY as usize..KeyRomLocs::FPGA_KEY as usize + 32]
+            .copy_from_slice(&key.0) };
 
         self.restore_running = true;
     }
@@ -987,7 +987,7 @@ impl<'a> RootKeys {
         // now show the init wait note...
         rootkeys_modal.modify(
             Some(ActionType::Slider(progress_action)),
-            Some(t!("rootkeys.setup_wait", xous::LANG)), false,
+            Some(t!("rootkeys.setup_wait", locales::LANG)), false,
             None, true, None);
         rootkeys_modal.activate();
 
@@ -1011,7 +1011,7 @@ impl<'a> RootKeys {
         // get access to the pcache and generate a keypair
         let pcache: &mut PasswordCache = unsafe{&mut *(self.pass_cache.as_mut_ptr() as *mut PasswordCache)};
         // initialize the global rollback constant to 0
-        self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::GLOBAL_ROLLBACK as usize] = 0;
+        unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::GLOBAL_ROLLBACK as usize] = 0 };
         let mut root_sk = [0u8; ed25519_dalek::SECRET_KEY_LENGTH];
         self.trng.fill_bytes(&mut root_sk);
         #[cfg(feature = "hazardous-debug")]
@@ -1067,7 +1067,7 @@ impl<'a> RootKeys {
         pcache.fpga_key_valid = 1;
 
         // now encrypt it in the staging area
-        for (word, hashed_pass) in self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize..KeyRomLocs::FPGA_KEY as usize + 256/(size_of::<u32>()*8)].iter_mut()
+        for (word, hashed_pass) in unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize..KeyRomLocs::FPGA_KEY as usize + 256/(size_of::<u32>()*8)].iter_mut() }
         .zip(pcache.hashed_update_pw.chunks(4).into_iter()) {
             *word = *word ^ u32::from_be_bytes(hashed_pass.try_into().unwrap());
         }
@@ -1088,7 +1088,7 @@ impl<'a> RootKeys {
         // pub key is easy, no need to encrypt
         let public_key: [u8; ed25519_dalek::PUBLIC_KEY_LENGTH] = keypair.public.to_bytes();
         for (src, dst) in public_key.chunks(4).into_iter()
-        .zip(self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::SELFSIGN_PUBKEY as usize..KeyRomLocs::SELFSIGN_PUBKEY as usize + 256/(size_of::<u32>()*8)].iter_mut()) {
+        .zip(unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::SELFSIGN_PUBKEY as usize..KeyRomLocs::SELFSIGN_PUBKEY as usize + 256/(size_of::<u32>()*8)].iter_mut() }) {
             *dst = u32::from_be_bytes(src.try_into().unwrap())
         }
         log::debug!("public key as computed: {:x?}", public_key);
@@ -1110,7 +1110,7 @@ impl<'a> RootKeys {
 
         // store the private key to the keyrom staging area
         for (src, dst) in private_key_enc.chunks(4).into_iter()
-        .zip(self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::SELFSIGN_PRIVKEY as usize..KeyRomLocs::SELFSIGN_PRIVKEY as usize + 256/(size_of::<u32>()*8)].iter_mut()) {
+        .zip(unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::SELFSIGN_PRIVKEY as usize..KeyRomLocs::SELFSIGN_PRIVKEY as usize + 256/(size_of::<u32>()*8)].iter_mut() }) {
             *dst = u32::from_be_bytes(src.try_into().unwrap())
         }
         #[cfg(feature = "hazardous-debug")]
@@ -1135,24 +1135,24 @@ impl<'a> RootKeys {
 
         // store the boot key to the keyrom staging area
         for (src, dst) in boot_key_enc.chunks(4).into_iter()
-        .zip(self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::USER_KEY as usize..KeyRomLocs::USER_KEY as usize + 256/(size_of::<u32>()*8)].iter_mut()) {
+        .zip(unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::USER_KEY as usize..KeyRomLocs::USER_KEY as usize + 256/(size_of::<u32>()*8)].iter_mut() }) {
             *dst = u32::from_be_bytes(src.try_into().unwrap())
         }
 
         // sign the kernel
-        pb.update_text(t!("rootkeys.init.signing_kernel", xous::LANG));
+        pb.update_text(t!("rootkeys.init.signing_kernel", locales::LANG));
         pb.set_percentage(15);
         let (kernel_sig, kernel_len) = self.sign_kernel(&keypair);
 
         // sign the loader
-        pb.update_text(t!("rootkeys.init.signing_loader", xous::LANG));
+        pb.update_text(t!("rootkeys.init.signing_loader", locales::LANG));
         pb.rebase_subtask_percentage(20, 30);
         let (loader_sig, loader_len) = self.sign_loader(&keypair, Some(&mut pb));
         log::debug!("loader signature: {:x?}", loader_sig.to_bytes());
         log::debug!("loader len: {} bytes", loader_len);
 
         // set the "init" bit in the staging area
-        self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::CONFIG as usize] |= keyrom_config::INITIALIZED.ms(1);
+        unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::CONFIG as usize] |= keyrom_config::INITIALIZED.ms(1) };
 
         #[cfg(feature = "hazardous-debug")]
         {
@@ -1164,7 +1164,7 @@ impl<'a> RootKeys {
         // Because we're initializing keys for the *first* time, make a backup copy of the bitstream to
         // the staging area. Note that if we're doing an update, the update target would already be
         // in the staging area, so this step should be skipped.
-        pb.update_text(t!("rootkeys.init.backup_gateware", xous::LANG));
+        pb.update_text(t!("rootkeys.init.backup_gateware", locales::LANG));
         pb.rebase_subtask_percentage(30, 50);
         self.make_gateware_backup(Some(&mut pb), false)?;
 
@@ -1180,7 +1180,7 @@ impl<'a> RootKeys {
 
         // compute the keyrom patch set for the bitstream
         // at this point the KEYROM as replicated in sensitive_slice should have all its assets in place
-        pb.update_text(t!("rootkeys.init.patching_keys", xous::LANG));
+        pb.update_text(t!("rootkeys.init.patching_keys", locales::LANG));
         pb.rebase_subtask_percentage(50, 70);
 
         self.gateware_copy_and_patch(&src_oracle, &dst_oracle, Some(&mut pb))?;
@@ -1191,12 +1191,12 @@ impl<'a> RootKeys {
         ).map_err(|_| RootkeyResult::FlashError)?;
 
         // verify that the patch worked
-        pb.update_text(t!("rootkeys.init.verifying_gateware", xous::LANG));
+        pb.update_text(t!("rootkeys.init.verifying_gateware", locales::LANG));
         pb.rebase_subtask_percentage(70, 90);
         self.verify_gateware(&dst_oracle, Some(&mut pb))?;
 
         // sign the image, commit the signature
-        pb.update_text(t!("rootkeys.init.commit_signatures", xous::LANG));
+        pb.update_text(t!("rootkeys.init.commit_signatures", locales::LANG));
         self.commit_signature(loader_sig, loader_len, SignatureType::Loader)?;
         log::debug!("loader {} bytes, sig: {:x?}", loader_len, loader_sig.to_bytes());
         pb.set_percentage(92);
@@ -1276,7 +1276,7 @@ impl<'a> RootKeys {
             // now show the init wait note...
             rootkeys_modal.modify(
                 Some(ActionType::Slider(progress_action)),
-                Some(t!("rootkeys.gwup_starting", xous::LANG)), false,
+                Some(t!("rootkeys.gwup_starting", locales::LANG)), false,
                 None, true, None);
             rootkeys_modal.activate();
             xous::yield_slice(); // give some time to the GAM to render
@@ -1354,7 +1354,7 @@ impl<'a> RootKeys {
             old_key.copy_from_slice(&pcache.fpga_key);
 
             // now encrypt the FPGA key for the Keyrom in-place to the provided password
-            for (word, hashed_pass) in self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize..KeyRomLocs::FPGA_KEY as usize + 256/(size_of::<u32>()*8)].iter_mut()
+            for (word, hashed_pass) in unsafe { self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[KeyRomLocs::FPGA_KEY as usize..KeyRomLocs::FPGA_KEY as usize + 256/(size_of::<u32>()*8)].iter_mut() }
             .zip(pcache.hashed_update_pw.chunks(4).into_iter()) {
                 *word = *word ^ u32::from_be_bytes(hashed_pass.try_into().unwrap());
             }
@@ -1426,29 +1426,29 @@ impl<'a> RootKeys {
                     log::info!("{}", crate::CONSOLE_SENTINEL);
                 } else if update_type == UpdateType::EfuseProvision {
                     // share the backup key with the user so it can be saved somewhere safe
-                    modals.show_bip39(Some(t!("rootkeys.backup_key", xous::LANG)), &pcache.fpga_key.to_vec()).ok();
+                    modals.show_bip39(Some(t!("rootkeys.backup_key", locales::LANG)), &pcache.fpga_key.to_vec()).ok();
                     loop {
-                        modals.add_list_item(t!("rootkeys.gwup.yes", xous::LANG)).expect("modals error");
-                        modals.add_list_item(t!("rootkeys.gwup.no", xous::LANG)).expect("modals error");
+                        modals.add_list_item(t!("rootkeys.gwup.yes", locales::LANG)).expect("modals error");
+                        modals.add_list_item(t!("rootkeys.gwup.no", locales::LANG)).expect("modals error");
                         log::info!("{}ROOTKEY.CONFIRM,{}", xous::BOOKEND_START, xous::BOOKEND_END);
-                        match modals.get_radiobutton(t!("rootkeys.backup_verify", xous::LANG)) {
+                        match modals.get_radiobutton(t!("rootkeys.backup_verify", locales::LANG)) {
                             Ok(response) => {
-                                if response == t!("rootkeys.gwup.yes", xous::LANG) {
-                                    match modals.input_bip39(Some(t!("rootkeys.backup_key_enter", xous::LANG))) {
+                                if response == t!("rootkeys.gwup.yes", locales::LANG) {
+                                    match modals.input_bip39(Some(t!("rootkeys.backup_key_enter", locales::LANG))) {
                                         Ok(verify) => {
                                             log::debug!("got bip39 verification: {:x?}", verify);
                                             if &verify == &pcache.fpga_key {
                                                 log::debug!("verify succeeded");
-                                                modals.show_notification(t!("rootkeys.backup_key_match", xous::LANG), None).ok();
+                                                modals.show_notification(t!("rootkeys.backup_key_match", locales::LANG), None).ok();
                                                 break;
                                             } else {
                                                 log::debug!("verify failed");
-                                                modals.show_bip39(Some(t!("rootkeys.backup_key_mismatch", xous::LANG)), &pcache.fpga_key.to_vec()).ok();
+                                                modals.show_bip39(Some(t!("rootkeys.backup_key_mismatch", locales::LANG)), &pcache.fpga_key.to_vec()).ok();
                                             }
                                         }
                                         _ => {
                                             log::debug!("bip39 verification aborted");
-                                            modals.show_bip39(Some(t!("rootkeys.backup_key_mismatch", xous::LANG)), &pcache.fpga_key.to_vec()).ok();
+                                            modals.show_bip39(Some(t!("rootkeys.backup_key_mismatch", locales::LANG)), &pcache.fpga_key.to_vec()).ok();
                                         }
                                     }
                                 } else {
@@ -1466,7 +1466,7 @@ impl<'a> RootKeys {
             // *now* show the progress bar...
             rootkeys_modal.modify(
                 Some(ActionType::Slider(progress_action)),
-                Some(t!("rootkeys.gwup_starting", xous::LANG)), false,
+                Some(t!("rootkeys.gwup_starting", locales::LANG)), false,
                 None, true, None);
             rootkeys_modal.activate();
             xous::yield_slice(); // give some time to the GAM to render
@@ -1511,7 +1511,7 @@ impl<'a> RootKeys {
         };
 
         let mut next_progress = if (update_type == UpdateType::BbramProvision) || (update_type == UpdateType::EfuseProvision) {
-            pb.update_text(t!("rootkeys.init.backup_gateware", xous::LANG));
+            pb.update_text(t!("rootkeys.init.backup_gateware", locales::LANG));
             pb.rebase_subtask_percentage(5, 25);
             self.make_gateware_backup(Some(&mut pb), false)?;
             25
@@ -1550,7 +1550,7 @@ impl<'a> RootKeys {
         log::info!("destination key type: {:?}", dst_oracle.get_target_key_type());
 
         pb.set_percentage(next_progress);
-        pb.update_text(t!("rootkeys.init.patching_keys", xous::LANG));
+        pb.update_text(t!("rootkeys.init.patching_keys", locales::LANG));
         pb.rebase_subtask_percentage(next_progress, 60);
         self.gateware_copy_and_patch(&src_oracle, &dst_oracle, Some(&mut pb))?;
 
@@ -1560,7 +1560,7 @@ impl<'a> RootKeys {
         ).map_err(|_| RootkeyResult::FlashError)?;
 
         // verify that the patch worked
-        pb.update_text(t!("rootkeys.init.verifying_gateware", xous::LANG));
+        pb.update_text(t!("rootkeys.init.verifying_gateware", locales::LANG));
         pb.rebase_subtask_percentage(60, 75);
         log::debug!("making verification oracle");
         let verify_oracle = match BitstreamOracle::new(
@@ -1578,23 +1578,23 @@ impl<'a> RootKeys {
 
         // commit signatures
         let keypair = if let Some(kp) = keypair {
-            pb.update_text(t!("rootkeys.init.signing_gateware", xous::LANG));
+            pb.update_text(t!("rootkeys.init.signing_gateware", locales::LANG));
             let (gateware_sig, gateware_len) = self.sign_gateware(&kp);
             log::debug!("gateware signature ({}): {:x?}", gateware_len, gateware_sig.to_bytes());
             self.commit_signature(gateware_sig, gateware_len, SignatureType::Gateware)?;
 
             // sign the kernel
-            pb.update_text(t!("rootkeys.init.signing_kernel", xous::LANG));
+            pb.update_text(t!("rootkeys.init.signing_kernel", locales::LANG));
             pb.set_percentage(80);
             let (kernel_sig, kernel_len) = self.sign_kernel(&kp);
 
             // sign the loader
-            pb.update_text(t!("rootkeys.init.signing_loader", xous::LANG));
+            pb.update_text(t!("rootkeys.init.signing_loader", locales::LANG));
             pb.rebase_subtask_percentage(85, 92);
             let (loader_sig, loader_len) = self.sign_loader(&kp, Some(&mut pb));
 
             // commit the signatures
-            pb.update_text(t!("rootkeys.init.commit_signatures", xous::LANG));
+            pb.update_text(t!("rootkeys.init.commit_signatures", locales::LANG));
             self.commit_signature(loader_sig, loader_len, SignatureType::Loader)?;
             log::debug!("loader {} bytes, sig: {:x?}", loader_len, loader_sig.to_bytes());
             pb.set_percentage(88);
@@ -1652,12 +1652,12 @@ impl<'a> RootKeys {
             // the key burning routine should finish before this timeout happens, and the system should have been rebooted
             self.ticktimer.sleep_ms(10_000).unwrap();
 
-            pb.update_text(t!("rootkeys.bbram.failed_restore", xous::LANG));
+            pb.update_text(t!("rootkeys.bbram.failed_restore", locales::LANG));
             pb.set_percentage(0);
             pb.rebase_subtask_percentage(0, 100);
             self.make_gateware_backup(Some(&mut pb), true)?;
         } else if update_type == UpdateType::EfuseProvision {
-            pb.update_text(t!("rootkeys.efuse_burning", xous::LANG));
+            pb.update_text(t!("rootkeys.efuse_burning", locales::LANG));
             self.ticktimer.sleep_ms(300).ok();
             pb.set_percentage(93);
             self.ticktimer.sleep_ms(300).ok();
@@ -1676,7 +1676,7 @@ impl<'a> RootKeys {
             match self.jtag.efuse_key_burn(pcache.fpga_key) {
                 Ok(result) => {
                     if !result {
-                        pb.update_text(t!("rootkeys.efuse_burn_fail", xous::LANG));
+                        pb.update_text(t!("rootkeys.efuse_burn_fail", locales::LANG));
                         self.ticktimer.sleep_ms(2000).ok();
                         return Err(RootkeyResult::KeyError)
                     } else {
@@ -1684,7 +1684,7 @@ impl<'a> RootKeys {
                     }
                 }
                 Err(e) => {
-                    pb.update_text(&format!("{}\n{:?}", t!("rootkeys.efuse_internal_error", xous::LANG), e));
+                    pb.update_text(&format!("{}\n{:?}", t!("rootkeys.efuse_internal_error", locales::LANG), e));
                     self.ticktimer.sleep_ms(2000).ok();
                     return Err(RootkeyResult::StateError)
                 }
@@ -1703,19 +1703,19 @@ impl<'a> RootKeys {
             }
 
             // seal the device from key readout, force encrypted boot
-            pb.update_text(t!("rootkeys.efuse_sealing", xous::LANG));
+            pb.update_text(t!("rootkeys.efuse_sealing", locales::LANG));
             pb.set_percentage(96);
             log::info!("{}EFUSE.SEAL,{}", xous::BOOKEND_START, xous::BOOKEND_END);
             match self.jtag.seal_device() {
                 Ok(result) => {
                     if !result {
-                        pb.update_text(t!("rootkeys.efuse_seal_fail", xous::LANG));
+                        pb.update_text(t!("rootkeys.efuse_seal_fail", locales::LANG));
                         self.ticktimer.sleep_ms(2000).ok();
                         return Err(RootkeyResult::FlashError)
                     }
                 }
                 Err(e) => {
-                    pb.update_text(&format!("{}\n{:?}", t!("rootkeys.efuse_internal_error", xous::LANG), e));
+                    pb.update_text(&format!("{}\n{:?}", t!("rootkeys.efuse_internal_error", locales::LANG), e));
                     self.ticktimer.sleep_ms(2000).ok();
                     return Err(RootkeyResult::StateError)
                 }
@@ -1755,7 +1755,7 @@ impl<'a> RootKeys {
         // now show the init wait note...
         rootkeys_modal.modify(
             Some(ActionType::Slider(progress_action)),
-            Some(t!("rootkeys.gwup_starting", xous::LANG)), false,
+            Some(t!("rootkeys.gwup_starting", locales::LANG)), false,
             None, true, None);
         rootkeys_modal.activate();
         xous::yield_slice(); // give some time to the GAM to render
@@ -1812,19 +1812,19 @@ impl<'a> RootKeys {
         // a TOCTOU by not re-verifying them.
 
         // sign the kernel
-        pb.update_text(t!("rootkeys.init.signing_kernel", xous::LANG));
+        pb.update_text(t!("rootkeys.init.signing_kernel", locales::LANG));
         pb.set_percentage(35);
         let (kernel_sig, kernel_len) = self.sign_kernel(&keypair);
 
         // sign the loader
-        pb.update_text(t!("rootkeys.init.signing_loader", xous::LANG));
+        pb.update_text(t!("rootkeys.init.signing_loader", locales::LANG));
         pb.rebase_subtask_percentage(35, 85);
         let (loader_sig, loader_len) = self.sign_loader(&keypair, Some(&mut pb));
         log::info!("loader signature: {:x?}", loader_sig.to_bytes());
         log::info!("loader len: {} bytes", loader_len);
 
         // commit the signatures
-        pb.update_text(t!("rootkeys.init.commit_signatures", xous::LANG));
+        pb.update_text(t!("rootkeys.init.commit_signatures", locales::LANG));
         self.commit_signature(loader_sig, loader_len, SignatureType::Loader)?;
         log::debug!("loader {} bytes, sig: {:x?}", loader_len, loader_sig.to_bytes());
         pb.set_percentage(90);
@@ -1864,7 +1864,7 @@ impl<'a> RootKeys {
         // now show the init wait note...
         rootkeys_modal.modify(
             Some(ActionType::Slider(progress_action)),
-            Some(t!("rootkeys.setup_wait", xous::LANG)), false,
+            Some(t!("rootkeys.setup_wait", locales::LANG)), false,
             None, true, None);
         rootkeys_modal.activate();
 
@@ -1950,7 +1950,7 @@ impl<'a> RootKeys {
         progress_action.set_is_password(true);
         rootkeys_modal.modify(
             Some(ActionType::Slider(progress_action)),
-            Some(t!("rootkeys.gwup_starting", xous::LANG)), false,
+            Some(t!("rootkeys.gwup_starting", locales::LANG)), false,
             None, true, None);
         rootkeys_modal.activate();
         xous::yield_slice(); // give some time to the GAM to render
@@ -2030,7 +2030,7 @@ impl<'a> RootKeys {
 
             // wrap the patch call with a range check, because the patch lookup search is pretty expensive
             if self.patch_in_range(src_oracle, from, from + spinor::SPINOR_ERASE_SIZE as u32) {
-                dummy_consume ^= self.patch_sector(src_oracle, from, &mut pt_sector, &self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[0..256]);
+                dummy_consume ^= self.patch_sector(src_oracle, from, &mut pt_sector, unsafe { &self.sensitive_data.borrow_mut().as_slice_mut::<u32>()[0..256] });
             }
 
             let hash_len = if bytes_hashed + decrypt_len < hash_stop {
@@ -2613,7 +2613,7 @@ impl<'a> RootKeys {
     pub fn commit_signature(&self, sig: Signature, len: u32, sig_type: SignatureType) -> Result<(), RootkeyResult> {
         let mut sig_region: [u8; core::mem::size_of::<SignatureInFlash>()] = [0; core::mem::size_of::<SignatureInFlash>()];
         // map a structure onto the signature region, so we can do something sane when writing stuff to it
-        let mut signature: &mut SignatureInFlash = unsafe{(sig_region.as_mut_ptr() as *mut SignatureInFlash).as_mut().unwrap()}; // this pointer better not be null, we just created it!
+        let signature: &mut SignatureInFlash = unsafe{(sig_region.as_mut_ptr() as *mut SignatureInFlash).as_mut().unwrap()}; // this pointer better not be null, we just created it!
 
         signature.version = SIG_VERSION;
         signature.signed_len = len;
@@ -2715,7 +2715,7 @@ impl<'a> RootKeys {
             progress_action.set_is_password(true);
             rootkeys_modal.modify(
                 Some(ActionType::Slider(progress_action)),
-                Some(t!("rootkeys.gwup_starting", xous::LANG)), false,
+                Some(t!("rootkeys.gwup_starting", locales::LANG)), false,
                 None, true, None);
             rootkeys_modal.activate();
             xous::yield_slice(); // give some time to the GAM to render

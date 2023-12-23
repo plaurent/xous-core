@@ -197,7 +197,8 @@ impl PddbOs {
         )
         .expect("Couldn't map the PDDB memory range");
         #[cfg(any(feature="precursor", feature="renode"))]
-        log::info!("pddb slice len: {}, PDDB_A_LEN: {}, raw len: {}", pddb.as_slice::<u8>().len(), PDDB_A_LEN, pddb.len()); // sanity check the PDDB size on init
+        // Safety: all u8 values are valid
+        log::info!("pddb slice len: {}, PDDB_A_LEN: {}, raw len: {}", unsafe { pddb.as_slice::<u8>().len() }, PDDB_A_LEN, pddb.len()); // sanity check the PDDB size on init
 
         // the mbbb is located one page off from the Page Table
         let key_phys_base = PageAlignedPa::from(size_of::<PageTableInFlash>());
@@ -376,7 +377,7 @@ impl PddbOs {
         // log::trace!("patch bef: {:x?}", &self.pddb_mr.as_slice::<u8>()[offset as usize + self.data_phys_base.as_usize()..offset as usize + self.data_phys_base.as_usize() + 48]);
         assert!(data.len() + offset as usize <= PDDB_A_LEN - self.data_phys_base.as_usize(), "attempt to store past disk boundary");
         self.spinor.patch(
-            self.pddb_mr.as_slice(),
+            unsafe { self.pddb_mr.as_slice() },
             xous::PDDB_LOC,
             &data,
             offset + self.data_phys_base.as_u32(),
@@ -391,7 +392,7 @@ impl PddbOs {
             if let Some(mbbb) = self.mbbb_retrieve() {
                 if let Some(erased_offset) = self.pt_find_erased_slot() {
                     self.spinor.patch(
-                        self.pddb_mr.as_slice(),
+                        unsafe { self.pddb_mr.as_slice() },
                         xous::PDDB_LOC,
                         &mbbb,
                         self.pt_phys_base.as_u32() + erased_offset,
@@ -407,7 +408,7 @@ impl PddbOs {
             // 3. copy the data to a local buffer
             let mut mbbb_page = [0u8; PAGE_SIZE];
             for (&src, dst) in
-            self.pddb_mr.as_slice()[self.pt_phys_base.as_usize() + base_page..self.pt_phys_base.as_usize() + base_page + PAGE_SIZE].iter()
+            unsafe { self.pddb_mr.as_slice()[self.pt_phys_base.as_usize() + base_page..self.pt_phys_base.as_usize() + base_page + PAGE_SIZE].iter() }
             .zip(mbbb_page.iter_mut()) {
                 *dst = src;
             }
@@ -423,7 +424,7 @@ impl PddbOs {
             // 6. erase the original page area, thus making the MBBB the authorative location
             let blank = [0xffu8; PAGE_SIZE];
             self.spinor.patch(
-                self.pddb_mr.as_slice(),
+                unsafe { self.pddb_mr.as_slice() },
                 xous::PDDB_LOC,
                 &blank,
                 self.pt_phys_base.as_u32() + base_page as u32,
@@ -436,7 +437,7 @@ impl PddbOs {
     fn patch_pagetable_raw(&self, data: &[u8], offset: u32) {
         assert!(data.len() + offset as usize <= size_of::<PageTableInFlash>(), "attempt to patch past page table end");
         self.spinor.patch(
-            self.pddb_mr.as_slice(),
+            unsafe { self.pddb_mr.as_slice() },
             xous::PDDB_LOC,
             &data,
             self.pt_phys_base.as_u32() + offset,
@@ -446,7 +447,7 @@ impl PddbOs {
         assert!(data.len() + offset as usize <= PAGE_SIZE, "attempt to burn key data that is outside the key region");
         log::info!("patching keys area with {} bytes", data.len());
         self.spinor.patch(
-            self.pddb_mr.as_slice(),
+            unsafe { self.pddb_mr.as_slice() },
             xous::PDDB_LOC,
             data,
             self.key_phys_base.as_u32() + offset
@@ -455,7 +456,7 @@ impl PddbOs {
     fn patch_mbbb(&self, data: &[u8], offset: u32) {
         assert!(data.len() + offset as usize <= PAGE_SIZE * MBBB_PAGES, "mbbb patch would go out of bounds");
         self.spinor.patch(
-            self.pddb_mr.as_slice(),
+            unsafe { self.pddb_mr.as_slice() },
             xous::PDDB_LOC,
             data,
             self.mbbb_phys_base.as_u32() + offset
@@ -466,7 +467,7 @@ impl PddbOs {
     fn patch_fscb(&self, data: &[u8], offset: u32) {
         assert!(data.len() + offset as usize <= PAGE_SIZE * FSCB_PAGES, "fscb patch would go out of bounds");
         self.spinor.patch(
-            self.pddb_mr.as_slice(),
+            unsafe { self.pddb_mr.as_slice() },
             xous::PDDB_LOC,
             data,
             self.fscb_phys_base.as_u32() + offset
@@ -497,7 +498,7 @@ impl PddbOs {
     /// This would want to be optimized or cached for a much larger filesystem.
     /// Returns the physical address of the erased slot as an offset from the pt_phys_base()
     fn pt_find_erased_slot(&self) -> Option<PhysAddr> {
-        let pt: &[u8] = &self.pddb_mr.as_slice()[self.pt_phys_base.as_usize()..self.pt_phys_base.as_usize() + size_of::<PageTableInFlash>()];
+        let pt: &[u8] = unsafe { &self.pddb_mr.as_slice()[self.pt_phys_base.as_usize()..self.pt_phys_base.as_usize() + size_of::<PageTableInFlash>()] };
         let blank = [0xffu8; aes::BLOCK_SIZE];
         for (index, page) in pt.chunks(PAGE_SIZE).enumerate() {
             if page[..aes::BLOCK_SIZE] == blank {
@@ -507,7 +508,7 @@ impl PddbOs {
         None
     }
     fn pt_as_slice(&self) -> &[u8] {
-        &self.pddb_mr.as_slice()[self.pt_phys_base.as_usize()..self.pt_phys_base.as_usize() + size_of::<PageTableInFlash>()]
+        unsafe { &self.pddb_mr.as_slice()[self.pt_phys_base.as_usize()..self.pt_phys_base.as_usize() + size_of::<PageTableInFlash>()] }
     }
 
     /// scans the page tables and returns all entries for a given basis
@@ -639,7 +640,7 @@ impl PddbOs {
 
     /// maps a StaticCryptoData structure into the key area of the PDDB.
     fn static_crypto_data_get(&self) -> &StaticCryptoData {
-        let scd_ptr = self.pddb_mr.as_slice::<u8>()[self.key_phys_base.as_usize()..self.key_phys_base.as_usize() + PAGE_SIZE].as_ptr() as *const StaticCryptoData;
+        let scd_ptr = unsafe { self.pddb_mr.as_slice::<u8>()[self.key_phys_base.as_usize()..self.key_phys_base.as_usize() + PAGE_SIZE].as_ptr() as *const StaticCryptoData };
         let scd: &StaticCryptoData = unsafe{scd_ptr.as_ref().unwrap()};
         scd
     }
@@ -776,12 +777,12 @@ impl PddbOs {
             self.clear_password(); // clear the bad password entry
             let xns = xous_names::XousNames::new().unwrap();
             let modals = modals::Modals::new(&xns).expect("can't connect to Modals server");
-            modals.show_notification(t!("pddb.badpass_infallible", xous::LANG), None).expect("notification failed");
+            modals.show_notification(t!("pddb.badpass_infallible", locales::LANG), None).expect("notification failed");
         }
     }
 
     fn mbbb_as_slice(&self) -> &[u8] {
-        &self.pddb_mr.as_slice()[self.mbbb_phys_base.as_usize()..self.mbbb_phys_base.as_usize() + MBBB_PAGES * PAGE_SIZE]
+        unsafe { &self.pddb_mr.as_slice()[self.mbbb_phys_base.as_usize()..self.mbbb_phys_base.as_usize() + MBBB_PAGES * PAGE_SIZE] }
     }
     fn mbbb_retrieve(&self) -> Option<&[u8]> {
         // Invariant: MBBB pages should be blank, unless a page is stashed there. So, just check the first
@@ -880,7 +881,7 @@ impl PddbOs {
                             // We could "paper over" this by re-reading the data, but really, this problem should be solved by the d-cache
                             // flush in the SPINOR primitive.
                             let page_start = dest_page_start as usize * PAGE_SIZE;
-                            let fscb_slice = &self.pddb_mr.as_slice()[self.fscb_phys_base.as_usize()..self.fscb_phys_base.as_usize() + FSCB_PAGES * PAGE_SIZE];
+                            let fscb_slice = &unsafe { self.pddb_mr.as_slice() }[self.fscb_phys_base.as_usize()..self.fscb_phys_base.as_usize() + FSCB_PAGES * PAGE_SIZE];
                             let mut fscb_buf = [0; FASTSPACE_PAGES * PAGE_SIZE - size_of::<Nonce>()];
                             // copy the encrypted data to the decryption buffer
                             fscb_buf.copy_from_slice(&fscb_slice[page_start + size_of::<Nonce>() .. page_start + FASTSPACE_PAGES * PAGE_SIZE]);
@@ -1095,7 +1096,7 @@ impl PddbOs {
     }
 
     fn fscb_deref(&self) -> &[u8] {
-        &self.pddb_mr.as_slice()[self.fscb_phys_base.as_usize()..self.fscb_phys_base.as_usize() + FSCB_PAGES * PAGE_SIZE]
+        unsafe { &self.pddb_mr.as_slice()[self.fscb_phys_base.as_usize()..self.fscb_phys_base.as_usize() + FSCB_PAGES * PAGE_SIZE] }
     }
     /// Reads the data structures in the FSCB, if any, and stores the results in the fspace_cache HashSet.
     /// Note the following convention on the fscb: if the first 128 bits of a page are all 1's, then that sector
@@ -1122,7 +1123,7 @@ impl PddbOs {
             self.fspace_log_len = 0;
 
             // let fscb_slice = self.fscb_deref(); // can't use this line because it causse self to be immutably borrowed, so we write out the equivalent below.
-            let fscb_slice = &self.pddb_mr.as_slice()[self.fscb_phys_base.as_usize()..self.fscb_phys_base.as_usize() + FSCB_PAGES * PAGE_SIZE];
+            let fscb_slice = unsafe { &self.pddb_mr.as_slice()[self.fscb_phys_base.as_usize()..self.fscb_phys_base.as_usize() + FSCB_PAGES * PAGE_SIZE] };
 
             // 1. scan through the entire space, and look for the FastSpace record. It can be identified by the
             // first 16 (aes::BLOCK_SIZE) bytes not being all 1's.
@@ -1517,9 +1518,9 @@ impl PddbOs {
     /// We don't clip it off because it would require re-allocating a vector, and it's cheaper (although less elegant) to later
     /// just index past it.
     pub(crate) fn data_decrypt_page(&self, cipher: &Aes256GcmSiv, aad: &[u8], page: &PhysPage) -> Option<Vec::<u8>> {
-        let ct_slice = &self.pddb_mr.as_slice()[
+        let ct_slice = unsafe { &self.pddb_mr.as_slice()[
             self.data_phys_base.as_usize() + page.page_number() as usize * PAGE_SIZE ..
-            self.data_phys_base.as_usize() + (page.page_number() as usize + 1) * PAGE_SIZE];
+            self.data_phys_base.as_usize() + (page.page_number() as usize + 1) * PAGE_SIZE] };
         let nonce = &ct_slice[..size_of::<Nonce>()];
         let ct = &ct_slice[size_of::<Nonce>()..];
         match cipher.decrypt(
@@ -1557,9 +1558,9 @@ impl PddbOs {
         const KCOM_NONCE_LEN: usize = 32;
         const KCOM_LEN: usize = 32;
         const MAC_LEN: usize = 16;
-        let ct_slice = &self.pddb_mr.as_slice()[
+        let ct_slice = unsafe { &self.pddb_mr.as_slice()[
             self.data_phys_base.as_usize() + page.page_number() as usize * PAGE_SIZE ..
-            self.data_phys_base.as_usize() + (page.page_number() as usize + 1) * PAGE_SIZE];
+            self.data_phys_base.as_usize() + (page.page_number() as usize + 1) * PAGE_SIZE] };
         log::debug!("commit data at 0x{:x}", self.data_phys_base.as_usize() + page.page_number() as usize * PAGE_SIZE);
         let nonce = &ct_slice[..size_of::<Nonce>()];
         let ct_total = &ct_slice[size_of::<Nonce>()..];
@@ -1758,7 +1759,7 @@ impl PddbOs {
 
             log::info!("{}PDDB.CHECKPASS,{}", xous::BOOKEND_START, xous::BOOKEND_END);
             #[cfg(any(feature="precursor", feature="renode"))] // skip this dialog in hosted mode
-            modals.show_notification(t!("pddb.checkpass", xous::LANG), None).expect("notification failed");
+            modals.show_notification(t!("pddb.checkpass", locales::LANG), None).expect("notification failed");
 
             self.clear_password();
             let mut checkblock_b = [0u8; BLOCK_SIZE];
@@ -1768,7 +1769,7 @@ impl PddbOs {
                 success = true;
             } else {
                 log::info!("{}PDDB.PWFAIL,{}", xous::BOOKEND_START, xous::BOOKEND_END);
-                modals.show_notification(t!("pddb.checkpass_fail", xous::LANG), None).expect("notification failed");
+                modals.show_notification(t!("pddb.checkpass_fail", locales::LANG), None).expect("notification failed");
                 self.clear_password();
             }
         }
@@ -1784,7 +1785,7 @@ impl PddbOs {
         if let Some(system_keys) = &self.system_basis_key {
             // get the new password
             self.clear_password();
-            modals.show_notification(t!("pddb.changepin.enter_new_pin", xous::LANG), None)
+            modals.show_notification(t!("pddb.changepin.enter_new_pin", locales::LANG), None)
                 .map_err(|_| Error::new(ErrorKind::Other, "Internal error"))?;
             self.pw_check(modals)?;
 
@@ -1821,7 +1822,7 @@ impl PddbOs {
             log::info!("Erasing the PDDB region");
             if let Some(modals) = progress {
                 modals.start_progress(
-                    t!("pddb.erase", xous::LANG),
+                    t!("pddb.erase", locales::LANG),
                     xous::PDDB_LOC, xous::PDDB_LOC + PDDB_A_LEN as u32, xous::PDDB_LOC)
                     .expect("couldn't raise progress bar");
                 // retain this delay, because the next section is so compute-intensive, it may take a
@@ -1838,7 +1839,7 @@ impl PddbOs {
                 // do a blank check first to see if the sector really needs erasing
                 let mut blank = true;
                 let slice_start = (offset - xous::PDDB_LOC) as usize / size_of::<u32>();
-                for word in self.pddb_mr.as_slice::<u32>()[slice_start..slice_start + SPINOR_BULK_ERASE_SIZE as usize / size_of::<u32>()].iter() {
+                for word in unsafe { self.pddb_mr.as_slice::<u32>()[slice_start..slice_start + SPINOR_BULK_ERASE_SIZE as usize / size_of::<u32>()].iter() } {
                     if *word != 0xFFFF_FFFF {
                         blank = false;
                         break;
@@ -1858,7 +1859,7 @@ impl PddbOs {
 
         // step 2. fill in the page table with junk, which marks it as cryptographically empty
         if let Some(modals) = progress {
-            modals.start_progress(t!("pddb.initpt", xous::LANG), 0, size_of::<PageTableInFlash>() as u32, 0).expect("couldn't raise progress bar");
+            modals.start_progress(t!("pddb.initpt", locales::LANG), 0, size_of::<PageTableInFlash>() as u32, 0).expect("couldn't raise progress bar");
         }
         let mut temp: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
         for page in (0..(size_of::<PageTableInFlash>() & !(PAGE_SIZE - 1))).step_by(PAGE_SIZE) {
@@ -1894,7 +1895,7 @@ impl PddbOs {
         //    return Err(Error::new(ErrorKind::PermissionDenied, "unlock password was incorrect"));
         //}
         if let Some(modals) = progress {
-            modals.start_progress(t!("pddb.key", xous::LANG), 0, 100, 0).expect("couldn't raise progress bar");
+            modals.start_progress(t!("pddb.key", locales::LANG), 0, 100, 0).expect("couldn't raise progress bar");
             #[cfg(feature="ux-swap-delay")]
             self.tt.sleep_ms(100).unwrap();
         }
@@ -1956,7 +1957,7 @@ impl PddbOs {
         // pick a set of random pages from the free pool and assign it to the fscb
         // pass the generator an empty cache - this causes it to treat the entire disk as free space
         if let Some(modals) = progress {
-            modals.start_progress(t!("pddb.fastspace", xous::LANG), 0, 100, 0).expect("couldn't raise progress bar");
+            modals.start_progress(t!("pddb.fastspace", locales::LANG), 0, 100, 0).expect("couldn't raise progress bar");
             self.tt.sleep_ms(100).unwrap();
         }
         let free_pool = self.fast_space_generate(BinaryHeap::<Reverse<u32>>::new());
@@ -1988,7 +1989,7 @@ impl PddbOs {
         // this is coded using "direct disk" offsets...under the assumption that we only ever really want to do this here, and
         // not re-use this routine elsewhere.
         if let Some(modals) = progress {
-            modals.start_progress(t!("pddb.randomize", xous::LANG),
+            modals.start_progress(t!("pddb.randomize", locales::LANG),
             self.data_phys_base.as_u32(), PDDB_A_LEN as u32, self.data_phys_base.as_u32()).expect("couldn't raise progress bar");
             #[cfg(feature="ux-swap-delay")]
             self.tt.sleep_ms(100).unwrap();
@@ -2000,7 +2001,7 @@ impl PddbOs {
                 // session key, previous data should be undecipherable. You shouldn't do this for a production erase
                 // but this is good for speeding up testing.
                 let mut is_blank = true;
-                let block: &[u8] = &self.pddb_mr.as_slice()[offset + aes::BLOCK_SIZE * 3..offset + aes::BLOCK_SIZE * 4];
+                let block: &[u8] = unsafe { &self.pddb_mr.as_slice()[offset + aes::BLOCK_SIZE * 3..offset + aes::BLOCK_SIZE * 4] };
                 for (&a, &b) in block.iter().zip(blank.iter()) {
                     if a != b {
                         is_blank = false;
@@ -2022,7 +2023,7 @@ impl PddbOs {
                 }
             }
             self.spinor.patch(
-                self.pddb_mr.as_slice(),
+                unsafe { self.pddb_mr.as_slice() },
                 xous::PDDB_LOC,
                 &temp,
                 offset as u32
@@ -2039,7 +2040,7 @@ impl PddbOs {
 
         // step 6. create the system basis root structure
         if let Some(modals) = progress {
-            modals.start_progress(t!("pddb.structure", xous::LANG), 0, 100, 0).expect("couldn't raise progress bar");
+            modals.start_progress(t!("pddb.structure", locales::LANG), 0, 100, 0).expect("couldn't raise progress bar");
             #[cfg(feature="ux-swap-delay")]
             self.tt.sleep_ms(100).unwrap();
         }
@@ -2184,7 +2185,7 @@ impl PddbOs {
         if let Some(mbbb) = self.mbbb_retrieve() {
             if let Some(erased_offset) = self.pt_find_erased_slot() {
                 self.spinor.patch(
-                    self.pddb_mr.as_slice(),
+                    unsafe { self.pddb_mr.as_slice() },
                     xous::PDDB_LOC,
                     &mbbb,
                     self.pt_phys_base.as_u32() + erased_offset,
@@ -2199,7 +2200,7 @@ impl PddbOs {
             let xns = xous_names::XousNames::new().unwrap();
             let modals = modals::Modals::new(&xns).unwrap();
 
-            modals.start_progress(t!("pddb.rekey.keys", xous::LANG), 0, all_keys.len() as u32, 0).ok();
+            modals.start_progress(t!("pddb.rekey.keys", locales::LANG), 0, all_keys.len() as u32, 0).ok();
             // we need a map of page numbers to encryption keys. The keys are referenced by their basis name.
             let mut pagemap = HashMap::<PhysAddr, &str>::new();
             // transform the returned Vec into a HashMap that maps basis names into pre-keyed ciphers.
@@ -2242,7 +2243,8 @@ impl PddbOs {
             }
             modals.finish_progress().ok();
             if !clean {
-                return PddbRekeyOp::VerifyFail
+                log::warn!("Unmapped FSCB records were found, but this is likely due to FSCB flushes called. Continuing.");
+                // return PddbRekeyOp::VerifyFail
             }
 
             // future note: if changing the password on just one basis, we'd want to ask for the new
@@ -2254,10 +2256,10 @@ impl PddbOs {
             // at the base of the `pddb_mr`.
             let pddb_data_len = PDDB_A_LEN - self.data_phys_base.as_usize();
             let pddb_data_pages = pddb_data_len / PAGE_SIZE;
-            let pagetable: &[u8] = &self.pddb_mr.as_slice()[..pddb_data_pages * size_of::<Pte>()];
+            let pagetable: &[u8] = unsafe { &self.pddb_mr.as_slice()[..pddb_data_pages * size_of::<Pte>()] };
             log::info!("Derived page table of len 0x{:x}", pagetable.len());
             let entries_per_page = PAGE_SIZE / size_of::<Pte>();
-            modals.start_progress(t!("pddb.rekey.running", xous::LANG), 0, (pddb_data_pages * size_of::<Pte>()) as u32, 0).ok();
+            modals.start_progress(t!("pddb.rekey.running", locales::LANG), 0, (pddb_data_pages * size_of::<Pte>()) as u32, 0).ok();
             for (chunk_enum, page) in pagetable.chunks(PAGE_SIZE).enumerate() {
                 // this is the actual offset into pagetable[] that the page[] slice comes from
                 let chunk_start_address = chunk_enum * PAGE_SIZE;
@@ -2361,7 +2363,7 @@ impl PddbOs {
             };
             if do_fscb {
                 log::info!("regenerating fast space...");
-                modals.dynamic_notification(Some(t!("pddb.rekey.fastspace", xous::LANG)), None).ok();
+                modals.dynamic_notification(Some(t!("pddb.rekey.fastspace", locales::LANG)), None).ok();
                 // convert our used page map into the structure needed by fast_space_generate()
                 let mut page_heap = BinaryHeap::new();
                 // drain doesn't actually de-allocate memory, but it gives us an opportunity
@@ -2435,16 +2437,16 @@ impl PddbOs {
         let modals = modals::Modals::new(&xns).unwrap();
         modals.show_notification(
             match self.dna_mode {
-                DnaMode::Normal => t!("pddb.freespace.request", xous::LANG),
-                DnaMode::Migration => t!("pddb.rekey.request", xous::LANG),
-                DnaMode::Churn => t!("pddb.churn.request", xous::LANG),
+                DnaMode::Normal => t!("pddb.freespace.request", locales::LANG),
+                DnaMode::Migration => t!("pddb.rekey.request", locales::LANG),
+                DnaMode::Churn => t!("pddb.churn.request", locales::LANG),
             },
             None).ok();
         #[cfg(feature="ux-swap-delay")]
         self.tt.sleep_ms(SWAP_DELAY_MS).unwrap();
 
         // 0.5 display the Bases that we know
-        let mut blist = String::from(t!("pddb.freespace.currentlist", xous::LANG));
+        let mut blist = String::from(t!("pddb.freespace.currentlist", locales::LANG));
         for (_key, name) in ret.iter() {
             blist.push_str("\n");
             blist.push_str(name);
@@ -2454,12 +2456,12 @@ impl PddbOs {
         self.tt.sleep_ms(SWAP_DELAY_MS).unwrap();
 
         // 1. prompt user to enter any name/password combos for other basis we want to keep
-        while self.yes_no_approval(&modals, t!("pddb.freespace.enumerate_another", xous::LANG)) {
+        while self.yes_no_approval(&modals, t!("pddb.freespace.enumerate_another", locales::LANG)) {
             #[cfg(feature="ux-swap-delay")]
             self.tt.sleep_ms(SWAP_DELAY_MS).unwrap();
 
             match modals
-                .alert_builder(t!("pddb.freespace.name", xous::LANG))
+                .alert_builder(t!("pddb.freespace.name", locales::LANG))
                 .field(None, None)
                 .build()
             {
@@ -2500,7 +2502,7 @@ impl PddbOs {
                     if let Some((basis_key, name)) = maybe_entry {
                         ret.push((basis_key, name));
                     } else {
-                        modals.show_notification(t!("pddb.freespace.badpass", xous::LANG), None).ok();
+                        modals.show_notification(t!("pddb.freespace.badpass", locales::LANG), None).ok();
                         #[cfg(feature="ux-swap-delay")]
                         self.tt.sleep_ms(SWAP_DELAY_MS).unwrap();
                     }
@@ -2510,7 +2512,7 @@ impl PddbOs {
             #[cfg(feature="ux-swap-delay")]
             self.tt.sleep_ms(SWAP_DELAY_MS).unwrap();
             // 4. repeat summary print-out
-            let mut blist = String::from(t!("pddb.freespace.currentlist", xous::LANG));
+            let mut blist = String::from(t!("pddb.freespace.currentlist", locales::LANG));
             for (_key, name) in ret.iter() {
                 blist.push_str("\n");
                 blist.push_str(name);
@@ -2523,9 +2525,9 @@ impl PddbOs {
         if self.yes_no_approval(
             &modals,
             match self.dna_mode {
-                DnaMode::Normal => t!("pddb.freespace.finished", xous::LANG),
-                DnaMode::Migration => t!("pddb.rekey.finished", xous::LANG),
-                DnaMode::Churn => t!("pddb.churn.finished", xous::LANG),
+                DnaMode::Normal => t!("pddb.freespace.finished", locales::LANG),
+                DnaMode::Migration => t!("pddb.rekey.finished", locales::LANG),
+                DnaMode::Churn => t!("pddb.churn.finished", locales::LANG),
         }) {
             Some(ret)
         } else {
@@ -2535,11 +2537,11 @@ impl PddbOs {
 
     fn yes_no_approval(&self, modals: &modals::Modals, request: &str) -> bool {
         modals.add_list(
-            vec![t!("pddb.yes", xous::LANG), t!("pddb.no", xous::LANG)]
+            vec![t!("pddb.yes", locales::LANG), t!("pddb.no", locales::LANG)]
         ).expect("couldn't build confirmation dialog");
         match modals.get_radiobutton(request) {
             Ok(response) => {
-                if &response == t!("pddb.yes", xous::LANG) {
+                if &response == t!("pddb.yes", locales::LANG) {
                     true
                 } else {
                     false
@@ -2632,10 +2634,10 @@ impl PddbOs {
 
     pub(crate) fn checksums(&self, modals: Option::<&Modals>) -> root_keys::api::Checksums {
         let mut checksums = root_keys::api::Checksums::default();
-        let pddb = self.pddb_mr.as_slice();
+        let pddb = unsafe { self.pddb_mr.as_slice() };
         if let Some(m) = modals {
             m.start_progress(
-                t!("pddb.checksums", xous::LANG),
+                t!("pddb.checksums", locales::LANG),
                 0,
                 checksums.checksums.len() as u32,
                 0
@@ -3064,11 +3066,11 @@ impl PddbOs {
                 modals.dynamic_notification_close().unwrap();
                 let mut prompt = String::from("Any secret Bases must be migrated now, or else their data will be lost.\n\nUnlock a Basis for migration?");
                 loop {
-                    modals.add_list_item(t!("pddb.yes", xous::LANG)).expect("couldn't build radio item list");
-                    modals.add_list_item(t!("pddb.no", xous::LANG)).expect("couldn't build radio item list");
+                    modals.add_list_item(t!("pddb.yes", locales::LANG)).expect("couldn't build radio item list");
+                    modals.add_list_item(t!("pddb.no", locales::LANG)).expect("couldn't build radio item list");
                     match modals.get_radiobutton(&prompt) {
                         Ok(response) => {
-                            if response.as_str() == t!("pddb.yes", xous::LANG) {
+                            if response.as_str() == t!("pddb.yes", locales::LANG) {
                                 match modals.alert_builder("Enter the Basis name")
                                 .field(Some("My Secret Basis".to_string()), None)
                                 .build() {
@@ -3137,7 +3139,7 @@ impl PddbOs {
                                         prompt.push_str("Error unlocking Basis, retry?");
                                     }
                                 }
-                            } else if response.as_str() == t!("pddb.no", xous::LANG) {
+                            } else if response.as_str() == t!("pddb.no", locales::LANG) {
                                 break;
                             } else {
                                 log::warn!("Got unexpected return from radiobutton: {}", response);

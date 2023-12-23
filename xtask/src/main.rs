@@ -70,9 +70,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &base_pkgs[..],
         &[
             "graphics-server",  // raw (unprotected) frame buffer primitives
-            "keyboard",   // required by graphics-server
-            "spinor",     // required by keyboard - to save key mapping
-            "llio",       // required by spinor
+            "early_settings",   // required by keyboard
+            "keyboard",         // required by graphics-server
+            "spinor",           // required by keyboard - to save key mapping
+            "llio",             // required by spinor
         ]
     ].concat();
     // packages in the user image - most of the services at this layer have cross-dependencies
@@ -113,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     ].concat();
     // for fast checking of AES hardware accelerator
-    let aestest_pkgs = ["ticktimer-server", "log-server", "aes-test"].to_vec();
+    let aestest_pkgs = ["xous-ticktimer", "xous-log", "aes-test"].to_vec();
 
     // ---- extract position independent args ----
     let lkey = get_flag("--lkey")?;
@@ -139,6 +140,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             language_set = true;
         }
     }
+    let kern_features = get_flag("--kernel-feature")?;
+    for feature in kern_features {
+        builder.add_kernel_feature(&feature);
+    }
+
     if !language_set { // the default language is english
         track_language_changes("en")?;
     }
@@ -245,7 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             builder.target_hosted()
                    .add_services(&gfx_base_pkgs.into_iter().map(String::from).collect())
                    .add_services(&get_cratespecs())
-                   .add_feature("graphics-server/testing");
+                   .add_feature("graphics-server/gfx-testing");
         },
         Some("hosted-ci") => {
             builder.target_hosted()
@@ -357,6 +363,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                    .add_services(&user_pkgs.into_iter().map(String::from).collect())
                    .add_feature("avalanchetest");
         }
+	Some("compile-apps") => {
+	    builder.target_precursor_no_image(PRECURSOR_SOC_VERSION)
+		.add_services(&gfx_base_pkgs.into_iter().map(String::from).collect());
+	}
+
+        // ------ Cramium hardware image configs ------
+        Some("cramium-fpga") | Some("cramium-soc") => {
+            let cramium_pkgs = [
+                "xous-log",
+                "xous-names",
+                "xous-ticktimer",
+                "cram-console",
+            ].to_vec();
+            match task.as_deref() {
+                Some("cramium-fpga") => builder.target_cramium_fpga(),
+                Some("cramium-soc") => builder.target_cramium_soc(),
+                _ => panic!("should be unreachable"),
+            };
+            builder.add_services(&get_cratespecs());
+            for service in cramium_pkgs {
+                builder.add_service(service, true);
+            }
+        }
 
         // ------ ARM hardware image configs ------
         Some("arm-tiny") => {
@@ -445,7 +474,8 @@ be merged in with explicit app/service treatment with the following flags:
 
 [verb] options:
 Hardware images:
- app-image               Precursor user image. [cratespecs] are apps
+ app-image-xip           Precursor user image with XIP (frees more RAM for apps). [cratespecs] are apps
+ app-image               Precursor user image (all services in RAM). [cratespecs] are apps
  perf-image              Precursor user image, with performance profiling. [cratespecs] are apps
  tts                     builds an image with text to speech support via externally linked C executable. [cratespecs] are apps
  usbdev                  minimal, insecure build for new USB core bring-up. [cratespecs] are services
@@ -473,9 +503,10 @@ Renode emulation:
  renode-aes-test         Renode image for AES emulation development. Extremely minimal.
 
 Other commands:
- generate-locales        (re)generate the locales include for the language selected in xous-rs/src/locale.rs
+ generate-locales        (re)generate the locales include for the language selected in locales/src/locale.rs
  wycheproof-import       generate binary test vectors for engine-25519 from whycheproof-import/x25519.json
  install-toolkit         installs Xous toolkit with no prompt, useful in CI. Specify `--force` to remove existing toolchains
+ compile-apps            Just compiles the apps specified in [cratespecs], for example in order to use app server
 
 Note: By default, the `ticktimer` will get rebuilt every time. You can skip this by appending `--no-timestamp` to the command.
 "
@@ -483,10 +514,6 @@ Note: By default, the `ticktimer` will get rebuilt every time. You can skip this
 }
 
 type DynError = Box<dyn std::error::Error>;
-
-enum MemorySpec {
-    SvdFile(String),
-}
 
 /// [cratespecs] are positional arguments, and is a list of 0 to N tokens that immediately
 /// follow [verb]
