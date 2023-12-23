@@ -338,7 +338,7 @@ impl Repl{
             bubble_tv.draw_border = true;
             bubble_tv.clear_area = true;
             bubble_tv.rounded_border = Some(self.bubble_radius);
-            bubble_tv.style = GlyphStyle::Large;
+            bubble_tv.style = graphics_server::GlyphStyle::Large;
             //bubble_tv.style = gam::SYSTEM_STYLE;
             bubble_tv.margin = self.bubble_margin;
             bubble_tv.ellipsis = false; bubble_tv.insertion = None;
