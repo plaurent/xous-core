@@ -440,13 +440,13 @@ impl Edlin {
                         del_start = without_d.parse::<usize>().unwrap();
                         del_cease = without_d.parse::<usize>().unwrap();
                     }
-                    if del_cease >= self.data.len() {
+                    if del_cease > self.data.len()-1 {
                         del_cease = self.data.len()-1;
                     }
-                    if del_start >= del_cease {
+                    if del_start > del_cease {
                         del_start = del_cease;
                     }
-                    if del_start <= self.data.len() - 2 && del_cease <= self.data.len()-1 {
+                    if del_start <= self.data.len() - 1 && del_cease <= self.data.len() {
                         println!("Deleting {} to {}", del_start, del_cease);
                         for i in (del_start..del_cease).rev() {
                             self.data.remove(i);
