@@ -429,7 +429,7 @@ impl Edlin {
                     return vec![format!("*{}:", self.line_cursor)];
                 }
                 if line.to_lowercase().ends_with("d") {
-                    let mut del_start = self.line_cursor-1;
+                    let mut del_start = self.line_cursor;
                     let mut del_cease = self.line_cursor;
                     let mut without_d = line.to_lowercase().replace("d", "");
                     if without_d.contains(",") {
@@ -444,7 +444,7 @@ impl Edlin {
                         del_cease = self.data.len()-1;
                     }
                     if del_start >= del_cease {
-                        del_start = del_cease - 1;
+                        del_start = del_cease;
                     }
                     if del_start <= self.data.len() - 2 && del_cease <= self.data.len()-1 {
                         println!("Deleting {} to {}", del_start, del_cease);
