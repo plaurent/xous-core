@@ -347,7 +347,10 @@ impl Edlin {
                     let body= self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
                     // let body = std::string::String::from("This is a test of data via json");
                     let result = self.post_json(url.as_str(), body.as_str()).expect("Post didn't work");
-                    return vec![std::string::String::from(result.into_string().unwrap())];
+                    log::info!("--> posted {}", line);
+                    let resultString = std::string::String::from(result.into_string().unwrap());
+                    log::info!("result was {}", resultString);
+                    return vec![resultString];
                 }
                 if line.starts_with("b") {  // set brightness
                     let digits: Vec<&str> = line.matches(char::is_numeric).collect();
@@ -432,18 +435,18 @@ impl Edlin {
                     if without_d.contains(",") {
                         let pair: Vec<&str> = without_d.split(',').collect();
                         del_start = pair[0].parse::<usize>().unwrap();
-                        del_cease = pair[1].parse::<usize>().unwrap() + 1;
+                        del_cease = pair[1].parse::<usize>().unwrap();
                     } else if without_d.len() > 0 {
                         del_start = without_d.parse::<usize>().unwrap();
-                        del_cease = without_d.parse::<usize>().unwrap() + 1;
+                        del_cease = without_d.parse::<usize>().unwrap();
                     }
-                    if del_cease > self.data.len() {
-                        del_cease = self.data.len();
+                    if del_cease >= self.data.len() {
+                        del_cease = self.data.len()-1;
                     }
                     if del_start >= del_cease {
                         del_start = del_cease - 1;
                     }
-                    if del_start < self.data.len() - 1 && del_cease < self.data.len() {
+                    if del_start <= self.data.len() - 2 && del_cease <= self.data.len()-1 {
                         println!("Deleting {} to {}", del_start, del_cease);
                         for i in (del_start..del_cease).rev() {
                             self.data.remove(i);
@@ -453,7 +456,7 @@ impl Edlin {
                         }
                         return vec![format!("Deleted {} to {}", del_start, del_cease)];
                     } else {
-                        return vec![format!("Can't delete beyond {}", self.data.len())];
+                        return vec![format!("Can't delete beyond {}", self.data.len()-1)];
                     }
                 }
                 if line.contains("v") || line.contains("v") {
