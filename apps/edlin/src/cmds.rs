@@ -320,6 +320,10 @@ impl Edlin {
                 if line.len() > 0 && self.is_string_numeric(line) {
                     self.mode = EdlinMode::Editing;
                     self.line_cursor = line.parse::<usize>().unwrap();
+                    if self.data.get(self.line_cursor).unwrap().len() > 40 {
+                        self.mode = EdlinMode::Command;
+                        return vec![std::string::String::from("Line too long to edit. Try # wrapping.")];
+                    }
                     match self.gam.type_chars(self.data.get(self.line_cursor).unwrap()) {
                         Ok(_) => {
                             //write!(ret, "Edit the value and press enter:").unwrap()
