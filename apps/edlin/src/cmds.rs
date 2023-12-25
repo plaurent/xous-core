@@ -448,6 +448,12 @@ impl Edlin {
                     }
                     if del_start <= self.data.len() - 1 && del_cease <= self.data.len() {
                         println!("Deleting {} to {}", del_start, del_cease);
+                        if del_start == del_cease {
+                            self.data.remove(del_start);
+                            if self.line_cursor > self.data.len() {
+                                self.line_cursor = self.data.len()
+                            }
+                        }
                         for i in (del_start..del_cease).rev() {
                             self.data.remove(i);
                             if self.line_cursor > self.data.len() {
