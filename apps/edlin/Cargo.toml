@@ -26,7 +26,7 @@ com = {path = "../../services/com"}
 llio = {path = "../../services/llio"}
 codec = {path = "../../services/codec"}
 cos_table = {path = "../../libs/cos_table"}
-ureq = { version = "2.5", features = ["json"] }
+ureq = { version = "2.7.1", features = ["json"] }
 
 [features]
 default = []
