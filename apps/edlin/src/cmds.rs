@@ -362,7 +362,7 @@ impl Edlin {
                     let digits: Vec<&str> = line.matches(char::is_numeric).collect();
                     let mut number = digits.join("").parse::<u8>().unwrap();
                     self.current_backlight_setting = number;
-                    self.com.set_backlight(self.current_backlight_setting, 0).unwrap();
+                    self.com.set_backlight(self.current_backlight_setting, self.current_backlight_setting).unwrap();
                     return vec![format!("Brightness set to {}/255.", self.current_backlight_setting)];
                 }
 
