@@ -322,7 +322,7 @@ impl Edlin {
                 if line.len() > 0 && self.is_string_numeric(line) {
                     self.mode = EdlinMode::Editing;
                     self.line_cursor = line.parse::<usize>().unwrap();
-                    if self.data.get(self.line_cursor).unwrap().len() > 40 {
+                    if self.data.get(self.line_cursor).unwrap().len() > 100 {
                         self.mode = EdlinMode::Command;
                         return vec![std::string::String::from("Line too long to edit. Try # wrapping.")];
                     }
