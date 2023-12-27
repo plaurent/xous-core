@@ -180,20 +180,22 @@ impl Edlin {
                 if let Ok(body) = response.into_string() {
                     Some(body)
                 } else {
-                    log::info!("Error: could not convert response into String");
-                    None
+                    Some("Error: could not convert response into String".to_string())
+                    //None
                 }
             },
             Err(ureq::Error::Status(code, response)) => {
                 /* the server returned an unexpected status
                 code (such as 400, 500 etc) */
                 let err_body = response.into_string().unwrap();
-                log::info!("ERROR code {} err_body = {}", code, err_body);
-                None
+                Some(err_body.to_string())
+                //log::info!("ERROR code {} err_body = {}", code, err_body);
+                //None
             }
             Err(e) => {
-                log::info!("ERROR in handle_response: {:?}", e);
-                None
+                Some(e.to_string())
+                //log::info!("ERROR in handle_response: {:?}", e);
+                //None
             }
 
         }
