@@ -612,7 +612,7 @@ impl CmdEnv {
                 }
             }
             let line = std::string::String::from(cmdline.as_str().unwrap());
-            self.edlin.com.set_backlight(self.edlin.current_backlight_setting, 0).unwrap();
+            self.edlin.com.set_backlight(self.edlin.current_backlight_setting, self.edlin.current_backlight_setting).unwrap();
 
             let result = self.edlin.process(&line);
             //let result = self.edlin.process(&std::string::String::from(line.trim()));
