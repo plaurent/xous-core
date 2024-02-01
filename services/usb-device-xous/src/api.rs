@@ -1,5 +1,6 @@
 // Note: the log server relies on this name not changing in order to hook the serial port for logging output.
-// changing this name shouldn't lead to a crash, but it will lead to the USB driver being undiscoverable by the log crate.
+// changing this name shouldn't lead to a crash, but it will lead to the USB driver being undiscoverable by
+// the log crate.
 pub(crate) const SERVER_NAME_USB_DEVICE: &'static str = "_Xous USB device driver_";
 
 #[derive(num_derive::FromPrimitive, num_derive::ToPrimitive, Debug)]
@@ -26,6 +27,8 @@ pub(crate) enum Opcode {
     DebugUsbOp = 9,
     /// Set autotype rate
     SetAutotypeRate = 10,
+    /// Register a USB event observer
+    RegisterUsbObserver = 11,
 
     /// Send a U2F message
     U2fTx = 128,
@@ -52,12 +55,25 @@ pub(crate) enum Opcode {
     /// TRNG send poll
     SerialTrngPoll = 518,
 
-    #[cfg(feature="mass-storage")]
+    #[cfg(feature = "mass-storage")]
     SetBlockDevice = 1024,
-    #[cfg(feature="mass-storage")]
+    #[cfg(feature = "mass-storage")]
     SetBlockDeviceSID = 1025,
-    #[cfg(feature="mass-storage")]
+    #[cfg(feature = "mass-storage")]
     ResetBlockDevice = 1026,
+
+    // HIDv2
+    /// Read a HID report
+    HIDReadReport = 1027,
+
+    /// Write a HID report
+    HIDWriteReport = 1028,
+
+    /// Set the HID descriptor to be pushed to the USB host
+    HIDSetDescriptor = 1029,
+
+    /// Unset HID descriptor and reset HIDv2 state
+    HIDUnsetDescriptor = 1030,
 
     /// Handle the USB interrupt
     UsbIrqHandler = 2048,
@@ -73,7 +89,7 @@ pub(crate) enum Opcode {
 // The log crate depends on this API not changing.
 #[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Copy, Clone)]
 pub struct UsbString {
-    pub s: xous_ipc::String::<4000>,
+    pub s: xous_ipc::String<4000>,
     pub sent: Option<u32>,
 }
 
@@ -104,11 +120,13 @@ pub enum UsbDeviceType {
     Debug = 0,
     FidoKbd = 1,
     Fido = 2,
-    #[cfg(feature="mass-storage")]
+    #[cfg(feature = "mass-storage")]
     MassStorage = 3,
     Serial = 4,
+    HIDv2 = 5,
 }
 use std::convert::TryFrom;
+
 impl TryFrom<usize> for UsbDeviceType {
     type Error = &'static str;
 
@@ -117,9 +135,10 @@ impl TryFrom<usize> for UsbDeviceType {
             0 => Ok(UsbDeviceType::Debug),
             1 => Ok(UsbDeviceType::FidoKbd),
             2 => Ok(UsbDeviceType::Fido),
-            #[cfg(feature="mass-storage")]
+            #[cfg(feature = "mass-storage")]
             3 => Ok(UsbDeviceType::MassStorage),
             4 => Ok(UsbDeviceType::Serial),
+            5 => Ok(UsbDeviceType::HIDv2),
             _ => Err("Invalid UsbDeviceType specifier"),
         }
     }
@@ -129,7 +148,7 @@ pub const SERIAL_ASCII_BUFLEN: usize = 512;
 pub const SERIAL_BINARY_BUFLEN: usize = 128;
 #[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Copy, Clone)]
 pub struct UsbSerialAscii {
-    pub s: xous_ipc::String::<SERIAL_ASCII_BUFLEN>,
+    pub s: xous_ipc::String<SERIAL_ASCII_BUFLEN>,
     pub delimiter: Option<char>,
 }
 
@@ -137,4 +156,32 @@ pub struct UsbSerialAscii {
 pub struct UsbSerialBinary {
     pub d: [u8; SERIAL_BINARY_BUFLEN],
     pub len: usize,
+}
+
+pub const MAX_HID_REPORT_DESCRIPTOR_LEN: usize = 1024;
+
+#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Copy, Clone)]
+pub struct HIDReportDescriptorMessage {
+    pub descriptor: [u8; MAX_HID_REPORT_DESCRIPTOR_LEN],
+    pub len: usize,
+}
+
+#[derive(Copy, Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[repr(C, align(8))]
+pub struct HIDReport(pub [u8; 64]);
+
+impl Default for HIDReport {
+    fn default() -> Self { return Self([0u8; 64]) }
+}
+
+#[derive(Debug, Default, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Copy, Clone)]
+pub struct HIDReportMessage {
+    pub data: Option<HIDReport>,
+}
+
+/// this structure is used to register a USB listener.
+#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Copy, Clone)]
+pub(crate) struct UsbListenerRegistration {
+    pub server_name: xous_ipc::String<64>,
+    pub listener_op_id: usize,
 }
