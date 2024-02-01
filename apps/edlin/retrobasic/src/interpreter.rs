@@ -1,7 +1,7 @@
 use ast::AST;
 use dimsum::MultiDim;
 use error::{Error, Result};
-use rand;
+//use rand;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write};
@@ -676,7 +676,9 @@ impl Interpreter {
     }
 
     fn eval_rnd(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(rand::random::<f32>() * self.eval(ast)?.to_num()))
+        self.println_stdout("WARN: Rand not impl.");
+        Ok(MV::Num(0.0))
+        //Ok(MV::Num(rand::random::<f32>() * self.eval(ast)?.to_num()))
     }
 
     fn eval_abs(&mut self, ast: &AST) -> Result<MV> {
