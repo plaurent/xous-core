@@ -14,6 +14,8 @@ const ACCEPT_TEXTHTML: &str = "text/html";
 
 use ureq;
 
+use retrobasic;
+
 
 
 use std::collections::HashMap;
@@ -364,6 +366,12 @@ impl Edlin {
                     self.current_backlight_setting = number;
                     self.com.set_backlight(self.current_backlight_setting, self.current_backlight_setting).unwrap();
                     return vec![format!("Brightness set to {}/255.", self.current_backlight_setting)];
+                }
+                if line.starts_with("z") {  // run BASIC
+                    let mut one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
+                    one_long_string.push_str("\n");
+                    let result = retrobasic::run_prog(one_long_string);
+                    return vec![format!("result {}.", result)];
                 }
 
                 if line.ends_with("#") {

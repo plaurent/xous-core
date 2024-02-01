@@ -26,6 +26,7 @@ com = {path = "../../services/com"}
 llio = {path = "../../services/llio"}
 codec = {path = "../../services/codec"}
 cos_table = {path = "../../libs/cos_table"}
+retrobasic = {path = "./retrobasic"}
 ureq = { version = "2.7.1", features = ["json"] }
 
 [features]
