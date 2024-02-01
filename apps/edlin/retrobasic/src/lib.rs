@@ -3,32 +3,32 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
-extern crate clap;
-use clap::{App, Arg, SubCommand};
+//extern crate clap;
+//use clap::{App, Arg, SubCommand};
 
 extern crate dimsum;
-extern crate env_logger;
+//extern crate env_logger;
 #[macro_use]
 extern crate log;
-extern crate rand;
-extern crate serde;
-extern crate serde_json;
+//extern crate rand;
+//extern crate serde;
+//extern crate serde_json;
 
-extern crate futures;
-extern crate hyper;
+//extern crate futures;
+//extern crate hyper;
 #[macro_use]
-extern crate serde_derive;
-extern crate tokio_core;
+//extern crate serde_derive;
+//extern crate tokio_core;
 
 mod ast;
 mod error;
-mod fetcher;
+//mod fetcher;
 mod interpreter;
 mod lexer;
 mod parser;
 mod tokenid;
 
-use fetcher::Fetcher;
+//use fetcher::Fetcher;
 use interpreter::Interpreter;
 use lexer::Lexer;
 use parser::Parser;
@@ -43,7 +43,8 @@ pub fn run_prog(prog: String) -> String {
         Ok(ast) => ast,
         Err(e) => {
             println!("{}", e);
-            std::process::exit(1);
+            return String::from(format!("Error {}", e).as_str())
+            //std::process::exit(1);
         }
     };
 
@@ -52,7 +53,7 @@ pub fn run_prog(prog: String) -> String {
         Ok(_) => interpreter.stdout.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n"),
         Err(e) => {
             println!("{}", e);
-            String::from("Error")
+            String::from(format!("Error {}", e).as_str())
             //std::process::exit(1)
         }
     };
