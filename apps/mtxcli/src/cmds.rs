@@ -496,6 +496,7 @@ impl CommonEnv {
         if self.filter.len() > 0 {
             true
         } else {
+           log::info!("DEBUG Calling get_filter with token: {}", self.token);
             if let Some(new_filter) = web::get_filter(&self.user, &self.server,
                                                       &self.room_id, &self.token) {
                 self.set_debug(FILTER_KEY, &new_filter);
