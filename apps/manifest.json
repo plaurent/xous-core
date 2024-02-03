@@ -24,13 +24,6 @@
             }
         }
     },
-    "book": {
-        "context_name": "Book",
-        "menu_name": {
-            "appmenu.book": {
-                "en": "Book"
-            }
-    },
     "chat-test": {
         "context_name": "Chat UI test",
         "menu_name": {
