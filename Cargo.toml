@@ -82,7 +82,6 @@ members = [
   "apps/mtxcli",
   "apps/repl",
   "apps/edlin",
-  "apps/sigchat",
   "apps/vault",
   "apps/vault/tools/vaultbackup-rs",
   "apps/transientdisk",
@@ -132,7 +131,7 @@ exclude = [
 codegen-units = 1  # 1 better optimizations
 debug = false
 strip = false
-lto = "fat"
+lto = "thin"
 incremental = true
 #panic = "abort" # Remove panic output, which can reduce file size
 opt-level = "s" # z,s: Optimize for size instead of performance; 1 for easier debugging; comment out for "best performance" (but in Rust 1.72 this causes regressions)

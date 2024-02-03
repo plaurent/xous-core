@@ -1714,11 +1714,11 @@ dependencies = [
  "retrobasic",
  "trng",
  "ureq",
- "xous 0.9.55 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous 0.9.57 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
  "xous-api-names",
  "xous-api-ticktimer",
- "xous-ipc 0.9.55 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous-ipc 0.9.57 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
