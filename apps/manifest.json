@@ -119,6 +119,14 @@
             }
         }
     },
+    "book": {
+        "context_name": "Book",
+        "menu_name": {
+            "appmenu.book": {
+                "en": "Book"
+            }
+        }
+    },
     "vault": {
         "context_name": "Key Vault",
         "menu_name": {
