@@ -532,6 +532,9 @@ impl Edlin {
                     if upto > self.data.len()  {
                         upto = self.data.len();
                     }
+                    if self.line_cursor > self.data.len() {
+                        self.line_cursor = self.data.len();
+                    }
                     for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
                         result.insert(i, format!("{}", line));
                     }
