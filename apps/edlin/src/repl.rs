@@ -47,9 +47,9 @@ impl Repl{
         let gam = gam::Gam::new(xns).expect("can't connect to GAM");
 
         let token = gam.register_ux(UxRegistration {
-            app_name: xous_ipc::String::<128>::from_str(gam::APP_NAME_EDLIN),
+            app_name: String::from(gam::APP_NAME_EDLIN),
             ux_type: gam::UxType::Chat,
-            predictor: Some(xous_ipc::String::<64>::from_str(ime_plugin_shell::SERVER_NAME_IME_PLUGIN_SHELL)),
+            predictor: Some(String::from(ime_plugin_shell::SERVER_NAME_IME_PLUGIN_SHELL)),
             listener: sid.to_array(), // note disclosure of our SID to the GAM -- the secret is now shared with the GAM!
             redraw_id: ReplOp::Redraw.to_u32().unwrap(),
             gotinput_id: Some(ReplOp::Line.to_u32().unwrap()),

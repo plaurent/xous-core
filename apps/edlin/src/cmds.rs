@@ -186,7 +186,7 @@ impl Edlin {
                     //None
                 }
             },
-            Err(ureq::Error::Status(code, response)) => {
+            Err(ureq::Error::Status(_code, response)) => {
                 /* the server returned an unexpected status
                 code (such as 400, 500 etc) */
                 let err_body = response.into_string().unwrap();
@@ -362,7 +362,7 @@ impl Edlin {
                 }
                 if line.starts_with("b") {  // set brightness
                     let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                    let mut number = digits.join("").parse::<u8>().unwrap();
+                    let number = digits.join("").parse::<u8>().unwrap();
                     self.current_backlight_setting = number;
                     self.com.set_backlight(self.current_backlight_setting, self.current_backlight_setting).unwrap();
                     return vec![format!("Brightness set to {}/255.", self.current_backlight_setting)];
@@ -445,7 +445,7 @@ impl Edlin {
                 if line.to_lowercase().ends_with("d") {
                     let mut del_start = self.line_cursor;
                     let mut del_cease = self.line_cursor;
-                    let mut without_d = line.to_lowercase().replace("d", "");
+                    let without_d = line.to_lowercase().replace("d", "");
                     if without_d.contains(",") {
                         let pair: Vec<&str> = without_d.split(',').collect();
                         del_start = pair[0].parse::<usize>().unwrap();
@@ -499,7 +499,7 @@ impl Edlin {
                 if line.contains("n") || line.contains("N") {
                     if !line.to_lowercase().starts_with("n") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let mut line_to_next_from = digits.join("").parse::<usize>().unwrap();
+                        let line_to_next_from = digits.join("").parse::<usize>().unwrap();
                         self.line_cursor = line_to_next_from;
                     }
                     let NUM_LINES_PER_PAGE = 5;
@@ -523,7 +523,7 @@ impl Edlin {
                     // TODO remove duplication
                     if !line.to_lowercase().starts_with("p") && !line.eq("") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let mut line_to_next_from = digits.join("").parse::<usize>().unwrap();
+                        let line_to_next_from = digits.join("").parse::<usize>().unwrap();
                         self.line_cursor = line_to_next_from;
                     }
                     let NUM_LINES_PER_PAGE = 5;
@@ -577,7 +577,7 @@ impl CmdEnv {
             xns: xous_names::XousNames::new().unwrap(),
         };
 
-        let mut edlin = Edlin {
+        let edlin = Edlin {
             data: Vec::new(),
             mode: EdlinMode::Command,
             line_cursor: 0,
