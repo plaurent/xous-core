@@ -30,7 +30,7 @@ use xous_ipc::Buffer;
 #[doc = include_str!("../README.md")]
 
 pub const RATE_LIMIT_MS: usize = 33;
-pub const SYSTEM_STYLE: GlyphStyle = GlyphStyle::Tall;
+pub const SYSTEM_STYLE: GlyphStyle = GlyphStyle::Large;  //  pakl GlyphStyle::Tall;
 
 // Add names here and insert them into the EXPECTED_BOOT_CONTEXTS structure below.
 pub const MAIN_MENU_NAME: &'static str = "main menu";
