@@ -1,8 +1,8 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use String;
 use num_traits::*;
 use sha2::Digest;
-use xous_ipc::String;
 
 use crate::{CommonEnv, ShellCmdApi};
 static CB_ID: AtomicU32 = AtomicU32::new(0);
@@ -47,7 +47,8 @@ power consumption -
 ~50% power savings to use hardware hasher
 
 v0.10.8 API implementation
-TEST_MAX_LEN = 8192 (fixed length) / TEST_ITERS = 1000: hw 11.464ms/hash, sw 21.502ms/hash
+TEST_MAX_LEN = 8192 (fixed length) / TEST_ITERS = 1000: hw 11.464ms/hash, sw 21.502ms/hash (with trng ID bug (ID was not regenerated on each iteration), oops)
+TEST_MAX_LEN = 8192 (fixed length) / TEST_ITERS = 1000: hw 12.196ms/hash, sw 21.643ms/hash
  */
 
 pub fn benchmark_thread(sid0: usize, sid1: usize, sid2: usize, sid3: usize) {
@@ -167,7 +168,7 @@ impl Sha {
         let sid = xous::create_server().unwrap();
         let sid_tuple = sid.to_u32();
 
-        let cb_id = env.register_handler(String::<256>::from_str("sha"));
+        let cb_id = env.register_handler(String::from("sha"));
         CB_ID.store(cb_id, Ordering::Relaxed);
 
         xous::create_thread_4(
@@ -191,16 +192,12 @@ impl<'a> ShellCmdApi<'a> for Sha {
 
     // inserts boilerplate for command API
 
-    fn process(
-        &mut self,
-        args: String<1024>,
-        env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    fn process(&mut self, args: String, env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         use core::fmt::Write;
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
         let helpstring = "sha [check] [check256] [hwbench] [swbench] [susres]";
 
-        let mut tokens = args.as_str().unwrap().split(' ');
+        let mut tokens = args.split(' ');
 
         if let Some(sub_cmd) = tokens.next() {
             match sub_cmd {
@@ -317,11 +314,11 @@ impl<'a> ShellCmdApi<'a> for Sha {
         &mut self,
         msg: &xous::MessageEnvelope,
         env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    ) -> Result<Option<String>, xous::Error> {
         use core::fmt::Write;
 
         log::debug!("benchmark callback");
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
 
         xous::msg_scalar_unpack!(msg, pass, first_time, hw_mode, _, {
             let end = env.ticktimer.elapsed_ms();

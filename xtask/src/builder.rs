@@ -6,7 +6,7 @@ use std::{
     process::Command,
 };
 
-use crate::{app_manifest::generate_app_menus, DynError};
+use crate::{DynError, app_manifest::generate_app_menus};
 
 #[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
@@ -15,7 +15,7 @@ pub(crate) enum BuildStream {
     Release,
 }
 impl BuildStream {
-    pub fn to_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match self {
             BuildStream::Debug => "debug",
             BuildStream::Release => "release",
@@ -23,38 +23,46 @@ impl BuildStream {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum LoaderRegion {
+    Ram,
+    Flash,
+    Swap,
+    Invalid,
+}
+
 #[derive(Debug, Clone)]
 pub enum CrateSpec {
     /// name of the crate
-    Local(String, bool),
+    Local(String, LoaderRegion),
     /// crates.io: (name of crate, version)
-    CratesIo(String, String, bool),
+    CratesIo(String, String, LoaderRegion),
     /// a prebuilt package: (name of executable, URL for download)
-    Prebuilt(String, String, bool),
+    Prebuilt(String, String, LoaderRegion),
     /// a prebuilt binary, done using command line tools: (Optional name, path)
-    BinaryFile(Option<String>, String, bool),
+    BinaryFile(Option<String>, String, LoaderRegion),
     /// an empty entry
     None,
 }
+
 impl CrateSpec {
-    pub fn is_xip(&self) -> bool {
+    pub fn get_region(&self) -> LoaderRegion {
         match self {
-            CrateSpec::Local(_s, xip) => *xip,
-            CrateSpec::CratesIo(_n, _v, xip) => *xip,
-            CrateSpec::Prebuilt(_n, _u, xip) => *xip,
-            CrateSpec::BinaryFile(_n, _path, xip) => *xip,
-            _ => false,
+            CrateSpec::Local(_s, region) => *region,
+            CrateSpec::CratesIo(_n, _v, region) => *region,
+            CrateSpec::Prebuilt(_n, _u, region) => *region,
+            CrateSpec::BinaryFile(_n, _path, region) => *region,
+            _ => LoaderRegion::Invalid,
         }
     }
 
-    pub fn set_xip(&mut self, xip: bool) {
+    pub fn set_region(&mut self, region: LoaderRegion) {
         *self = match self {
-            //TODO: why do these to_strings need to be here?
-            CrateSpec::Local(s, _xip) => CrateSpec::Local(s.to_string(), xip),
-            CrateSpec::CratesIo(n, v, _xip) => CrateSpec::CratesIo(n.to_string(), v.to_string(), xip),
-            CrateSpec::Prebuilt(n, u, _xip) => CrateSpec::Prebuilt(n.to_string(), u.to_string(), xip),
-            CrateSpec::BinaryFile(n, path, _xip) => {
-                CrateSpec::BinaryFile(n.as_ref().or(None).cloned(), path.to_string(), xip)
+            CrateSpec::Local(s, _region) => CrateSpec::Local(s.to_string(), region),
+            CrateSpec::CratesIo(n, v, _region) => CrateSpec::CratesIo(n.to_string(), v.to_string(), region),
+            CrateSpec::Prebuilt(n, u, _region) => CrateSpec::Prebuilt(n.to_string(), u.to_string(), region),
+            CrateSpec::BinaryFile(n, path, _region) => {
+                CrateSpec::BinaryFile(n.as_ref().or(None).cloned(), path.to_string(), region)
             }
             CrateSpec::None => CrateSpec::None,
         }
@@ -62,10 +70,10 @@ impl CrateSpec {
 
     pub fn name(&self) -> Option<String> {
         match self {
-            CrateSpec::Local(s, _xip) => Some(s.to_string()),
-            CrateSpec::CratesIo(n, _v, _xip) => Some(n.to_string()),
-            CrateSpec::Prebuilt(n, _u, _xip) => Some(n.to_string()),
-            CrateSpec::BinaryFile(n, path, _xip) => {
+            CrateSpec::Local(s, _region) => Some(s.to_string()),
+            CrateSpec::CratesIo(n, _v, _region) => Some(n.to_string()),
+            CrateSpec::Prebuilt(n, _u, _region) => Some(n.to_string()),
+            CrateSpec::BinaryFile(n, path, _region) => {
                 if let Some(name) = n {
                     Some(name.to_string())
                 } else {
@@ -81,12 +89,12 @@ impl From<&str> for CrateSpec {
         // remote crates are specified as "name^version", i.e. "xous-names^0.9.9"
         if spec.contains('^') {
             let (name, version) = spec.split_once('^').expect("couldn't parse crate specifier");
-            CrateSpec::CratesIo(name.to_string(), version.to_string(), false)
+            CrateSpec::CratesIo(name.to_string(), version.to_string(), LoaderRegion::Ram)
         // prebuilt crates are specified as "name#url"
         // i.e. "espeak-embedded#https://ci.betrusted.io/job/espeak-embedded/lastSuccessfulBuild/artifact/target/riscv32imac-unknown-xous-elf/release/"
         } else if spec.contains('#') {
             let (name, url) = spec.split_once('#').expect("couldn't parse crate specifier");
-            CrateSpec::Prebuilt(name.to_string(), url.to_string(), false)
+            CrateSpec::Prebuilt(name.to_string(), url.to_string(), LoaderRegion::Ram)
         // local files are specified as paths, which, at a minimum include one directory separator "/" or "\"
         // i.e. "./local_file"
         // Note that this is after a test for the '#' character, so that disambiguates URL slashes
@@ -96,12 +104,12 @@ impl From<&str> for CrateSpec {
             //optionally a BinaryFile can have a name associated with it as "name:path"
             if spec.find(':').is_some() {
                 let (name, path) = spec.split_once(':').unwrap();
-                CrateSpec::BinaryFile(Some(name.to_string()), path.to_string(), false)
+                CrateSpec::BinaryFile(Some(name.to_string()), path.to_string(), LoaderRegion::Ram)
             } else {
-                CrateSpec::BinaryFile(None, spec.to_string(), false)
+                CrateSpec::BinaryFile(None, spec.to_string(), LoaderRegion::Ram)
             }
         } else {
-            CrateSpec::Local(spec.to_string(), false)
+            CrateSpec::Local(spec.to_string(), LoaderRegion::Ram)
         }
     }
 }
@@ -126,6 +134,8 @@ pub(crate) struct Builder {
     stream: BuildStream,
     min_ver: String,
     target: Option<String>,
+    /// The kernel might require a different target than the rest of the programs.
+    target_kernel: Option<String>,
     utra_target: String,
     run_svd2repl: bool,
     locale_override: Option<String>,
@@ -134,16 +144,19 @@ pub(crate) struct Builder {
     dry_run: bool,
     /// when set to true, user selected packages are compiled but no image is created
     no_image: bool,
+    /// when Some, specifies a swap region as offset, size
+    swap: Option<(u32, u32)>,
+    change_target: bool,
 }
 
 impl Builder {
     pub fn new() -> Builder {
         Builder {
-            loader: CrateSpec::Local("loader".to_string(), false),
+            loader: CrateSpec::Local("loader".to_string(), LoaderRegion::Ram),
             loader_features: Vec::new(),
             loader_key: "devkey/dev.key".into(),
             loader_disable_defaults: false,
-            kernel: CrateSpec::Local("xous-kernel".to_string(), false),
+            kernel: CrateSpec::Local("xous-kernel".to_string(), LoaderRegion::Ram),
             kernel_features: Vec::new(),
             kernel_key: "devkey/dev.key".into(),
             kernel_disable_defaults: false,
@@ -154,19 +167,22 @@ impl Builder {
             stream: BuildStream::Release,
             min_ver: crate::MIN_XOUS_VERSION.to_string(),
             target: Some(crate::TARGET_TRIPLE_RISCV32.to_string()),
+            target_kernel: Some(crate::TARGET_TRIPLE_RISCV32_KERNEL.to_string()),
             utra_target: format!("precursor-{}", crate::PRECURSOR_SOC_VERSION).to_string(),
             run_svd2repl: false,
             locale_override: None,
             locale_stash: String::new(),
             dry_run: false,
             no_image: false,
+            swap: None,
+            change_target: false,
         }
     }
 
     /// Specify an alternate loader key, as a String that can encode a file name
     /// in the local directory, or a path + filename.
     #[allow(dead_code)]
-    pub fn loader_key_file<'a>(&'a mut self, filename: String) -> &'a mut Builder {
+    pub fn loader_key_file(&mut self, filename: String) -> &mut Builder {
         self.loader_key = filename;
         self
     }
@@ -174,34 +190,46 @@ impl Builder {
     /// Specify an alternate loader key, as a String that can encode a file name
     /// in the local directory, or a path + filename.
     #[allow(dead_code)]
-    pub fn kernel_key_file<'a>(&'a mut self, filename: String) -> &'a mut Builder {
+    pub fn kernel_key_file(&mut self, filename: String) -> &mut Builder {
         self.kernel_key = filename;
         self
     }
 
+    pub fn set_swap<'a>(&'a mut self, offset: u32, size: u32) -> &'a mut Builder {
+        self.swap = Some((offset, size));
+        self
+    }
+
+    pub fn is_swap_set(&self) -> bool { self.swap.is_some() }
+
     /// Set the build stream (debug or release)
     #[allow(dead_code)]
-    pub fn stream<'a>(&'a mut self, stream: BuildStream) -> &'a mut Builder {
+    pub fn stream(&mut self, stream: BuildStream) -> &mut Builder {
         self.stream = stream;
         self
     }
 
     /// Disable default features on the loader
     #[allow(dead_code)]
-    pub fn loader_disable_defaults<'a>(&'a mut self) -> &'a mut Builder {
+    pub fn loader_disable_defaults(&mut self) -> &mut Builder {
         self.loader_disable_defaults = true;
         self
     }
 
     /// Disable default features on the loader
     #[allow(dead_code)]
-    pub fn kernel_disable_defaults<'a>(&'a mut self) -> &'a mut Builder {
+    pub fn kernel_disable_defaults(&mut self) -> &mut Builder {
         self.kernel_disable_defaults = true;
         self
     }
 
-    pub fn add_global_flag<'a>(&'a mut self, flag: &str) -> &'a mut Builder {
+    pub fn add_global_flag(&mut self, flag: &str) -> &mut Builder {
         self.global_flags.push(flag.to_string());
+        self
+    }
+
+    pub fn set_change_target_flag(&mut self) -> &mut Builder {
+        self.change_target = true;
         self
     }
 
@@ -212,21 +240,22 @@ impl Builder {
     /// version. Eventually (on the order of many months or years), this code gets retired,
     /// otherwise we accumulate rarely-used code ad nauseam.
     #[allow(dead_code)]
-    pub fn set_min_xous_ver<'a>(&'a mut self, min_ver_string: &str) -> &'a mut Builder {
+    pub fn set_min_xous_ver(&mut self, min_ver_string: &str) -> &mut Builder {
         self.min_ver = min_ver_string.to_string();
         self
     }
 
     /// specify a locale string to override for the current build
-    pub fn override_locale<'a>(&'a mut self, locale: &str) -> &'a mut Builder {
+    pub fn override_locale(&mut self, locale: &str) -> &mut Builder {
         self.locale_override = Some(locale.into());
         self
     }
 
     /// Configure for hosted mode
-    pub fn target_hosted<'a>(&'a mut self) -> &'a mut Builder {
+    pub fn target_hosted(&mut self) -> &mut Builder {
         self.loader = CrateSpec::None;
         self.target = None;
+        self.target_kernel = None;
         self.stream = BuildStream::Release;
         self.utra_target = "hosted".to_string();
         self.run_svd2repl = false;
@@ -234,31 +263,34 @@ impl Builder {
     }
 
     /// Configure for renode targets
-    pub fn target_renode<'a>(&'a mut self) -> &'a mut Builder {
+    pub fn target_renode(&mut self) -> &mut Builder {
         self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.target_kernel = Some(crate::TARGET_TRIPLE_RISCV32_KERNEL.to_string());
         self.stream = BuildStream::Release;
         self.run_svd2repl = true;
         self.utra_target = "renode".to_string();
-        self.loader = CrateSpec::Local("loader".to_string(), false);
-        self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
+        self.loader = CrateSpec::Local("loader".to_string(), LoaderRegion::Ram);
+        self.kernel = CrateSpec::Local("xous-kernel".to_string(), LoaderRegion::Ram);
         self
     }
 
     /// Configure for precursor targets. This is the default, but it's good practice
-    /// to call it anyways just in case the defaults change. The `soc_version` should
+    /// to call it anyway just in case the defaults change. The `soc_version` should
     /// be just the gitrev of the soc version, not the entire feature name.
-    pub fn target_precursor<'a>(&'a mut self, soc_version: &str) -> &'a mut Builder {
+    pub fn target_precursor(&mut self, soc_version: &str) -> &mut Builder {
         self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.target_kernel = Some(crate::TARGET_TRIPLE_RISCV32_KERNEL.to_string());
         self.stream = BuildStream::Release;
         self.utra_target = format!("precursor-{}", soc_version).to_string();
         self.run_svd2repl = false;
-        self.loader = CrateSpec::Local("loader".to_string(), false);
-        self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
+        self.loader = CrateSpec::Local("loader".to_string(), LoaderRegion::Ram);
+        self.kernel = CrateSpec::Local("xous-kernel".to_string(), LoaderRegion::Ram);
         self
     }
 
-    pub fn target_precursor_no_image<'a>(&'a mut self, soc_version: &str) -> &'a mut Builder {
+    pub fn target_precursor_no_image(&mut self, soc_version: &str) -> &mut Builder {
         self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.target_kernel = Some(crate::TARGET_TRIPLE_RISCV32_KERNEL.to_string());
         self.stream = BuildStream::Release;
         self.utra_target = format!("precursor-{}", soc_version).to_string();
         self.run_svd2repl = false;
@@ -269,46 +301,84 @@ impl Builder {
     /// Configure for ARM targets
     pub fn target_arm(&mut self) -> &mut Builder {
         self.target = Some(crate::TARGET_TRIPLE_ARM.to_string());
+        self.target_kernel = Some(crate::TARGET_TRIPLE_ARM_KERNEL.to_string());
         self.stream = BuildStream::Debug;
         self.utra_target = "atsama5d27".to_string();
         self.run_svd2repl = false;
-        self.loader = CrateSpec::Local("loader".to_string(), false);
-        self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
+        self.loader = CrateSpec::Local("loader".to_string(), LoaderRegion::Ram);
+        self.kernel = CrateSpec::Local("xous-kernel".to_string(), LoaderRegion::Ram);
         self
     }
 
     /// Configure various Cramium targets
-    pub fn target_cramium_fpga<'a>(&'a mut self) -> &'a mut Builder {
+    pub fn target_cramium_fpga(&mut self) -> &mut Builder {
         self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.target_kernel = Some(crate::TARGET_TRIPLE_RISCV32_KERNEL.to_string());
         self.stream = BuildStream::Release;
         self.utra_target = "cramium-fpga".to_string();
         self.run_svd2repl = false;
-        self.loader = CrateSpec::Local("loader".to_string(), false);
-        self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
+        self.loader = CrateSpec::Local("loader".to_string(), LoaderRegion::Ram);
+        self.kernel = CrateSpec::Local("xous-kernel".to_string(), LoaderRegion::Ram);
         self
     }
 
-    pub fn target_cramium_soc<'a>(&'a mut self) -> &'a mut Builder {
+    pub fn target_cramium_soc(&mut self) -> &mut Builder {
         self.target = Some(crate::TARGET_TRIPLE_RISCV32.to_string());
+        self.target_kernel = Some(crate::TARGET_TRIPLE_RISCV32_KERNEL.to_string());
         self.stream = BuildStream::Release;
         self.utra_target = "cramium-soc".to_string();
         self.run_svd2repl = false;
-        self.loader = CrateSpec::Local("loader".to_string(), false);
-        self.kernel = CrateSpec::Local("xous-kernel".to_string(), false);
+        self.loader = CrateSpec::Local("loader".to_string(), LoaderRegion::Ram);
+        self.kernel = CrateSpec::Local("xous-kernel".to_string(), LoaderRegion::Ram);
+        search_and_replace_in_file("services/aes/Cargo.toml", "default = []", "default = [\"cramium-soc\"]")
+            .expect("couldn't patch AES");
+
+        // this is needed because we don't have an ed25519 accelerator on cramium targets
+        search_and_replace_in_file(
+            "Cargo.toml",
+            "[patch.crates-io.curve25519-dalek]",
+            "# [patch.crates-io.curve25519-dalek]",
+        )
+        .expect("couldn't patch curve25519");
+        search_and_replace_in_file(
+            "Cargo.toml",
+            "git = \"https://github.com/betrusted-io/curve25519-dalek.git\"",
+            "# git = \"https://github.com/betrusted-io/curve25519-dalek.git\"",
+        )
+        .expect("couldn't patch curve25519");
+        search_and_replace_in_file(
+            "Cargo.toml",
+            "branch = \"main\" # c25519",
+            "# branch = \"main\" # c25519",
+        )
+        .expect("couldn't patch curve25519");
+        search_and_replace_in_file(
+            "services/root-keys/Cargo.toml",
+            "features = [\"auto-release\", \"warn-fallback\"]",
+            "# features = [\"auto-release\", \"warn-fallback\"]",
+        )
+        .expect("couldn't patch rootkeys");
+        search_and_replace_in_file(
+            "services/shellchat/Cargo.toml",
+            "features = [\"auto-release\", \"warn-fallback\"]",
+            "# features = [\"auto-release\", \"warn-fallback\"]",
+        )
+        .expect("couldn't patch shellchat");
+
         self
     }
 
     /// Override the default kernel. For example, to use the kernel from crates.io, specify as
     /// "xous-kernel@0.9.9"
     #[allow(dead_code)]
-    pub fn use_kernel<'a>(&'a mut self, spec: &str) -> &'a mut Builder {
+    pub fn use_kernel(&mut self, spec: &str) -> &mut Builder {
         self.kernel = spec.into();
         self
     }
 
     /// Override the default loader
     #[allow(dead_code)]
-    pub fn use_loader<'a>(&'a mut self, spec: &str) -> &'a mut Builder {
+    pub fn use_loader(&mut self, spec: &str) -> &mut Builder {
         self.loader = spec.into();
         self
     }
@@ -332,47 +402,47 @@ impl Builder {
     }
 
     /// Add just one service
-    pub fn add_service<'a>(&'a mut self, service_spec: &str, xip: bool) -> &'a mut Builder {
+    pub fn add_service(&mut self, service_spec: &str, region: LoaderRegion) -> &mut Builder {
         let mut spec: CrateSpec = service_spec.into();
-        spec.set_xip(xip);
+        spec.set_region(region);
         self.services.push(spec);
         self
     }
 
     /// Add a list of services
-    pub fn add_services<'a>(&'a mut self, service_list: &Vec<String>) -> &'a mut Builder {
+    pub fn add_services<S: AsRef<str>>(&mut self, service_list: impl IntoIterator<Item = S>) -> &mut Builder {
         for service in service_list {
-            self.services.push(service.as_str().into());
+            self.services.push(service.as_ref().into());
         }
         self
     }
 
     /// Add just one app. Apps can be remote or downloaded externally.
     #[allow(dead_code)]
-    pub fn add_app<'a>(&'a mut self, app_spec: &str, xip: bool) -> &'a mut Builder {
+    pub fn add_app(&mut self, app_spec: &str, region: LoaderRegion) -> &mut Builder {
         let mut spec: CrateSpec = app_spec.into();
-        spec.set_xip(xip);
+        spec.set_region(region);
         self.apps.push(spec);
         self
     }
 
     /// Add a list of apps. Apps can be remote or downloaded externally.
-    pub fn add_apps<'a>(&'a mut self, app_list: &Vec<String>) -> &'a mut Builder {
+    pub fn add_apps<S: AsRef<str>>(&mut self, app_list: impl IntoIterator<Item = S>) -> &mut Builder {
         for app in app_list {
-            self.apps.push(app.as_str().into());
+            self.apps.push(app.as_ref().into());
         }
         self
     }
 
     /// add a feature to be passed on to services
-    pub fn add_feature<'a>(&'a mut self, feature: &str) -> &'a mut Builder {
+    pub fn add_feature(&mut self, feature: &str) -> &mut Builder {
         self.features.push(feature.into());
         self
     }
 
     /// remove a feature previously added by a previous call
     #[allow(dead_code)]
-    pub fn remove_feature<'a>(&'a mut self, feature: &str) -> &'a mut Builder {
+    pub fn remove_feature(&mut self, feature: &str) -> &mut Builder {
         self.features.retain(|x| x != feature);
         self
     }
@@ -381,20 +451,20 @@ impl Builder {
     pub fn has_feature(&self, feature: &str) -> bool { self.features.contains(&feature.to_string()) }
 
     /// add a feature to be passed on to just the loader
-    pub fn add_loader_feature<'a>(&'a mut self, feature: &str) -> &'a mut Builder {
+    pub fn add_loader_feature(&mut self, feature: &str) -> &mut Builder {
         self.loader_features.push(feature.into());
         self
     }
 
     /// add a feature to be passed on to just the loader
     #[allow(dead_code)]
-    pub fn add_kernel_feature<'a>(&'a mut self, feature: &str) -> &'a mut Builder {
+    pub fn add_kernel_feature(&mut self, feature: &str) -> &mut Builder {
         self.kernel_features.push(feature.into());
         self
     }
 
     /// only build a hosted target. don't run it. Used exclusively to confirm that hosted mode builds in CI.
-    pub fn hosted_build_only<'a>(&'a mut self) -> &'a mut Builder {
+    pub fn hosted_build_only(&mut self) -> &mut Builder {
         self.dry_run = true;
         self
     }
@@ -404,12 +474,12 @@ impl Builder {
     /// method, and it gets called repeatedly to build the kernel, loader, and services.
     fn builder(
         &self,
-        packages: &Vec<CrateSpec>,
-        features: &Vec<String>,
+        packages: &[CrateSpec],
+        features: &[String],
         target: &Option<&str>,
         // the stream is specified separately here because the loader is special-case always release
         stream: BuildStream,
-        extra_args: &Vec<String>,
+        extra_args: &[String],
         no_default_features: bool,
     ) -> Result<Vec<String>, DynError> {
         // list of build artifacts, as full paths specific to the host OS
@@ -428,7 +498,7 @@ impl Builder {
                 Some(t) => format!("{}/", t),
                 None => "".to_string(),
             },
-            stream.to_str(),
+            stream.as_str(),
         );
         remote_args.push(&output_root);
 
@@ -466,13 +536,13 @@ impl Builder {
         let mut remote_pkgs = Vec::<(&str, &str)>::new();
         for pkg in packages.iter() {
             match pkg {
-                CrateSpec::Local(name, _xip) => local_pkgs.push(&name),
-                CrateSpec::CratesIo(name, version, _xip) => remote_pkgs.push((&name, &version)),
+                CrateSpec::Local(name, _region) => local_pkgs.push(name),
+                CrateSpec::CratesIo(name, version, _region) => remote_pkgs.push((&name, &version)),
                 _ => {}
             }
         }
 
-        if local_pkgs.len() > 0 {
+        if !local_pkgs.is_empty() {
             for pkg in local_pkgs {
                 local_args.push("--package");
                 local_args.push(pkg);
@@ -481,7 +551,7 @@ impl Builder {
             if no_default_features {
                 local_args.push("--no-default-features");
             }
-            if features.len() > 0 {
+            if !features.is_empty() {
                 for feature in features {
                     local_args.push("--features");
                     local_args.push(feature);
@@ -500,12 +570,12 @@ impl Builder {
                 return Err("Local build failed".into());
             }
         }
-        if remote_pkgs.len() > 0 {
+        if !remote_pkgs.is_empty() {
             // remote packages are installed one at a time
             if no_default_features {
                 local_args.push("--no-default-features");
             }
-            if features.len() > 0 {
+            if !features.is_empty() {
                 for feature in features {
                     remote_args.push("--features");
                     remote_args.push(feature);
@@ -534,9 +604,10 @@ impl Builder {
         Ok(artifacts)
     }
 
-    pub fn split_xip(&self, services: Vec<String>) -> (Vec<String>, Vec<String>) {
+    pub fn split_region(&self, services: Vec<String>) -> (Vec<String>, Vec<String>, Vec<String>) {
         let mut inie = Vec::<String>::new();
         let mut inif = Vec::<String>::new();
+        let mut inis = Vec::<String>::new();
         for service in services.iter() {
             let mut found = false;
             for app in self.apps.iter() {
@@ -544,10 +615,11 @@ impl Builder {
                     if Path::new(service).file_name().unwrap_or_default().to_str().unwrap_or_default()
                         == Path::new(n).file_name().unwrap_or_default().to_str().unwrap_or_default()
                     {
-                        if app.is_xip() {
-                            inif.push(service.to_string());
-                        } else {
-                            inie.push(service.to_string());
+                        match app.get_region() {
+                            LoaderRegion::Flash => inif.push(service.to_string()),
+                            LoaderRegion::Ram => inie.push(service.to_string()),
+                            LoaderRegion::Swap => inis.push(service.to_string()),
+                            _ => (),
                         }
                         found = true;
                         continue;
@@ -562,10 +634,11 @@ impl Builder {
                     if Path::new(service).file_name().unwrap_or_default().to_str().unwrap_or_default()
                         == Path::new(n).file_name().unwrap_or_default().to_str().unwrap_or_default()
                     {
-                        if serv.is_xip() {
-                            inif.push(service.to_string());
-                        } else {
-                            inie.push(service.to_string());
+                        match serv.get_region() {
+                            LoaderRegion::Flash => inif.push(service.to_string()),
+                            LoaderRegion::Ram => inie.push(service.to_string()),
+                            LoaderRegion::Swap => inis.push(service.to_string()),
+                            _ => (),
                         }
                         found = true;
                         continue;
@@ -578,29 +651,27 @@ impl Builder {
             // the service wasn't found in any of the other lists, mark it as non-xip
             inie.push(service.to_string());
         }
-        assert!(inie.len() + inif.len() == services.len());
-        (inie, inif)
+        assert_eq!(inie.len() + inif.len() + inis.len(), services.len());
+        (inie, inif, inis)
     }
 
     /// Consume the builder and execute the configured build task. This handles dispatching all
     /// configurations, including renode, hosted, and hardware targets.
     pub fn build(mut self) -> Result<(), DynError> {
-        if self.apps.len() == 0 && self.services.len() == 0 {
+        if self.apps.is_empty() && self.services.is_empty() {
             // no services were specified - don't build anything
             return Ok(());
         }
 
         // ------ configure target generation feature flags ------
-        let target = if self.utra_target.contains("renode") {
+        if self.utra_target.contains("renode") {
             self.features.push("renode".into());
             self.loader_features.push("renode".into());
             self.kernel_features.push("renode".into());
-            Some(crate::TARGET_TRIPLE_RISCV32)
         } else if self.utra_target.contains("hosted") {
             self.features.push("hosted".into());
             // there is no loader in hosed mode
             self.kernel_features.push("hosted".into());
-            None
         } else if self.utra_target.contains("precursor") {
             self.features.push("precursor".into());
             self.features.push(format!("utralib/{}", &self.utra_target));
@@ -608,11 +679,9 @@ impl Builder {
             self.kernel_features.push(format!("utralib/{}", &self.utra_target));
             self.loader_features.push("precursor".into());
             self.loader_features.push(format!("utralib/{}", &self.utra_target));
-            Some(crate::TARGET_TRIPLE_RISCV32)
         } else if self.utra_target.contains("atsama5d2") {
             self.kernel_features.push("atsama5d27".into());
             self.loader_features.push("atsama5d27".into());
-            Some(crate::TARGET_TRIPLE_ARM)
         } else if self.utra_target.contains("cramium-fpga") {
             self.features.push("cramium-fpga".into());
             self.features.push(format!("utralib/{}", &self.utra_target));
@@ -620,7 +689,6 @@ impl Builder {
             self.kernel_features.push(format!("utralib/{}", &self.utra_target));
             self.loader_features.push("cramium-fpga".into());
             self.loader_features.push(format!("utralib/{}", &self.utra_target));
-            Some(crate::TARGET_TRIPLE_RISCV32)
         } else if self.utra_target.contains("cramium-soc") {
             self.features.push("cramium-soc".into());
             self.features.push(format!("utralib/{}", &self.utra_target));
@@ -628,26 +696,23 @@ impl Builder {
             self.kernel_features.push(format!("utralib/{}", &self.utra_target));
             self.loader_features.push("cramium-soc".into());
             self.loader_features.push(format!("utralib/{}", &self.utra_target));
-            Some(crate::TARGET_TRIPLE_RISCV32)
         } else {
             return Err("Target unknown: please check your UTRA target".into());
-        };
+        }
 
-        crate::utils::ensure_compiler(&self.target.as_ref().map(|s| s.as_str()), false, false)?;
+        crate::utils::ensure_compiler(&self.target.as_deref(), false, false)?;
+        crate::utils::ensure_kernel_compiler(&self.target_kernel.as_deref(), false)?;
         self.locale_override(); // apply the locale override
 
         // ------ build the services & apps ------
         let mut app_names = Vec::<String>::new();
         for app in self.apps.iter() {
             match app {
-                CrateSpec::Local(name, _xip) => app_names.push(name.into()),
-                CrateSpec::CratesIo(name, _version, _xip) => app_names.push(name.into()),
-                CrateSpec::BinaryFile(name, _location, _xip) => {
+                CrateSpec::Local(name, _region) => app_names.push(name.into()),
+                CrateSpec::CratesIo(name, _version, _region) => app_names.push(name.into()),
+                CrateSpec::BinaryFile(Some(name), _location, _region) => {
                     // if binary file has a name, ensure it ends up in the app menu
-                    if let Some(n) = name {
-                        app_names.push(n.to_string())
-                    } else {
-                    }
+                    app_names.push(name.to_string())
                 }
                 _ => {}
             }
@@ -656,9 +721,9 @@ impl Builder {
         let mut services_path = self.builder(
             &[&self.services[..], &self.apps[..]].concat(),
             &self.features,
-            &target,
+            &self.target.as_deref(),
             self.stream,
-            &vec![],
+            &[],
             false,
         )?;
 
@@ -672,11 +737,8 @@ impl Builder {
             // hosted mode doesn't specify a cross-compilation target!
             // throw a warning if prebuilt files are specified for hosted mode
             for item in [&self.services[..], &self.apps[..]].concat() {
-                match item {
-                    CrateSpec::Prebuilt(name, _, _xip) => {
-                        println!("Warning! Pre-built binaries not supported for hosted mode ({})", name)
-                    }
-                    _ => {}
+                if let CrateSpec::Prebuilt(name, _, _region) = item {
+                    println!("Warning! Pre-built binaries not supported for hosted mode ({})", name);
                 }
             }
             // fixup windows paths
@@ -686,9 +748,8 @@ impl Builder {
                 }
             }
             let mut hosted_args = vec!["run"];
-            match self.stream {
-                BuildStream::Release => hosted_args.push("--release"),
-                _ => {}
+            if let BuildStream::Release = self.stream {
+                hosted_args.push("--release");
             }
             hosted_args.push("--");
             for service in services_path.iter() {
@@ -707,8 +768,8 @@ impl Builder {
             }
             for f in canonicalized_paths {
                 let path_as_str = f.to_str().expect("Couldn't canonicalize executable target").to_string();
-                let windows_clean_path = if path_as_str.starts_with("\\\\?\\") {
-                    path_as_str[4..].to_owned()
+                let windows_clean_path = if let Some(stripped) = path_as_str.strip_prefix("\\\\?\\") {
+                    stripped.to_owned()
                 } else {
                     path_as_str
                 };
@@ -733,25 +794,34 @@ impl Builder {
             } else {
                 // confirm the kernel can build before quitting
                 let _ = self.builder(
-                    &vec![CrateSpec::Local("xous-kernel".into(), false)],
+                    &[CrateSpec::Local("xous-kernel".into(), LoaderRegion::Ram)],
                     &self.kernel_features,
-                    &target,
+                    &self.target_kernel.as_deref(),
                     self.stream,
-                    &vec![],
+                    &[],
                     false,
                 )?;
                 println!("Dry run requested: only building and not running");
             }
         } else {
+            let svd_spec_path = format!(
+                "target/{}/{}/build/SVD_PATH",
+                self.target.as_ref().expect("target"),
+                self.stream.as_str()
+            );
+            if self.change_target {
+                std::fs::remove_file(&svd_spec_path).ok(); // don't fail if the file does not exist
+            }
+
             // ------ build the kernel ------
             let mut kernel_extra = vec![];
             if self.kernel_disable_defaults {
                 kernel_extra.push("--no-default-features".to_string());
             }
             let kernel_path = self.builder(
-                &vec![self.kernel.clone()],
+                &[self.kernel.clone()],
                 &self.kernel_features,
-                &target,
+                &self.target_kernel.as_deref(),
                 self.stream,
                 &kernel_extra,
                 false,
@@ -760,37 +830,37 @@ impl Builder {
             // ------ build the loader ------
             // stash any LTO settings applied to the kernel; proper layout of the loader
             // block depends on the loader being compact and highly optimized.
-            let existing_lto = std::env::var("CARGO_PROFILE_RELEASE_LTO").map(|v| Some(v)).unwrap_or(None);
+            let existing_lto = env::var("CARGO_PROFILE_RELEASE_LTO").map(Some).unwrap_or(None);
             let existing_codegen_units =
-                std::env::var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS").map(|v| Some(v)).unwrap_or(None);
+                env::var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS").map(Some).unwrap_or(None);
             // these settings will generate the most compact code (but also the hardest to debug)
-            std::env::set_var("CARGO_PROFILE_RELEASE_LTO", "true");
-            std::env::set_var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
+            env::set_var("CARGO_PROFILE_RELEASE_LTO", "true");
+            env::set_var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
             let mut loader_extra = vec![];
             if self.loader_disable_defaults {
                 loader_extra.push("--no-default-features".to_string());
             }
             let loader = self.builder(
-                &vec![self.loader.clone()],
+                &[self.loader.clone()],
                 &self.loader_features,
-                &target,
+                &self.target_kernel.as_deref(),
                 BuildStream::Release, // loader doesn't fit if you build with Debug
                 &loader_extra,
                 true, // loader builds without any default features
             )?;
             // restore the LTO settings
             if let Some(existing) = existing_lto {
-                std::env::set_var("CARGO_PROFILE_RELEASE_LTO", existing);
+                env::set_var("CARGO_PROFILE_RELEASE_LTO", existing);
             }
             if let Some(existing) = existing_codegen_units {
-                std::env::set_var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", existing);
+                env::set_var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", existing);
             }
 
             // ------ if targeting renode, regenerate the Platform file -----
             if self.run_svd2repl {
                 Command::new(cargo())
                     .current_dir(project_root())
-                    .args(&[
+                    .args([
                         "run",
                         "-p",
                         "svd2repl",
@@ -802,12 +872,7 @@ impl Builder {
             }
 
             // ---------- extract SVD file path, as computed by utralib ----------
-            let svd_spec_path = format!(
-                "target/{}/{}/build/SVD_PATH",
-                self.target.as_ref().expect("target"),
-                self.stream.to_str()
-            );
-            let mut svd_spec_file = OpenOptions::new().read(true).open(&svd_spec_path)?;
+            let mut svd_spec_file = OpenOptions::new().read(true).open(svd_spec_path)?;
             let mut svd_path_str = String::new();
             svd_spec_file.read_to_string(&mut svd_path_str)?;
             let mut svd_paths = Vec::new();
@@ -820,8 +885,8 @@ impl Builder {
             services_path.append(&mut self.enumerate_binary_files()?);
 
             // --------- package up and sign a binary image ----------
-            let (inie, inif) = self.split_xip(services_path.clone());
-            let output_bundle = self.create_image(&kernel_path[0], &inie, &inif, svd_paths)?;
+            let (inie, inif, inis) = self.split_region(services_path.clone());
+            let output_bundle = self.create_image(&kernel_path[0], &inie, &inif, &inis, svd_paths)?;
             println!();
             println!("Kernel+Init bundle is available at {}", output_bundle.display());
 
@@ -831,7 +896,7 @@ impl Builder {
             loader_presign.push("loader_presign.bin");
             let status = Command::new(cargo())
                 .current_dir(project_root())
-                .args(&[
+                .args([
                     "run",
                     "--package",
                     "tools",
@@ -846,25 +911,48 @@ impl Builder {
                 return Err("cargo build failed".into());
             }
 
-            let status = Command::new(cargo())
-                .current_dir(project_root())
-                .args(&[
-                    "run",
-                    "--package",
-                    "tools",
-                    "--bin",
-                    "sign-image",
-                    "--",
-                    "--loader-image",
-                    loader_presign.to_str().unwrap(),
-                    "--loader-key",
-                    &self.loader_key,
-                    "--loader-output",
-                    loader_bin.to_str().unwrap(),
-                    "--min-xous-ver",
-                    &self.min_ver,
-                ])
-                .status()?;
+            let status = if self.utra_target.contains("cramium") {
+                Command::new(cargo())
+                    .current_dir(project_root())
+                    .args([
+                        "run",
+                        "--package",
+                        "tools",
+                        "--bin",
+                        "sign-image",
+                        "--",
+                        "--loader-image",
+                        loader_presign.to_str().unwrap(),
+                        "--loader-key",
+                        &self.loader_key,
+                        "--loader-output",
+                        loader_bin.to_str().unwrap(),
+                        "--min-xous-ver",
+                        &self.min_ver,
+                        "--with-jump", // cramium target has a jump inserted in the loader sig block
+                    ])
+                    .status()?
+            } else {
+                Command::new(cargo())
+                    .current_dir(project_root())
+                    .args([
+                        "run",
+                        "--package",
+                        "tools",
+                        "--bin",
+                        "sign-image",
+                        "--",
+                        "--loader-image",
+                        loader_presign.to_str().unwrap(),
+                        "--loader-key",
+                        &self.loader_key,
+                        "--loader-output",
+                        loader_bin.to_str().unwrap(),
+                        "--min-xous-ver",
+                        &self.min_ver,
+                    ])
+                    .status()?
+            };
             if !status.success() {
                 return Err("loader image sign failed".into());
             }
@@ -874,7 +962,7 @@ impl Builder {
 
             let status = Command::new(cargo())
                 .current_dir(project_root())
-                .args(&[
+                .args([
                     "run",
                     "--package",
                     "tools",
@@ -910,10 +998,24 @@ impl Builder {
         kernel: &String,
         init: &[String],
         inif: &[String],
+        inis: &[String],
         memory_spec: Vec<String>,
     ) -> Result<PathBuf, DynError> {
-        let stream = self.stream.to_str();
-        let mut args = vec!["run", "--package", "tools", "--bin", "create-image", "--"];
+        let stream = self.stream.as_str();
+        let mut args = vec!["run", "--package", "tools", "--bin", "create-image"];
+        args.push("--features");
+        if self.utra_target.contains("renode") {
+            args.push("renode");
+        } else if self.utra_target.contains("precursor") {
+            args.push("precursor");
+        } else if self.utra_target.contains("atsama5d2") {
+            args.push("atsama5d2");
+        } else if self.utra_target.contains("cramium-soc") {
+            args.push("cramium-soc")
+        } else if self.utra_target.contains("cramium-fpga") {
+            args.push("cramium-soc")
+        }
+        args.push("--");
 
         let mut output_file = PathBuf::new();
         output_file.push("target");
@@ -928,15 +1030,46 @@ impl Builder {
         for i in init {
             args.push("--init");
             // strip '@' version specifiers out of the package names, if they exist.
-            let i = if i.contains("@") { i.split("@").next().unwrap() } else { i };
+            let i = if i.contains('@') { i.split('@').next().unwrap() } else { i };
             args.push(i);
         }
 
         for i in inif {
             args.push("--inif");
             // strip '@' version specifiers out of the package names, if they exist.
+            let i = if i.contains('@') { i.split('@').next().unwrap() } else { i };
+            args.push(i);
+        }
+
+        for i in inis {
+            args.push("--inis");
+            // strip '@' version specifiers out of the package names, if they exist.
             let i = if i.contains("@") { i.split("@").next().unwrap() } else { i };
             args.push(i);
+        }
+
+        let swap_spec = if let Some((offset, size)) = self.swap {
+            format!("0x{:x}:0x{:x}", offset, size) // create-image requires a base decorator, but the argument into xtask does not.
+        } else {
+            String::new()
+        };
+        let mut swap_file = PathBuf::new();
+        let mut swap_dbg_file = PathBuf::new();
+        if self.swap.is_some() {
+            args.push("--swap");
+            args.push(&swap_spec);
+            swap_file.push("target");
+            swap_file.push(self.target.as_ref().expect("target"));
+            swap_file.push(stream);
+            swap_file.push("swap.img");
+            args.push("--swap-name");
+            args.push(swap_file.to_str().unwrap());
+            swap_dbg_file.push("target");
+            swap_dbg_file.push(self.target.as_ref().expect("target"));
+            swap_dbg_file.push(stream);
+            swap_dbg_file.push("swap-debug.img");
+            args.push("--swap-debug-name");
+            args.push(swap_dbg_file.to_str().unwrap());
         }
 
         if memory_spec.len() == 1 {
@@ -947,7 +1080,7 @@ impl Builder {
             args.push(&memory_spec[0]);
             for spec in memory_spec[1..].iter() {
                 args.push("--extra-svd");
-                args.push(&spec);
+                args.push(spec);
             }
         }
 
@@ -962,28 +1095,25 @@ impl Builder {
     fn fetch_prebuilds(&self) -> Result<Vec<String>, DynError> {
         let mut paths = Vec::<String>::new();
         for item in [&self.services[..], &self.apps[..]].concat() {
-            match item {
-                CrateSpec::Prebuilt(name, url, _xip) => {
-                    let exec_name = format!(
-                        "target/{}/{}/{}",
-                        self.target.as_ref().expect("target"),
-                        self.stream.to_str(),
-                        name
-                    );
-                    println!("Fetching {} executable from build server...", name);
-                    let mut exec_file = OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .open(&exec_name)
-                        .expect("Can't open our version file for writing");
-                    let mut freader = ureq::get(&url).call()?.into_reader();
-                    std::io::copy(&mut freader, &mut exec_file)?;
-                    println!("{} pre-built exec is {} bytes", name, exec_file.metadata().unwrap().len());
-                    paths.push(exec_name);
-                }
-                _ => {}
+            if let CrateSpec::Prebuilt(name, url, _region) = item {
+                let exec_name = format!(
+                    "target/{}/{}/{}",
+                    self.target.as_ref().expect("target"),
+                    self.stream.as_str(),
+                    name
+                );
+                println!("Fetching {} executable from build server...", name);
+                let mut exec_file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&exec_name)
+                    .expect("Can't open our version file for writing");
+                let mut freader = ureq::get(&url).call()?.into_reader();
+                std::io::copy(&mut freader, &mut exec_file)?;
+                println!("{} pre-built exec is {} bytes", name, exec_file.metadata().unwrap().len());
+                paths.push(exec_name);
             }
         }
         Ok(paths)
@@ -992,11 +1122,8 @@ impl Builder {
     fn enumerate_binary_files(&self) -> Result<Vec<String>, DynError> {
         let mut paths = Vec::<String>::new();
         for item in [&self.services[..], &self.apps[..]].concat() {
-            match item {
-                CrateSpec::BinaryFile(_name, path, _xip) => {
-                    paths.push(path);
-                }
-                _ => {}
+            if let CrateSpec::BinaryFile(_name, path, _region) = item {
+                paths.push(path);
             }
         }
         Ok(paths)
@@ -1020,7 +1147,7 @@ impl Builder {
                 .truncate(true)
                 .open("locales/src/locale.rs")
                 .expect("Can't open locale for modification");
-            write!(locale_override, "pub const LANG: &str = \"{}\";\n", locale).unwrap();
+            writeln!(locale_override, "pub const LANG: &str = \"{}\";", locale).unwrap();
         }
     }
 
@@ -1042,4 +1169,37 @@ pub fn cargo() -> String { env::var("CARGO").unwrap_or_else(|_| "cargo".to_strin
 
 pub fn project_root() -> PathBuf {
     Path::new(&env!("CARGO_MANIFEST_DIR")).ancestors().nth(1).unwrap().to_path_buf()
+}
+
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
+pub fn search_and_replace_in_file(filename: &str, search: &str, replace: &str) -> io::Result<()> {
+    let file = File::open(filename)?;
+    let reader = BufReader::new(file);
+
+    let mut modified_content = String::new();
+    for line in reader.lines() {
+        let line = line?;
+        let modified_line = line.replace(search, replace);
+        modified_content.push_str(&modified_line);
+        modified_content.push('\n');
+    }
+
+    let mut file = File::create(filename)?;
+    file.write_all(modified_content.as_bytes())?;
+
+    Ok(())
+}
+
+pub fn search_in_file(filename: &str, search: &str) -> io::Result<bool> {
+    let file = File::open(filename)?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.contains(search) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

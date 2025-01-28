@@ -1,8 +1,8 @@
 use std::time::SystemTime;
 
+use String;
 use chrono::offset::Utc;
 use chrono::{DateTime, NaiveDateTime};
-use xous_ipc::String;
 
 use crate::{CommonEnv, ShellCmdApi};
 
@@ -14,16 +14,12 @@ impl RtcCmd {
 impl<'a> ShellCmdApi<'a> for RtcCmd {
     cmd_api!(rtc);
 
-    fn process(
-        &mut self,
-        args: String<1024>,
-        _env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    fn process(&mut self, args: String, _env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         use core::fmt::Write;
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
         let helpstring = "rtc options: utc local";
 
-        let mut tokens = args.as_str().unwrap().split(' ');
+        let mut tokens = args.split(' ');
 
         if let Some(sub_cmd) = tokens.next() {
             match sub_cmd {
@@ -36,8 +32,8 @@ impl<'a> ShellCmdApi<'a> for RtcCmd {
                     let mut localtime = llio::LocalTime::new();
                     if let Some(timestamp) = localtime.get_local_time_ms() {
                         // we "say" UTC but actually local time is in whatever the local time is
-                        let dt = chrono::DateTime::<Utc>::from_utc(
-                            NaiveDateTime::from_timestamp(timestamp as i64 / 1000, 0),
+                        let dt = chrono::DateTime::<Utc>::from_naive_utc_and_offset(
+                            NaiveDateTime::from_timestamp_opt(timestamp as i64 / 1000, 0).unwrap(),
                             chrono::offset::Utc,
                         );
                         let timestr = dt.format("%m/%d/%Y %T").to_string();
@@ -67,9 +63,9 @@ impl<'a> ShellCmdApi<'a> for RtcCmd {
         &mut self,
         _msg: &xous::MessageEnvelope,
         _env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    ) -> Result<Option<String>, xous::Error> {
         use core::fmt::Write;
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
         write!(ret, "{}", "Unrecognized callback to RTC").unwrap();
         Ok(Some(ret))
     }

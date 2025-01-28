@@ -1,10 +1,11 @@
+use core::convert::TryFrom;
 use core::num::NonZeroU8;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::sync::Arc;
 
-#[cfg(not(feature = "minimal"))]
+#[cfg(all(not(feature = "minimal"), any(feature = "renode", feature = "precursor")))]
 use keyboard::KeyMap;
 use num_traits::*;
 use usb_device::class_prelude::*;
@@ -12,16 +13,17 @@ use usb_device::prelude::*;
 use usb_device_xous::KeyboardLedsReport;
 use usb_device_xous::UsbDeviceType;
 use usbd_serial::SerialPort;
+#[cfg(any(feature = "precursor", feature = "renode"))]
 use utralib::generated::*;
 use xous::{msg_blocking_scalar_unpack, msg_scalar_unpack};
 use xous_ipc::Buffer;
-#[cfg(not(feature = "minimal"))]
+#[cfg(all(not(feature = "minimal"), any(feature = "precursor", feature = "renode")))]
 use xous_semver::SemVer;
+use xous_usb_hid::device::DeviceClass;
 use xous_usb_hid::device::fido::RawFido;
 use xous_usb_hid::device::fido::RawFidoConfig;
 use xous_usb_hid::device::fido::RawFidoReport;
 use xous_usb_hid::device::keyboard::{NKROBootKeyboard, NKROBootKeyboardConfig};
-use xous_usb_hid::device::DeviceClass;
 use xous_usb_hid::page::Keyboard;
 use xous_usb_hid::prelude::*;
 
@@ -79,18 +81,19 @@ pub(crate) fn main_hw() -> ! {
 
     let xns = xous_names::XousNames::new().unwrap();
     let usbdev_sid = xns.register_name(api::SERVER_NAME_USB_DEVICE, None).expect("can't register server");
+    let cid = xous::connect(usbdev_sid).expect("couldn't create suspend callback connection");
     log::trace!("registered with NS -- {:?}", usbdev_sid);
     #[cfg(not(feature = "minimal"))]
+    #[cfg(any(feature = "precursor", feature = "renode"))]
     let llio = llio::Llio::new(&xns);
     let tt = ticktimer_server::Ticktimer::new().unwrap();
     #[cfg(not(feature = "minimal"))]
     let native_kbd = keyboard::Keyboard::new(&xns).unwrap();
-    #[cfg(not(feature = "minimal"))]
-    let native_map = native_kbd.get_keymap().unwrap();
 
-    #[cfg(not(feature = "minimal"))]
+    #[cfg(all(not(feature = "minimal"), any(feature = "precursor", feature = "renode")))]
     let serial_number = format!("{:x}", llio.soc_dna().unwrap());
-    #[cfg(not(feature = "minimal"))]
+
+    #[cfg(all(not(feature = "minimal"), any(feature = "precursor", feature = "renode")))]
     {
         let minimum_ver = SemVer { maj: 0, min: 9, rev: 8, extra: 20, commit: None };
         let soc_ver = llio.soc_gitrev().unwrap();
@@ -163,6 +166,7 @@ pub(crate) fn main_hw() -> ! {
     }
 
     // Allocate memory range and CSR for sharing between all the views.
+    #[cfg(any(feature = "precursor", feature = "renode"))]
     let usb = xous::syscall::map_memory(
         xous::MemoryAddress::new(utralib::HW_USBDEV_MEM),
         None,
@@ -170,6 +174,7 @@ pub(crate) fn main_hw() -> ! {
         xous::MemoryFlags::R | xous::MemoryFlags::W,
     )
     .expect("couldn't map USB device memory range");
+    #[cfg(any(feature = "precursor", feature = "renode"))]
     let csr = xous::syscall::map_memory(
         xous::MemoryAddress::new(utra::usbdev::HW_USBDEV_BASE),
         None,
@@ -178,33 +183,31 @@ pub(crate) fn main_hw() -> ! {
     )
     .expect("couldn't map USB CSR range");
 
-    // Notes:
-    //  - Most drivers would `Box()` the hardware management structure to make sure the compiler doesn't move
-    //    its location. However, we can't do this here because we are trying to maintain compatibility with
-    //    another crate that implements the USB stack which can't handle Box'd structures.
-    //  - It is safe to call `.init()` repeatedly because within `init()` we have an atomic bool that tracks
-    //    if the interrupt handler has been hooked, and ignores further requests to hook it.
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     let usb_fidokbd_dev = SpinalUsbDevice::new(usbdev_sid, usb.clone(), csr.clone());
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     usb_fidokbd_dev.init();
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     let mut usbmgmt = usb_fidokbd_dev.get_iface();
     // before doing any allocs, clone a copy of the hardware access structure so we can build a second
     // view into the hardware with only FIDO descriptors
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     let usb_fido_dev: SpinalUsbDevice = SpinalUsbDevice::new(usbdev_sid, usb.clone(), csr.clone());
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     usb_fido_dev.init();
     // do the same thing for mass storage
-    #[cfg(feature = "mass-storage")]
+    #[cfg(all(feature = "mass-storage", any(feature = "precursor", feature = "renode")))]
     let ums_dev = SpinalUsbDevice::new(usbdev_sid, usb.clone(), csr.clone());
     #[cfg(feature = "mass-storage")]
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     ums_dev.init();
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     let serial_dev = SpinalUsbDevice::new(usbdev_sid, usb.clone(), csr.clone());
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     serial_dev.init();
 
-    // track which view is visible on the device core
-    #[cfg(not(feature = "minimal"))]
-    let mut view = Views::FidoWithKbd;
-
     // register a suspend/resume listener
-    let cid = xous::connect(usbdev_sid).expect("couldn't create suspend callback connection");
+    #[cfg(any(feature = "renode", feature = "precursor", feature = "hosted"))]
     let mut susres = susres::Susres::new(None, &xns, api::Opcode::SuspendResume as u32, cid)
         .expect("couldn't create suspend/resume object");
 
@@ -284,7 +287,9 @@ pub(crate) fn main_hw() -> ! {
     const TRNG_BACKOFF_MS: u32 = 1;
     const TRNG_BACKOFF_MAX_MS: u32 = 1000; // cap on how far we backoff the polling rate
 
+    #[cfg(any(feature = "renode", feature = "precursor"))]
     let usb_hidv2_dev = SpinalUsbDevice::new(usbdev_sid, usb.clone(), csr.clone());
+
     let hidv2_alloc = UsbBusAllocator::new(usb_hidv2_dev);
 
     let mut hidv2 = hid::AppHID::new(
@@ -294,6 +299,50 @@ pub(crate) fn main_hw() -> ! {
         AppHIDConfig::default(),
         100, // 100 * 64 bytes = 6.4kb, quite the backlog
     );
+    // track which view is visible on the device core
+    #[cfg(all(not(feature = "minimal")))]
+    let mut view = Views::FidoWithKbd;
+
+    #[cfg(feature = "auto-trng")]
+    std::thread::spawn({
+        let conn = cid;
+        move || {
+            let tt = ticktimer_server::Ticktimer::new().unwrap();
+            loop {
+                tt.sleep_ms(2_000).ok();
+                let state = match xous::send_message(
+                    conn,
+                    xous::Message::new_blocking_scalar(Opcode::LinkStatus.to_usize().unwrap(), 0, 0, 0, 0),
+                ) {
+                    Ok(xous::Result::Scalar1(code)) => match code {
+                        0 => UsbDeviceState::Default,
+                        1 => UsbDeviceState::Addressed,
+                        2 => UsbDeviceState::Configured,
+                        3 => UsbDeviceState::Suspend,
+                        _ => panic!("Internal error: illegal status code"),
+                    },
+                    _ => panic!("Internal error: illegal return type"),
+                };
+                if state == UsbDeviceState::Configured {
+                    log::info!("Core connected");
+                    break;
+                }
+            }
+            tt.sleep_ms(3_000).ok();
+            log::info!("Starting serial sender");
+            xous::send_message(
+                conn,
+                xous::Message::new_scalar(
+                    Opcode::SerialHookTrngSender.to_usize().unwrap(),
+                    trng::api::TrngTestMode::Raw.to_usize().unwrap(),
+                    0,
+                    0,
+                    0,
+                ),
+            )
+            .unwrap();
+        }
+    });
 
     let mut led_state: KeyboardLedsReport = KeyboardLedsReport::default();
     let mut fido_listener: Option<xous::MessageEnvelope> = None;
@@ -418,6 +467,7 @@ pub(crate) fn main_hw() -> ! {
         }
     });
 
+    log::info!("starting main loop");
     loop {
         let mut msg = xous::receive_message(usbdev_sid).unwrap();
         let opcode: Option<Opcode> = FromPrimitive::from_usize(msg.body.id());
@@ -470,6 +520,7 @@ pub(crate) fn main_hw() -> ! {
                 .unwrap();
                 xous::return_scalar(msg.sender, 0).unwrap();
             }),
+            #[cfg(any(feature = "renode", feature = "precursor", feature = "hosted"))]
             Some(Opcode::SuspendResume) => msg_scalar_unpack!(msg, token, _, _, _, {
                 usbmgmt.xous_suspend();
                 susres.suspend_until_resume(token).expect("couldn't execute suspend/resume");
@@ -665,7 +716,7 @@ pub(crate) fn main_hw() -> ! {
                     }
                     Views::Serial => {
                         if serial_device.poll(&mut [&mut serial_port]) {
-                            let mut data: [u8; 1024] = [0u8; SERIAL_BUF_LEN];
+                            let mut data: [u8; SERIAL_BUF_LEN] = [0u8; SERIAL_BUF_LEN];
                             match serial_listen_mode {
                                 SerialListenMode::NoListener => match serial_port.read(&mut data) {
                                     Ok(len) => match std::str::from_utf8(&data[..len]) {
@@ -1165,6 +1216,7 @@ pub(crate) fn main_hw() -> ! {
                 match view {
                     Views::FidoWithKbd => {
                         if usb_dev.state() == UsbDeviceState::Configured {
+                            let native_map = native_kbd.get_keymap().unwrap();
                             let mut codes = Vec::<Keyboard>::new();
                             if code0 != 0 {
                                 codes.push(match native_map {
@@ -1262,7 +1314,10 @@ pub(crate) fn main_hw() -> ! {
                 match view {
                     #[cfg(not(feature = "minimal"))]
                     Views::FidoWithKbd => {
-                        for ch in usb_send.s.as_str().unwrap().chars() {
+                        // check keymap on every call because we may need to toggle this for e.g. plugging
+                        // into a new host with a different map
+                        let native_map = native_kbd.get_keymap().unwrap();
+                        for ch in usb_send.s.as_str().chars() {
                             // ASSUME: user's keyboard type matches the preference on their Precursor device.
                             let codes = match native_map {
                                 KeyMap::Dvorak => mappings::char_to_hid_code_dvorak(ch),
@@ -1455,6 +1510,7 @@ pub(crate) fn main_hw() -> ! {
                     trng.set_test_mode(trng_mode);
                 }
                 log::info!("TRNG set to mode {:?}", trng_mode);
+                // log::set_max_level(log::LevelFilter::Debug);
 
                 // The strategy here is when this is called, we start a thread that polls at some
                 // interval in milliseconds to see if the Tx buffer is empty and
@@ -1570,7 +1626,7 @@ pub(crate) fn main_hw() -> ! {
                     continue;
                 }
                 let mut sent = false;
-                if serial_port.rts() {
+                if serial_port.dtr() {
                     if serial_trng_buf.len() < TRNG_PKT_SIZE {
                         match trng.get_test_data() {
                             Ok(data) => {
@@ -1667,7 +1723,7 @@ pub(crate) fn main_hw() -> ! {
                     match xns.request_connection_blocking(ur.server_name.as_str()) {
                         Ok(cid) => {
                             observer_conn = Some(cid);
-                            observer_op = Some(ur.listener_op_id as usize);
+                            observer_op = Some(<u32 as From<u32>>::from(ur.listener_op_id.into()) as usize);
                         }
                         Err(e) => {
                             log::error!("couldn't connect to observer: {:?}", e);
@@ -1677,6 +1733,16 @@ pub(crate) fn main_hw() -> ! {
                     }
                 }
             }
+            Some(Opcode::SetLogLevel) => msg_scalar_unpack!(msg, level_code, _, _, _, {
+                let level = LogLevel::try_from(level_code).unwrap_or(LogLevel::Info);
+                match level {
+                    LogLevel::Trace => log::set_max_level(log::LevelFilter::Trace),
+                    LogLevel::Info => log::set_max_level(log::LevelFilter::Info),
+                    LogLevel::Debug => log::set_max_level(log::LevelFilter::Debug),
+                    LogLevel::Warn => log::set_max_level(log::LevelFilter::Warn),
+                    LogLevel::Err => log::set_max_level(log::LevelFilter::Error),
+                }
+            }),
             Some(Opcode::Quit) => {
                 log::warn!("Quit received, goodbye world!");
                 break;

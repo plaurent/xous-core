@@ -1,6 +1,6 @@
 use std::fmt::Write;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 use std::thread;
 use std::time::SystemTime;
 
@@ -10,7 +10,7 @@ use graphics_server::{DrawStyle, PixelColor, Point, Rectangle, TextView};
 use locales::t;
 use num_traits::*;
 use sntpc::{Error, NtpContext, NtpTimestampGenerator, NtpUdpSocket, Result};
-use xous::{send_message, Message};
+use xous::{Message, send_message};
 
 use crate::VaultOp;
 
@@ -22,9 +22,9 @@ pub(crate) fn prereqs(sid: xous::SID, time_conn: xous::CID) -> ([u32; 4], bool) 
     let app_name_ref = gam::APP_NAME_VAULT;
     let token = gam
         .register_ux(UxRegistration {
-            app_name: xous_ipc::String::<128>::from_str(app_name_ref),
+            app_name: String::from(app_name_ref),
             ux_type: gam::UxType::Chat,
-            predictor: Some(xous_ipc::String::<64>::from_str(crate::ux::icontray::SERVER_NAME_ICONTRAY)),
+            predictor: Some(String::from(crate::ux::icontray::SERVER_NAME_ICONTRAY)),
             listener: sid.to_array(), /* note disclosure of our SID to the GAM -- the secret is now shared
                                        * with the GAM! */
             redraw_id: VaultOp::Redraw.to_u32().unwrap(),
@@ -84,15 +84,11 @@ pub(crate) fn prereqs(sid: xous::SID, time_conn: xous::CID) -> ([u32; 4], bool) 
                 if allow_redraw {
                     gam.draw_rectangle(
                         content,
-                        Rectangle::new_with_style(
-                            Point::new(0, 0),
-                            screensize,
-                            DrawStyle {
-                                fill_color: Some(PixelColor::Light),
-                                stroke_color: None,
-                                stroke_width: 0,
-                            },
-                        ),
+                        Rectangle::new_with_style(Point::new(0, 0), screensize, DrawStyle {
+                            fill_color: Some(PixelColor::Light),
+                            stroke_color: None,
+                            stroke_width: 0,
+                        }),
                     )
                     .expect("can't clear content area");
 
@@ -211,7 +207,7 @@ pub(crate) fn ntp_updater(time_conn: xous::CID) {
                     match result {
                         Ok(time) => {
                             log::debug!("Got NTP time: {}.{}", time.sec(), time.sec_fraction());
-                            let current_time = Utc.ymd(1970, 1, 1).and_hms(0, 0, 0)
+                            let current_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()
                                 + chrono::Duration::seconds(time.sec() as i64);
                             log::debug!("Setting UTC time: {:?}", current_time.to_string());
                             xous::send_message(

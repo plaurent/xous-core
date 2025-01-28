@@ -11,6 +11,8 @@ use std::convert::TryInto;
 use std::format;
 use std::str;
 
+#[cfg(feature = "policy-menu")]
+use String;
 use gam::modal::*;
 #[cfg(feature = "policy-menu")]
 use gam::{MenuItem, MenuPayload};
@@ -20,8 +22,6 @@ use num_traits::*;
 use tts_frontend::*;
 use xous::{msg_blocking_scalar_unpack, msg_scalar_unpack, send_message};
 use xous_ipc::Buffer;
-#[cfg(feature = "policy-menu")]
-use xous_ipc::String;
 
 #[cfg(any(feature = "precursor", feature = "renode"))]
 mod implementation;
@@ -97,20 +97,20 @@ pub struct MetadataInFlash {
 mod implementation {
     use std::convert::TryInto;
 
-    use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
     use aes::Aes256;
-    use ed25519_dalek::PublicKey;
+    use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
+    use ed25519_dalek::VerifyingKey;
     use gam::modal::{Modal, Slider};
     use gam::{ActionType, ProgressBar};
     use locales::t;
     use num_traits::*;
     use xous_semver::SemVer;
 
-    use crate::api::*;
-    use crate::backups;
     use crate::PasswordRetentionPolicy;
     use crate::PasswordType;
     use crate::UpdateType;
+    use crate::api::*;
+    use crate::backups;
     use crate::{GatewareRegion, MetadataInFlash, SignatureResult};
 
     #[derive(Debug, Copy, Clone)]
@@ -255,7 +255,7 @@ mod implementation {
 
         pub fn finish_key_init(&mut self) {}
 
-        pub fn verify_gateware_self_signature(&mut self, _pk: Option<&PublicKey>) -> bool { true }
+        pub fn verify_gateware_self_signature(&mut self, _pk: Option<&VerifyingKey>) -> bool { true }
 
         pub fn test(
             &mut self,
@@ -612,7 +612,7 @@ fn main() -> ! {
     {
         let mut menu_items = Vec::<MenuItem>::new();
         menu_items.push(MenuItem {
-            name: String::from_str(t!("rootkeys.policy_keep", locales::LANG)),
+            name: String::from(t!("rootkeys.policy_keep", locales::LANG)),
             action_conn: Some(main_cid),
             action_opcode: Opcode::UxPolicyReturn.to_u32().unwrap(),
             action_payload: MenuPayload::Scalar([
@@ -624,7 +624,7 @@ fn main() -> ! {
             close_on_select: true,
         });
         menu_items.push(MenuItem {
-            name: String::from_str(t!("rootkeys.policy_suspend", locales::LANG)),
+            name: String::from(t!("rootkeys.policy_suspend", locales::LANG)),
             action_conn: Some(main_cid),
             action_opcode: Opcode::UxPolicyReturn.to_u32().unwrap(),
             action_payload: MenuPayload::Scalar([
@@ -636,7 +636,7 @@ fn main() -> ! {
             close_on_select: true,
         });
         menu_items.push(MenuItem {
-            name: String::from_str(t!("rootkeys.policy_clear", locales::LANG)),
+            name: String::from(t!("rootkeys.policy_clear", locales::LANG)),
             action_conn: Some(main_cid),
             action_opcode: Opcode::UxPolicyReturn.to_u32().unwrap(),
             action_payload: MenuPayload::Scalar([

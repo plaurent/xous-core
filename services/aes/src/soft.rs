@@ -15,10 +15,10 @@ pub(crate) mod fixslice;
 use core::fmt;
 
 use cipher::{
-    consts::{U16, U24, U32},
-    inout::InOut,
     AlgorithmName, BlockBackend, BlockCipher, BlockClosure, BlockDecrypt, BlockEncrypt, BlockSizeUser, Key,
     KeyInit, KeySizeUser, ParBlocksSizeUser,
+    consts::{U16, U24, U32},
+    inout::InOut,
 };
 use fixslice::{BatchBlocks, FixsliceBlocks, FixsliceKeys128, FixsliceKeys192, FixsliceKeys256};
 
@@ -107,6 +107,17 @@ macro_rules! define_aes_impl {
             fn write_alg_name(f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(stringify!($name)) }
         }
 
+        impl Drop for $name {
+            #[inline]
+            fn drop(&mut self) {
+                #[cfg(feature = "zeroize")]
+                zeroize::Zeroize::zeroize(&mut self.keys);
+            }
+        }
+
+        #[cfg(feature = "zeroize")]
+        impl zeroize::ZeroizeOnDrop for $name {}
+
         #[doc=$doc]
         ///block cipher (encrypt-only)
         #[derive(Clone)]
@@ -154,6 +165,9 @@ macro_rules! define_aes_impl {
                 f.write_str(stringify!($name_enc))
             }
         }
+
+        #[cfg(feature = "zeroize")]
+        impl zeroize::ZeroizeOnDrop for $name_enc {}
 
         #[doc=$doc]
         ///block cipher (decrypt-only)
@@ -212,6 +226,9 @@ macro_rules! define_aes_impl {
                 f.write_str(stringify!($name_dec))
             }
         }
+
+        #[cfg(feature = "zeroize")]
+        impl zeroize::ZeroizeOnDrop for $name_dec {}
 
         pub(crate) struct $name_back_enc<'a>(&'a $name);
 

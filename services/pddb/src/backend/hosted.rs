@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::prelude::*;
 use std::io::SeekFrom;
+use std::io::prelude::*;
 use std::mem::MaybeUninit;
 use std::sync::Once;
 
@@ -57,9 +57,9 @@ fn flashmem() -> &'static mut FlashSingleton {
             }
 
             let flashmem = FlashSingleton { memory, disk };
-            SINGLETON.write(flashmem);
+            (&mut *(&raw mut SINGLETON)).write(flashmem);
         });
-        SINGLETON.assume_init_mut()
+        (&mut *(&raw mut SINGLETON)).assume_init_mut()
     }
 }
 

@@ -130,7 +130,7 @@ impl ActionApi for CheckBoxes {
             #[cfg(feature = "tts")]
             {
                 self.tts.tts_blocking(t!("checkbox.select_and_close_tts", locales::LANG)).unwrap();
-                for item in self.action_payload.payload().iter() {
+                for item in self.action_payload.clone().payload().iter() {
                     if let Some(name) = item {
                         self.tts.tts_blocking(name.as_str()).unwrap();
                     }
@@ -209,8 +209,8 @@ impl ActionApi for CheckBoxes {
                     self.gam.relinquish_focus().unwrap();
                     xous::yield_slice();
 
-                    let buf =
-                        Buffer::into_buf(self.action_payload).expect("couldn't convert message to payload");
+                    let buf = Buffer::into_buf(self.action_payload.clone())
+                        .expect("couldn't convert message to payload");
                     buf.send(self.action_conn, self.action_opcode)
                         .map(|_| ())
                         .expect("couldn't send action message");

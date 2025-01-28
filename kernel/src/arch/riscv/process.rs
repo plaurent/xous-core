@@ -8,7 +8,7 @@ pub const EXCEPTION_TID: TID = 1;
 pub const INITIAL_TID: TID = 2;
 pub const IRQ_TID: TID = 0;
 
-use xous_kernel::{ProcessInit, ProcessStartup, ThreadInit, PID, TID};
+use xous_kernel::{PID, ProcessInit, ProcessStartup, TID, ThreadInit};
 
 use crate::arch::mem::PAGE_SIZE;
 use crate::services::ProcessInner;
@@ -26,6 +26,9 @@ pub const EXIT_THREAD: usize = 0xff80_3000;
 
 /// This is the address a thread will return to when it finishes handling an exception.
 pub const RETURN_FROM_EXCEPTION_HANDLER: usize = 0xff80_4000;
+
+/// This is the address the swapper returns from
+pub const RETURN_FROM_SWAPPER: usize = 0xff80_8000;
 
 /// Support processing interrupts, which normally are TID 0. Since
 /// the TID is a NonZeroU8, we must pick a value here that can be
@@ -411,14 +414,9 @@ impl Process {
             *val = 0;
         }
         thread.sepc = 0;
-        crate::arch::syscall::invoke(
-            thread,
-            pid == 1,
-            entrypoint,
-            (sp - 16) & !0xf,
-            EXIT_THREAD,
-            &[setup.arg1, setup.arg2, setup.arg3, setup.arg4],
-        );
+        crate::arch::syscall::invoke(thread, pid == 1, entrypoint, (sp - 16) & !0xf, EXIT_THREAD, &[
+            setup.arg1, setup.arg2, setup.arg3, setup.arg4,
+        ]);
         Ok(())
     }
 
@@ -516,7 +514,7 @@ impl Process {
     }
 
     pub fn destroy(pid: PID) -> Result<(), xous_kernel::Error> {
-        let process_table = unsafe { &mut PROCESS_TABLE };
+        let process_table = unsafe { &mut *core::ptr::addr_of_mut!(PROCESS_TABLE) };
         let pid_idx = pid.get() as usize - 1;
         if pid_idx >= process_table.table.len() {
             panic!("attempted to destroy PID that exceeds table index: {}", pid);
@@ -540,6 +538,11 @@ impl Process {
         }
         None
     }
+
+    /// This is used by debugging routines to sanity check state, which are typically #[cfg]'d out
+    /// but with complicated overlapping rules that constantly change. Hence, the #[allow(dead_code)].
+    #[allow(dead_code)]
+    pub fn pid(&self) -> PID { self.pid }
 }
 
 impl Thread {
@@ -597,7 +600,7 @@ impl core::fmt::Display for Thread {
 pub fn set_current_pid(pid: PID) {
     let pid_idx = (pid.get() - 1) as usize;
     unsafe {
-        let pt = &mut PROCESS_TABLE;
+        let pt = &mut *core::ptr::addr_of_mut!(PROCESS_TABLE);
 
         match pt.table.get(pid_idx) {
             None | Some(false) => panic!("PID {} does not exist", pid),

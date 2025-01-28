@@ -24,6 +24,7 @@ const VAULT_PASSWORD_REC_VERSION: u32 = 1;
 const VAULT_TOTP_REC_VERSION: u32 = 2;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Error {
     IoError(std::io::Error),
     TotpSerError(TOTPSerializationError),
@@ -766,8 +767,8 @@ impl From<PasswordRecord> for Vec<u8> {
 /// target
 fn utc_now() -> DateTime<Utc> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch");
-    let naive = NaiveDateTime::from_timestamp(now.as_secs() as i64, now.subsec_nanos() as u32);
-    DateTime::from_utc(naive, Utc)
+    let naive = NaiveDateTime::from_timestamp_opt(now.as_secs() as i64, now.subsec_nanos() as u32).unwrap();
+    DateTime::from_naive_utc_and_offset(naive, Utc)
 }
 
 pub fn hex(data: Vec<u8>) -> String {

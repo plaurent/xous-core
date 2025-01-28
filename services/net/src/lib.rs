@@ -3,7 +3,7 @@
 pub mod api;
 use com::{Ipv4Conf, SsidRecord};
 use num_traits::*;
-use xous::{send_message, Message, CID};
+use xous::{CID, Message, send_message};
 use xous_ipc::Buffer;
 
 pub mod protocols;
@@ -184,7 +184,7 @@ impl NetManager {
         let mut ret = Vec::<SsidRecord>::new();
         for maybe_item in ssid_list.list.iter() {
             if let Some(item) = maybe_item {
-                ret.push(*item);
+                ret.push(item.clone());
             }
         }
         Ok((ret, ssid_list.state))

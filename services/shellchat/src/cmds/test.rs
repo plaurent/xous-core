@@ -5,11 +5,11 @@ use std::sync::Arc;
 #[cfg(feature = "extra-tests")]
 use std::time::Instant;
 
+use String;
 use base64::encode;
 use codec::*;
 use num_traits::*;
 use xous::{Message, MessageEnvelope};
-use xous_ipc::String;
 
 use crate::oqc_test::OqcOp;
 use crate::{CommonEnv, ShellCmdApi};
@@ -147,18 +147,14 @@ fn simple_kilofloat_parse(input: &str) -> core::result::Result<i32, ParseIntErro
 impl<'a> ShellCmdApi<'a> for Test {
     cmd_api!(test);
 
-    fn process(
-        &mut self,
-        args: String<1024>,
-        env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    fn process(&mut self, args: String, env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         const SENTINEL: &'static str = "|TSTR";
 
         self.state += 1;
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
         write!(ret, "Test has run {} times.", self.state).unwrap();
 
-        let mut tokens = args.as_str().unwrap().split(' ');
+        let mut tokens = args.split(' ');
 
         if let Some(sub_cmd) = tokens.next() {
             match sub_cmd {
@@ -178,8 +174,8 @@ impl<'a> ShellCmdApi<'a> for Test {
                 "frob" => {
                     const N: u32 = 10;
                     const M: usize = if cfg!(miri) { 10000 } else { 100000 };
-                    use std::sync::mpsc::channel;
                     use std::sync::RwLock;
+                    use std::sync::mpsc::channel;
                     use std::thread;
 
                     use rand::Rng;
@@ -376,9 +372,9 @@ impl<'a> ShellCmdApi<'a> for Test {
                         }
                         const ROUNDS: usize = 16; // pump a bunch of data to trigger another trng buffer refill, resetting the stats
                         for _ in 0..ROUNDS {
-                            let mut buf: [u32; 1024] = [0; 1024];
+                            let mut buf: [u32; 1020] = [0; 1020];
                             env.trng.fill_buf(&mut buf).unwrap();
-                            log::debug!("pump samples: {:x}, {:x}, {:x}", buf[0], buf[512], buf[1023]); // prevent the pump values from being optimized out
+                            log::debug!("pump samples: {:x}, {:x}, {:x}", buf[0], buf[512], buf[1019]); // prevent the pump values from being optimized out
                         }
                         ht = env.trng.get_health_tests().unwrap();
                     }
@@ -550,7 +546,7 @@ impl<'a> ShellCmdApi<'a> for Test {
                     }
 
                     if self.callback_id.is_none() {
-                        let cb_id = env.register_handler(String::<256>::from_str(self.verb()));
+                        let cb_id = env.register_handler(String::from(self.verb()));
                         log::trace!("hooking frame callback with ID {}", cb_id);
                         self.codec.hook_frame_callback(cb_id, self.callback_conn).unwrap(); // any non-handled IDs get routed to our callback port
                         self.callback_id = Some(cb_id);
@@ -699,13 +695,7 @@ impl<'a> ShellCmdApi<'a> for Test {
                                 write!(ret, "RSSI reported in dBm:\n").unwrap();
                                 for ssid in ssid_list {
                                     if ssid.name.len() > 0 {
-                                        write!(
-                                            ret,
-                                            "-{} {}\n",
-                                            ssid.rssi,
-                                            &ssid.name.as_str().unwrap_or("UTF-8 error")
-                                        )
-                                        .unwrap();
+                                        write!(ret, "-{} {}\n", ssid.rssi, &ssid.name.as_str()).unwrap();
                                     }
                                 }
                                 write!(
@@ -740,8 +730,8 @@ impl<'a> ShellCmdApi<'a> for Test {
                             net_up = status.link_state == com_rs::LinkState::Connected;
                             dhcp_ok = status.ipv4.dhcp == com_rs::DhcpState::Bound;
                             ssid_ok = if let Some(ssid) = status.ssid {
-                                log::info!("got ssid: {}", ssid.name.as_str().unwrap_or("invalid"));
-                                ssid.name.as_str().unwrap_or("invalid") == "precursortest"
+                                log::info!("got ssid: {}", ssid.name.as_str());
+                                ssid.name.as_str() == "precursortest"
                             } else {
                                 false
                             };
@@ -800,7 +790,7 @@ impl<'a> ShellCmdApi<'a> for Test {
                     self.codec.set_speaker_volume(VolumeOps::RestoreDefault, None).unwrap();
                     self.codec.set_headphone_volume(VolumeOps::RestoreDefault, None).unwrap();
                     if self.callback_id.is_none() {
-                        let cb_id = env.register_handler(String::<256>::from_str(self.verb()));
+                        let cb_id = env.register_handler(String::from(self.verb()));
                         log::trace!("hooking frame callback with ID {}", cb_id);
                         self.codec.hook_frame_callback(cb_id, self.callback_conn).unwrap(); // any non-handled IDs get routed to our callback port
                         self.callback_id = Some(cb_id);
@@ -997,6 +987,48 @@ impl<'a> ShellCmdApi<'a> for Test {
                     xous::send_message(bench_new_cid, Message::new_blocking_scalar(1, 0, 0, 0, 0)).ok();
                     unsafe { xous::disconnect(bench_new_cid).ok() };
                 }
+                #[cfg(feature = "clifford-bench")]
+                // used to compare performance against Cramium target
+                "clifford" => {
+                    use std::convert::TryInto;
+                    const CLIFFORD_SIZE: usize = 128;
+
+                    const WIDTH: u32 = CLIFFORD_SIZE as _;
+                    const HEIGHT: u32 = CLIFFORD_SIZE as _;
+                    const X_CENTER: f32 = (WIDTH / 2) as f32;
+                    const Y_CENTER: f32 = (HEIGHT / 2) as f32;
+                    const SCALE: f32 = WIDTH as f32 / 5.1;
+                    const STEP: u8 = 16;
+                    const ITERATIONS: u32 = 200000;
+                    let mut buf = vec![255u8; (WIDTH * HEIGHT).try_into().unwrap()];
+                    let (a, b, c, d) = (-2.0, -2.4, 1.1, -0.9);
+                    let (mut x, mut y): (f32, f32) = (0.0, 0.0);
+
+                    log::info!("generating image");
+                    let start_time = env.ticktimer.elapsed_ms();
+                    for _ in 0..=ITERATIONS {
+                        // this takes a couple minutes to run
+                        let x1 = f32::sin(a * y) + c * f32::cos(a * x);
+                        let y1 = f32::sin(b * x) + d * f32::cos(b * y);
+                        (x, y) = (x1, y1);
+                        let (a, b): (u32, u32) =
+                            ((x * SCALE + X_CENTER) as u32, (y * SCALE + Y_CENTER) as u32);
+                        let i: usize = (a + WIDTH * b).try_into().unwrap();
+                        if buf[i] >= STEP {
+                            buf[i] -= STEP;
+                        }
+                    }
+                    log::info!(
+                        "Local finished in {:.2} s",
+                        (env.ticktimer.elapsed_ms() - start_time) as f32 / 1000.0
+                    );
+                    let img = gam::Img::new(buf, WIDTH.try_into().unwrap(), gam::PixelType::U8);
+                    log::info!("showing local version");
+                    let modal_size = gam::Point::new(CLIFFORD_SIZE as _, CLIFFORD_SIZE as _);
+                    let bm = gam::Bitmap::from_img(&img, Some(modal_size));
+                    let modals = modals::Modals::new(&env.xns).unwrap();
+                    modals.show_image(bm).expect("couldn't render attractor");
+                }
                 _ => {
                     () // do nothing
                 }
@@ -1009,7 +1041,7 @@ impl<'a> ShellCmdApi<'a> for Test {
         &mut self,
         msg: &MessageEnvelope,
         env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    ) -> Result<Option<String>, xous::Error> {
         const AMPLITUDE: f32 = 0.8;
 
         match &msg.body {

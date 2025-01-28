@@ -1,8 +1,9 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use String;
+#[cfg(feature = "engine-ll")]
 use engine_25519::*;
 use num_traits::*;
-use xous_ipc::String;
 
 use crate::{CommonEnv, ShellCmdApi};
 static CB_ID: AtomicU32 = AtomicU32::new(0);
@@ -38,7 +39,15 @@ fn vector_read(word_offset: usize) -> u32 {
     u32::from_le_bytes(bytes)
 }
 
-fn run_vectors(engine: &mut Engine25519) -> (usize, usize) {
+fn run_vectors() -> (usize, usize) {
+    use curve25519_dalek::backend::serial::u32e::*;
+    while ensure_engine().is_err() {
+        xous::yield_slice();
+    }
+    // safety: it's safe because it's after ensure_engine()
+    let ucode_hw = unsafe { get_ucode() };
+    let rf_hw = unsafe { get_rf() };
+
     let mut test_offset: usize = 0x0;
     let mut passes: usize = 0;
     let mut fails: usize = 0;
@@ -58,17 +67,9 @@ fn run_vectors(engine: &mut Engine25519) -> (usize, usize) {
         let num_vectors = (vector_read(test_offset) >> 0) & 0x3F_FFFF;
         test_offset += 1;
 
-        let mut job = Job {
-            id: None,
-            uc_start: load_addr,
-            uc_len: code_len,
-            ucode: [0; 1024],
-            rf: [0; RF_SIZE_IN_U32],
-            window: Some(window as u8),
-        };
-
-        for i in load_addr as usize..(load_addr + code_len) as usize {
-            job.ucode[i] = vector_read(test_offset);
+        let mut mcode = Vec::<i32>::new();
+        for _i in load_addr as usize..(load_addr + code_len) as usize {
+            mcode.push(vector_read(test_offset) as i32);
             test_offset += 1;
         }
 
@@ -79,32 +80,20 @@ fn run_vectors(engine: &mut Engine25519) -> (usize, usize) {
             // a test suite can have numerous vectors against a common code base
             for argcnt in 0..num_args {
                 for word in 0..8 {
-                    job.rf[(/* window * 32 * 8 + */argcnt * 8 + word) as usize] = vector_read(test_offset);
+                    rf_hw[(window * 32 * 8 + argcnt * 8 + word) as usize] = vector_read(test_offset);
                     test_offset += 1;
                 }
             }
 
             let mut passed = true;
             log::trace!("spawning job");
-            match engine.spawn_job(job) {
-                Ok(rf_result) => {
-                    for word in 0..8 {
-                        let expect = vector_read(test_offset);
-                        test_offset += 1;
-                        let actual = rf_result[(/* window * 32 * 8 + */31 * 8 + word) as usize];
-                        if expect != actual {
-                            log::error!("e/a {:08x}/{:08x}", expect, actual);
-                            passed = false;
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "system error {:?} in running test vector: {}/0x{:x}",
-                        e,
-                        vector,
-                        test_offset
-                    );
+            run_job(ucode_hw, rf_hw, &mcode, window as usize);
+            for word in 0..8 {
+                let expect = vector_read(test_offset);
+                test_offset += 1;
+                let actual = rf_hw[(window * 32 * 8 + 31 * 8 + word) as usize];
+                if expect != actual {
+                    log::error!("e/a {:08x}/{:08x}", expect, actual);
                     passed = false;
                 }
             }
@@ -121,6 +110,7 @@ fn run_vectors(engine: &mut Engine25519) -> (usize, usize) {
             }
         }
     }
+    curve25519_dalek::backend::serial::u32e::free_engine();
     (passes, fails)
 }
 /*
@@ -128,13 +118,15 @@ benchmark notes:
 
 +59mA +/-1mA current draw off fully charged battery when running the benchmark
 1246-1261ms/check vector iteration (10 iters total, 1450 vectors total)
+
+With new curve25519 api:
+53.6ms/check vector iteration (10 iters total, 1450 vectors total) with engine retained
+56.5ms/check with auto-free
 */
 pub fn benchmark_thread(sid0: usize, sid1: usize, sid2: usize, sid3: usize) {
     let sid = xous::SID::from_u32(sid0 as u32, sid1 as u32, sid2 as u32, sid3 as u32);
     let xns = xous_names::XousNames::new().unwrap();
     let callback_conn = xns.request_connection_blocking(crate::SERVER_NAME_SHELLCHAT).unwrap();
-
-    let mut engine = engine_25519::Engine25519::new();
 
     let mut trng = trng::Trng::new(&xns).unwrap();
 
@@ -146,7 +138,7 @@ pub fn benchmark_thread(sid0: usize, sid1: usize, sid2: usize, sid3: usize) {
                 let mut passes = 0;
                 let mut fails = 0;
                 for _ in 0..TEST_ITERS {
-                    let (p, f) = run_vectors(&mut engine);
+                    let (p, f) = run_vectors();
                     passes += p;
                     fails += f;
                 }
@@ -174,15 +166,18 @@ pub fn benchmark_thread(sid0: usize, sid1: usize, sid2: usize, sid3: usize) {
                 13.54ms/2xop (200 iters -hw) -- microcode pre-loaded, minimal registers transferred using MontgomeryJob call
                 12.2ms/2xop (200 iters -hw) -- with L2 cache on (128k)
                 12.29ms/2xop (200 iters -hw) -- with L2 cache on (64k)
+
+                8.37ms/2xop (200 iters - hw) - with new curve25519 lib and engine retained after every loop
+                33.04ms/2xop (200 iters - hw) - with new curve25519 lib and auto-free engine after every loop
             */
             Some(BenchOp::StartDh) => {
                 let mut passes = 0;
                 let mut fails = 0;
 
                 use x25519_dalek::{PublicKey, StaticSecret};
-                let alice_secret = StaticSecret::new(&mut trng);
+                let alice_secret = StaticSecret::random_from_rng(&mut trng);
                 let alice_public = PublicKey::from(&alice_secret);
-                let bob_secret = StaticSecret::new(&mut trng);
+                let bob_secret = StaticSecret::random_from_rng(&mut trng);
                 let bob_public = PublicKey::from(&bob_secret);
                 for _ in 0..TEST_ITERS_DH {
                     let alice_shared_secret = alice_secret.diffie_hellman(&bob_public);
@@ -286,7 +281,7 @@ impl Engine {
         let sid = xous::create_server().unwrap();
         let sid_tuple = sid.to_u32();
 
-        let cb_id = env.register_handler(String::<256>::from_str("engine"));
+        let cb_id = env.register_handler(String::from("engine"));
         CB_ID.store(cb_id, Ordering::Relaxed);
 
         xous::create_thread_4(
@@ -299,6 +294,7 @@ impl Engine {
         .unwrap();
         Engine {
             susres: susres::Susres::new_without_hook(&xns).unwrap(),
+            // this is a dummy and hangs if engine-ll is not an active feature
             benchmark_cid: xous::connect(sid).unwrap(),
             start_time: None,
         }
@@ -310,23 +306,21 @@ impl<'a> ShellCmdApi<'a> for Engine {
 
     // inserts boilerplate for command API
 
-    fn process(
-        &mut self,
-        args: String<1024>,
-        env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    fn process(&mut self, args: String, env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         use core::fmt::Write;
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
+        #[cfg(feature = "engine-ll")]
         let helpstring = "engine [check] [bench] [benchdh] [susres] [dh] [ed] [wycheproof]";
+        #[cfg(not(feature = "engine-ll"))]
+        let helpstring = "engine [susres] [dh] [ed] [wycheproof]";
 
-        let mut tokens = args.as_str().unwrap().split(' ');
+        let mut tokens = args.split(' ');
 
         if let Some(sub_cmd) = tokens.next() {
             match sub_cmd {
                 "check" => {
-                    let mut engine = engine_25519::Engine25519::new();
                     log::debug!("running vectors");
-                    let (passes, fails) = run_vectors(&mut engine);
+                    let (passes, fails) = run_vectors();
 
                     write!(ret, "Engine passed {} vectors, failed {} vectors", passes, fails).unwrap();
                 }
@@ -364,13 +358,18 @@ impl<'a> ShellCmdApi<'a> for Engine {
                     write!(ret, "Interrupted Engine hardware benchmark with a suspend/resume").unwrap();
                 }
                 "dh" => {
+                    log::info!("starting DH test");
                     use x25519_dalek::{EphemeralSecret, PublicKey};
-                    let alice_secret = EphemeralSecret::new(&mut env.trng);
+                    let alice_secret = EphemeralSecret::random_from_rng(&mut env.trng);
+                    log::info!("1");
                     let alice_public = PublicKey::from(&alice_secret);
-                    let bob_secret = EphemeralSecret::new(&mut env.trng);
+                    let bob_secret = EphemeralSecret::random_from_rng(&mut env.trng);
                     let bob_public = PublicKey::from(&bob_secret);
+                    log::info!("2");
                     let alice_shared_secret = alice_secret.diffie_hellman(&bob_public);
+                    log::info!("3");
                     let bob_shared_secret = bob_secret.diffie_hellman(&alice_public);
+                    log::info!("4");
                     let mut pass = true;
                     for (&alice, &bob) in
                         alice_shared_secret.as_bytes().iter().zip(bob_shared_secret.as_bytes().iter())
@@ -389,29 +388,12 @@ impl<'a> ShellCmdApi<'a> for Engine {
 
                     /////////////////////// fixed vectors from x25519-dalek tests
                     use curve25519_dalek::montgomery::MontgomeryPoint;
-                    use curve25519_dalek::scalar::Scalar;
-                    /// "Decode" a scalar from a 32-byte array.
-                    ///
-                    /// By "decode" here, what is really meant is applying key clamping by twiddling
-                    /// some bits.
-                    ///
-                    /// # Returns
-                    ///
-                    /// A `Scalar`.
-                    fn clamp_scalar(mut scalar: [u8; 32]) -> Scalar {
-                        scalar[0] &= 248;
-                        scalar[31] &= 127;
-                        scalar[31] |= 64;
-
-                        Scalar::from_bits(scalar)
-                    }
-
                     /// The bare, byte-oriented x25519 function, exactly as specified in RFC7748.
                     ///
                     /// This can be used with [`X25519_BASEPOINT_BYTES`] for people who
                     /// cannot use the better, safer, and faster DH API.
                     fn x25519(k: [u8; 32], u: [u8; 32]) -> [u8; 32] {
-                        (clamp_scalar(k) * MontgomeryPoint(u)).to_bytes()
+                        MontgomeryPoint(u).mul_clamped(k).to_bytes()
                     }
                     {
                         let input_scalar: [u8; 32] = [
@@ -465,24 +447,20 @@ impl<'a> ShellCmdApi<'a> for Engine {
                     }
                 }
                 "ed2" => {
-                    use ed25519_dalek::{Keypair, Signature, Signer};
-                    let keypair: Keypair;
-                    let good_sig: Signature;
-                    let bad_sig: Signature;
-
+                    use ed25519_dalek::{Signer, SigningKey};
                     let good: &[u8] = "test message".as_bytes();
                     let bad: &[u8] = "wrong message".as_bytes();
 
-                    keypair = Keypair::generate(&mut env.trng);
-                    good_sig = keypair.sign(&good);
-                    bad_sig = keypair.sign(&bad);
+                    let signingkey = SigningKey::generate(&mut env.trng);
+                    let good_sig = signingkey.sign(&good);
+                    let bad_sig = signingkey.sign(&bad);
 
-                    if keypair.verify(&good, &good_sig).is_ok() {
+                    if signingkey.verify(&good, &good_sig).is_ok() {
                         write!(ret, "Verification of valid signtaure passed!\n").unwrap();
                     } else {
                         write!(ret, "Verification of valid signtaure failed!\n").unwrap();
                     }
-                    if keypair.verify(&good, &bad_sig).is_err() {
+                    if signingkey.verify(&good, &bad_sig).is_err() {
                         write!(
                             ret,
                             "Verification of a signature on a different message failed, as expected.\n"
@@ -491,7 +469,7 @@ impl<'a> ShellCmdApi<'a> for Engine {
                     } else {
                         write!(ret, "Verification of a signature on a different message passed (this is unexpected)!\n").unwrap();
                     }
-                    if keypair.verify(&bad, &good_sig).is_err() {
+                    if signingkey.verify(&bad, &good_sig).is_err() {
                         write!(
                             ret,
                             "Verification of a signature on a different message failed, as expected.\n"
@@ -505,22 +483,22 @@ impl<'a> ShellCmdApi<'a> for Engine {
                     use ed25519_dalek::*;
                     // use ed25519::signature::Signature as _;
                     use hex::FromHex;
-                    let secret_key: &[u8] =
+                    let signing_key: &[u8] =
                         b"833fe62409237b9d62ec77587520911e9a759cec1d19755b7da901b96dca3d42";
                     let public_key: &[u8] =
                         b"ec172b93ad5e563bf4932c70e1245034c35467ef2efd4d64ebf819683467e2bf";
                     let message: &[u8] = b"616263";
                     let signature: &[u8] = b"98a70222f0b8121aa9d30f813d683f809e462b469c7ff87639499bb94e6dae4131f85042463c2a355a2003d062adf5aaa10b8c61e636062aaad11c2a26083406";
-
-                    let sec_bytes = <[u8; 32]>::from_hex(secret_key).unwrap();
-                    let pub_bytes = <[u8; 32]>::from_hex(public_key).unwrap();
                     let msg_bytes = <[u8; 3]>::from_hex(message).unwrap();
-                    let sig_bytes = <[u8; 64]>::from_hex(signature).unwrap();
 
-                    let secret: SecretKey = SecretKey::from_bytes(&sec_bytes[..SECRET_KEY_LENGTH]).unwrap();
-                    let public: PublicKey = PublicKey::from_bytes(&pub_bytes[..PUBLIC_KEY_LENGTH]).unwrap();
-                    let keypair: Keypair = Keypair { secret, public };
-                    let sig1: Signature = Signature::from_bytes(&sig_bytes[..]).unwrap();
+                    let signing_key_bytes = <[u8; SECRET_KEY_LENGTH]>::from_hex(signing_key).unwrap();
+                    let public_key_bytes = <[u8; PUBLIC_KEY_LENGTH]>::from_hex(public_key).unwrap();
+                    let signature_bytes = <[u8; SIGNATURE_LENGTH]>::from_hex(signature).unwrap();
+
+                    let signingkey: SigningKey = SigningKey::from_bytes(&signing_key_bytes);
+                    let expected_verifying_key = VerifyingKey::from_bytes(&public_key_bytes).unwrap();
+                    assert_eq!(expected_verifying_key, signingkey.verifying_key());
+                    let sig1: Signature = Signature::from_bytes(&signature_bytes);
 
                     //let mut prehash_for_signing = engine_sha512::Sha512::default(); // this defaults to Hw
                     // then Sw strategy let mut prehash_for_verifying =
@@ -531,7 +509,7 @@ impl<'a> ShellCmdApi<'a> for Engine {
                     prehash_for_signing.update(&msg_bytes[..]);
                     prehash_for_verifying.update(&msg_bytes[..]);
 
-                    let sig2: Signature = keypair.sign_prehashed(prehash_for_signing, None).unwrap();
+                    let sig2: Signature = signingkey.sign_prehashed(prehash_for_signing, None).unwrap();
 
                     log::info!("original: {:02x?}", sig1);
                     log::info!("produced: {:02x?}", sig2);
@@ -546,7 +524,7 @@ impl<'a> ShellCmdApi<'a> for Engine {
                         )
                         .unwrap();
                     }
-                    if keypair.verify_prehashed(prehash_for_verifying, None, &sig2).is_err() {
+                    if signingkey.verify_prehashed(prehash_for_verifying, None, &sig2).is_err() {
                         pass = false;
                         write!(ret, "Could not verify ed25519ph signature!").unwrap();
                     }
@@ -592,6 +570,8 @@ impl<'a> ShellCmdApi<'a> for Engine {
         } else {
             write!(ret, "{}", helpstring).unwrap();
         }
+        // de-allocate the engine at the end of the test, so other processes can grab it
+        curve25519_dalek::backend::serial::u32e::free_engine();
         Ok(Some(ret))
     }
 
@@ -599,11 +579,11 @@ impl<'a> ShellCmdApi<'a> for Engine {
         &mut self,
         msg: &xous::MessageEnvelope,
         env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    ) -> Result<Option<String>, xous::Error> {
         use core::fmt::Write;
 
         log::debug!("benchmark callback");
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
 
         xous::msg_scalar_unpack!(msg, passes, fails, result_type, iters, {
             let end = env.ticktimer.elapsed_ms();

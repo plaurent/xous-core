@@ -1,14 +1,19 @@
 pub mod api;
+pub mod i2c_lib;
 pub mod iox_lib;
+pub mod keyboard;
+pub mod trng;
 
-pub use api::*;
-use cramium_hal::udma::{EventChannel, PeriphEventType, PeriphId};
+use api::Opcode;
+use cramium_hal::udma::{EventChannel, PeriphEventType, PeriphId, UdmaGlobalConfig};
+pub use i2c_lib::*;
 pub use iox_lib::*;
 use num_traits::*;
 
 /// Do not change this constant, it is hard-coded into libraries in order to break
 /// circular dependencies on the IFRAM block.
 pub const SERVER_NAME_CRAM_HAL: &str = "_Cramium-SoC HAL_";
+pub const PERCLK: u32 = 100_000_000;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 static REFCOUNT: AtomicU32 = AtomicU32::new(0);
@@ -20,7 +25,7 @@ pub struct UdmaGlobal {
 impl UdmaGlobal {
     pub fn new() -> Self {
         REFCOUNT.fetch_add(1, Ordering::Relaxed);
-        let xns = xous_api_names::XousNames::new().unwrap();
+        let xns = xous_names::XousNames::new().unwrap();
         let conn =
             xns.request_connection(SERVER_NAME_CRAM_HAL).expect("Couldn't connect to Cramium HAL server");
         UdmaGlobal { conn }
@@ -61,4 +66,33 @@ impl UdmaGlobal {
         )
         .expect("Couldn't setup UDMA event mapping");
     }
+
+    pub fn reset(&self, peripheral: PeriphId) {
+        xous::send_message(
+            self.conn,
+            xous::Message::new_blocking_scalar(
+                Opcode::PeriphReset.to_usize().unwrap(),
+                peripheral as u32 as usize,
+                0,
+                0,
+                0,
+            ),
+        )
+        .expect("Couldn't setup UDMA clock");
+    }
+}
+
+impl UdmaGlobalConfig for UdmaGlobal {
+    fn clock(&self, peripheral: PeriphId, enable: bool) { self.udma_clock_config(peripheral, enable); }
+
+    unsafe fn udma_event_map(
+        &self,
+        peripheral: PeriphId,
+        event_type: PeriphEventType,
+        to_channel: EventChannel,
+    ) {
+        self.udma_event_map(peripheral, event_type, to_channel);
+    }
+
+    fn reset(&self, peripheral: PeriphId) { self.reset(peripheral); }
 }

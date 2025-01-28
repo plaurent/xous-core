@@ -5,15 +5,16 @@ edition = "2018"
 
 [dependencies]
 log = "0.4.14"
-num-derive = { version = "0.3.3", default-features = false }
+num-derive = { version = "0.4.2", default-features = false }
 num-traits = { version = "0.2.14", default-features = false }
-xous = "0.9.57"
-xous-ipc = "0.9.57"
-rkyv = { version = "0.4.3", features = [
-    "const_generics",
-], default-features = false }
-log-server = { package = "xous-api-log", version = "0.1.53" }
-xous-names = { package = "xous-api-names", version = "0.9.55" }
+xous = "0.9.64"
+xous-ipc = "0.10.4"
+rkyv = { version = "0.8.8", default-features = false, features = [
+    "std",
+    "alloc",
+] }
+log-server = { package = "xous-api-log", version = "0.1.63" }
+xous-names = { package = "xous-api-names", version = "0.9.65" }
 gam = { path = "../../services/gam" }
 graphics-server = { path = "../../services/graphics-server" }
 locales = { path = "../../locales" }
@@ -23,7 +24,7 @@ xous-usb-hid = { git = "https://github.com/betrusted-io/xous-usb-hid.git", branc
 pddb = { path = "../../services/pddb" }
 modals = { path = "../../services/modals" }
 trng = { path = "../../services/trng" }
-susres = { package = "xous-api-susres", version = "0.9.53" }
+susres = { package = "xous-api-susres", version = "0.9.63" }
 ime-plugin-api = { path = "../../services/ime-plugin-api" }
 content-plugin-api = { path = "../../services/content-plugin-api" } # all content canvas providers must provide this API
 backup = { path = "libraries/backup" }
@@ -31,7 +32,7 @@ byteorder = { version = "1.4.3", default-features = false }
 arrayref = "0.3.6"
 subtle = { version = "2.5.0", features = ["core_hint_black_box"] }
 rand_core = "0.6.3"
-ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.53" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.63" }
 userprefs = { path = "../../libs/userprefs" }
 
 # opensk
@@ -39,11 +40,11 @@ ctap-crypto = { path = "libraries/crypto" }
 cbor = { path = "libraries/cbor" }
 persistent_store = { path = "libraries/persistent_store" }
 ed25519-compact = { version = "1", default-features = false, optional = true }
-rand = { version = "0.8.4", optional = true }
+rand = { version = "0.8.5", optional = true }
 
 # ux formatting
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
-chrono = { version = "0.4.19", default-features = false, features = ["std"] }
+chrono = { version = "0.4.33", default-features = false, features = ["std"] }
 
 # password generation
 passwords = "3.1.9"
@@ -60,7 +61,7 @@ com_rs = { git = "https://github.com/betrusted-io/com_rs", rev = "891bdd3ca8e41f
 
 # performance profiling
 perflib = { path = "../../libs/perflib", optional = true }
-utralib = { version = "0.1.24", optional = true, default-features = false }
+utralib = { version = "0.1.25", optional = true, default-features = false }
 
 # testing
 random-pick = { version = "1.2.15", optional = true }
@@ -73,6 +74,10 @@ hosted = []
 renode = []
 tts = []
 with_ctap1 = ["ctap-crypto/with_ctap1"]
+vendor_hid = []
+std = []
+fuzz = []
+debug_ctap = []
 autotest = []
 multireset = [] # allows credential reset more than once per boot
 vaultperf = [

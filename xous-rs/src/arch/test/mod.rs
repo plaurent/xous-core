@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::thread_local;
 
-use crate::{Result, SysCall, SysCallResult, PID, TID};
+use crate::{PID, Result, SysCall, SysCallResult, TID};
 
 mod mem;
 pub use mem::*;
@@ -577,12 +577,12 @@ pub fn syscall(call: SysCall) -> SysCallResult {
             let call = crate::SysCall::from_args(nr, a1, a2, a3, a4, a5, a6, a7).unwrap();
 
             let mut xsc_borrowed = xsc.borrow_mut();
-            let xsc_asmut = xsc_borrowed.as_mut().expect(
+            let xsc_as_mut = xsc_borrowed.as_mut().expect(
                 "not connected to server (did you forget to create a thread with xous::create_thread()?)",
             );
             loop {
-                _xous_syscall_to(nr, a1, a2, a3, a4, a5, a6, a7, &call, xsc_asmut);
-                _xous_syscall_result(&mut ret, *tid.borrow(), xsc_asmut);
+                _xous_syscall_to(nr, a1, a2, a3, a4, a5, a6, a7, &call, xsc_as_mut);
+                _xous_syscall_result(&mut ret, *tid.borrow(), xsc_as_mut);
                 match ret {
                     Result::Error(e) => return Err(e),
                     Result::RetryCall => (),

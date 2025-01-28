@@ -1,7 +1,7 @@
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::num::ParseIntError;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 /// The `time_server` is unique is that it is written for exclusive use by `libstd` to extract time.
 ///
 /// It also has a single hook that is callable from the PDDB to initialize a time value once the
@@ -37,7 +37,7 @@ use num_traits::*;
 use pddb::PddbMountPoller;
 // ntp imports
 use sntpc::{Error, NtpContext, NtpTimestampGenerator, NtpUdpSocket, Result};
-use xous::{send_message, Message};
+use xous::{Message, send_message};
 
 /// This is a "well known name" used by `libstd` to connect to the time server
 /// Anyone who wants to check if time has been initialized would use this name.
@@ -666,7 +666,7 @@ pub(crate) fn start_time_ux() {
                             match result {
                                 Ok(time) => {
                                     log::info!("Got NTP time: {}.{}", time.sec(), time.sec_fraction());
-                                    let current_time = Utc.ymd(1970, 1, 1).and_hms(0, 0, 0)
+                                    let current_time = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()
                                         + chrono::Duration::seconds(time.sec() as i64);
                                     log::info!("Setting UTC time: {:?}", current_time.to_string());
                                     xous::send_message(
@@ -744,9 +744,17 @@ pub(crate) fn start_time_ux() {
                         }
 
                         log::info!("Setting time: {}/{}/{} {}:{}:{}", months, days, years, hours, mins, secs);
-                        let new_dt = chrono::FixedOffset::east((tz_offset_ms / 1000) as i32)
-                            .ymd(years as i32 + 2000, months as u32, days as u32)
-                            .and_hms(hours as u32, mins as u32, secs as u32);
+                        let new_dt = chrono::FixedOffset::east_opt((tz_offset_ms / 1000) as i32)
+                            .unwrap()
+                            .with_ymd_and_hms(
+                                years as i32 + 2000,
+                                months as u32,
+                                days as u32,
+                                hours as u32,
+                                mins as u32,
+                                secs as u32,
+                            )
+                            .unwrap();
                         xous::send_message(
                             timeserver_cid,
                             Message::new_scalar(
@@ -814,105 +822,105 @@ pub(crate) enum ValidatorOp {
     UxSeconds,
 }
 
-fn tz_ux_validator(input: TextEntryPayload) -> Option<ValidatorErr> {
+fn tz_ux_validator(input: &TextEntryPayload) -> Option<ValidatorErr> {
     let text_str = input.as_str();
 
     match simple_kilofloat_parse(text_str) {
         Ok(input) => {
             if input < -12_000 || input > 14_000 {
-                return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
+                return Some(ValidatorErr::from(t!("rtc.range_err", locales::LANG)));
             }
         }
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
+        _ => return Some(ValidatorErr::from(t!("rtc.integer_err", locales::LANG))),
     }
     None
 }
 
-fn rtc_ux_validate_month(input: TextEntryPayload) -> Option<ValidatorErr> {
+fn rtc_ux_validate_month(input: &TextEntryPayload) -> Option<ValidatorErr> {
     let text_str = input.as_str();
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
+        _ => return Some(ValidatorErr::from(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input < 1 || input > 12 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
+        return Some(ValidatorErr::from(t!("rtc.range_err", locales::LANG)));
     }
 
     None
 }
 
-fn rtc_ux_validate_day(input: TextEntryPayload) -> Option<ValidatorErr> {
+fn rtc_ux_validate_day(input: &TextEntryPayload) -> Option<ValidatorErr> {
     let text_str = input.as_str();
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
+        _ => return Some(ValidatorErr::from(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input < 1 || input > 31 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
+        return Some(ValidatorErr::from(t!("rtc.range_err", locales::LANG)));
     }
 
     None
 }
 
-fn rtc_ux_validate_year(input: TextEntryPayload) -> Option<ValidatorErr> {
+fn rtc_ux_validate_year(input: &TextEntryPayload) -> Option<ValidatorErr> {
     let text_str = input.as_str();
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
+        _ => return Some(ValidatorErr::from(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 99 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
+        return Some(ValidatorErr::from(t!("rtc.range_err", locales::LANG)));
     }
 
     None
 }
 
-fn rtc_ux_validate_hour(input: TextEntryPayload) -> Option<ValidatorErr> {
+fn rtc_ux_validate_hour(input: &TextEntryPayload) -> Option<ValidatorErr> {
     let text_str = input.as_str();
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
+        _ => return Some(ValidatorErr::from(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 23 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
+        return Some(ValidatorErr::from(t!("rtc.range_err", locales::LANG)));
     }
 
     None
 }
 
-fn rtc_ux_validate_minute(input: TextEntryPayload) -> Option<ValidatorErr> {
+fn rtc_ux_validate_minute(input: &TextEntryPayload) -> Option<ValidatorErr> {
     let text_str = input.as_str();
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
+        _ => return Some(ValidatorErr::from(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 59 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
+        return Some(ValidatorErr::from(t!("rtc.range_err", locales::LANG)));
     }
 
     None
 }
 
-fn rtc_ux_validate_seconds(input: TextEntryPayload) -> Option<ValidatorErr> {
+fn rtc_ux_validate_seconds(input: &TextEntryPayload) -> Option<ValidatorErr> {
     let text_str = input.as_str();
 
     let input = match text_str.parse::<u32>() {
         Ok(input_int) => input_int,
-        _ => return Some(ValidatorErr::from_str(t!("rtc.integer_err", locales::LANG))),
+        _ => return Some(ValidatorErr::from(t!("rtc.integer_err", locales::LANG))),
     };
 
     if input > 59 {
-        return Some(ValidatorErr::from_str(t!("rtc.range_err", locales::LANG)));
+        return Some(ValidatorErr::from(t!("rtc.range_err", locales::LANG)));
     }
 
     None

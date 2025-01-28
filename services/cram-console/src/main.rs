@@ -1,241 +1,368 @@
-use utralib::generated::*;
+#[cfg(feature = "hwtest")]
+mod hwtest;
+
+mod app_autogen;
+mod appmenu;
+mod ball;
+mod cmds;
+mod mainmenu;
+mod repl;
+mod shell;
+
+use std::collections::HashMap;
+use std::fmt::Write;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread;
+
+use cmds::*;
+use cram_hal_service::keyboard;
+use graphics_server::Gid;
+use graphics_server::api::GlyphStyle;
+use graphics_server::*;
+use locales::t;
+use num_traits::*;
+use xous::{CID, Message, msg_scalar_unpack, send_message};
+
+const SERVER_NAME_STATUS_GID: &str = "_Status bar GID receiver_";
+const SERVER_NAME_STATUS: &str = "_Status_";
+
+#[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
+pub(crate) enum StatusOpcode {
+    /// indicates time for periodic update of the status bar
+    Pump,
+
+    /// Raise the PDDB menu
+    SubmenuPddb,
+    /// Raise the App menu
+    SubmenuApp,
+
+    /// Tells keyboard watching thread that a new keypress happened.
+    Keypress,
+
+    /// Raise the Shellchat app
+    SwitchToShellchat,
+    /// Switch to an app
+    SwitchToApp,
+
+    Quit,
+}
+
+static mut CB_TO_MAIN_CONN: Option<CID> = None;
+
+pub fn pump_thread(conn: usize, pump_run: Arc<AtomicBool>) {
+    let ticktimer = ticktimer::Ticktimer::new().unwrap();
+    loop {
+        if pump_run.load(Ordering::Relaxed) {
+            match send_message(
+                conn as u32,
+                Message::new_scalar(StatusOpcode::Pump.to_usize().unwrap(), 0, 0, 0, 0),
+            ) {
+                Err(xous::Error::ServerNotFound) => break,
+                Ok(xous::Result::Ok) => {}
+                _ => panic!("unhandled error in status pump thread"),
+            }
+        }
+        ticktimer.sleep_ms(1000).unwrap();
+    }
+}
+
 fn main() {
     log_server::init_wait().unwrap();
     log::set_max_level(log::LevelFilter::Info);
 
-    #[cfg(feature = "hwsim")]
-    let csr = xous::syscall::map_memory(
-        xous::MemoryAddress::new(utra::main::HW_MAIN_BASE),
-        None,
-        4096,
-        xous::MemoryFlags::R | xous::MemoryFlags::W,
-    )
-    .expect("couldn't map Core Control CSR range");
-    #[cfg(feature = "hwsim")]
-    let mut core_csr = Some(CSR::new(csr.as_mut_ptr() as *mut u32));
+    #[cfg(feature = "hwtest")]
+    hwtest::hwtest();
 
-    #[cfg(feature = "hwsim")]
-    core_csr.wfo(utra::main::REPORT_REPORT, 0x600d_0000);
+    #[cfg(feature = "early-ball")]
+    thread::spawn(move || {
+        let mut count = 0;
+        loop {
+            log::info!("Still alive! #{}", count);
+            count += 1;
+            std::thread::sleep(std::time::Duration::from_millis(5000));
+        }
+    });
 
-    #[cfg(feature = "hwsim")]
-    core_csr.wfo(utra::main::REPORT_REPORT, 0xa51d_0000);
-    let coreuser_csr = xous::syscall::map_memory(
-        xous::MemoryAddress::new(utra::coreuser::HW_COREUSER_BASE),
-        None,
-        4096,
-        xous::MemoryFlags::R | xous::MemoryFlags::W,
-    )
-    .expect("couldn't map Core User CSR range");
-    let mut coreuser = CSR::new(coreuser_csr.as_mut_ptr() as *mut u32);
-    // first, clear the ASID table to 0
-    for asid in 0..512 {
-        coreuser.wo(
-            utra::coreuser::SET_ASID,
-            coreuser.ms(utra::coreuser::SET_ASID_ASID, asid)
-                | coreuser.ms(utra::coreuser::SET_ASID_TRUSTED, 0),
-        );
+    #[cfg(feature = "early-ball")]
+    thread::spawn(move || {
+        let xns = xous_names::XousNames::new().unwrap();
+        let mut ball = ball::Ball::new(&xns);
+        log::info!("starting ball");
+        loop {
+            ball.update();
+        }
+    });
+
+    let tt = ticktimer::Ticktimer::new().unwrap();
+    let xns = xous_names::XousNames::new().unwrap();
+
+    let status_gam_getter =
+        xns.register_name(SERVER_NAME_STATUS_GID, Some(1)).expect("can't register server");
+    let mut canvas_gid: [u32; 4] = [0; 4];
+    // wait until we're assigned a GID -- this is a one-time message from the GAM
+    let msg = xous::receive_message(status_gam_getter).unwrap();
+    log::trace!("GID assignment message: {:?}", msg);
+    xous::msg_scalar_unpack!(msg, g0, g1, g2, g3, {
+        canvas_gid[0] = g0 as u32;
+        canvas_gid[1] = g1 as u32;
+        canvas_gid[2] = g2 as u32;
+        canvas_gid[3] = g3 as u32;
+    });
+    match xns.unregister_server(status_gam_getter) {
+        Err(e) => {
+            log::error!("couldn't unregister getter server: {:?}", e);
+        }
+        _ => {}
     }
-    // set my PID to trusted
-    coreuser.wo(
-        utra::coreuser::SET_ASID,
-        coreuser.ms(utra::coreuser::SET_ASID_ASID, xous::process::id() as u32)
-            | coreuser.ms(utra::coreuser::SET_ASID_TRUSTED, 1),
+    xous::destroy_server(status_gam_getter).unwrap();
+
+    let status_gid: Gid = Gid::new(canvas_gid);
+    // Expected connections:
+    //   - from keyboard
+    //   - from USB HID
+    let status_sid = xns.register_name(SERVER_NAME_STATUS, Some(2)).unwrap();
+    // create a connection for callback hooks
+    let cb_cid = xous::connect(status_sid).unwrap();
+
+    // --------------------------- graphical loop timing
+    let mut stats_phase: usize = 0;
+    let mut secnotes_force_redraw = false;
+    let secnotes_interval = 4;
+
+    let gam = gam::Gam::new(&xns).expect("|status: can't connect to GAM");
+    // screensize is controlled by the GAM, it's set in main.rs near the top
+    let screensize = gam.get_canvas_bounds(status_gid).expect("|status: Couldn't get canvas size");
+
+    // ------------------ render initial graphical display, so we don't seem broken on boot
+    const CPU_BAR_WIDTH: i16 = 46;
+    const CPU_BAR_OFFSET: i16 = 8;
+    let time_rect = Rectangle::new_with_style(
+        Point::new(0, 0),
+        Point::new(screensize.x / 2 - CPU_BAR_WIDTH / 2 - 1 + CPU_BAR_OFFSET, screensize.y / 2 - 1),
+        DrawStyle::new(PixelColor::Light, PixelColor::Light, 0),
     );
-    // set the required `mpp` state to user code (mpp == 0)
-    coreuser.wfo(utra::coreuser::SET_PRIVILEGE_MPP, 0);
-    // turn on the coreuser computation
-    coreuser.wo(
-        utra::coreuser::CONTROL,
-        coreuser.ms(utra::coreuser::CONTROL_ASID, 1)
-            | coreuser.ms(utra::coreuser::CONTROL_ENABLE, 1)
-            | coreuser.ms(utra::coreuser::CONTROL_PRIVILEGE, 1),
+    // build uptime text view: left half of status bar
+    let mut uptime_tv =
+        TextView::new(status_gid, TextBounds::GrowableFromTl(time_rect.tl(), time_rect.width() as _));
+    uptime_tv.untrusted = false;
+    uptime_tv.style = GlyphStyle::Tall;
+    uptime_tv.draw_border = false;
+    uptime_tv.margin = Point::new(3, 0);
+    write!(uptime_tv, "{}", t!("secnote.startup", locales::LANG))
+        .expect("|status: couldn't init uptime text");
+    gam.post_textview(&mut uptime_tv).expect("|status: can't draw battery stats");
+
+    // build security status textview
+    let mut security_tv = TextView::new(
+        status_gid,
+        TextBounds::BoundingBox(Rectangle::new(
+            Point::new(0, screensize.y / 2 + 1),
+            Point::new(screensize.x, screensize.y),
+        )),
     );
-    // turn off coreuser control updates
-    coreuser.wo(utra::coreuser::PROTECT, 1);
-    #[cfg(feature = "hwsim")]
-    core_csr.wfo(utra::main::REPORT_REPORT, 0xa51d_600d);
+    security_tv.style = GlyphStyle::Tall; // was: Regular, but not available on this target
+    security_tv.draw_border = false;
+    security_tv.margin = Point::new(0, 0);
+    security_tv.token = gam.claim_token(gam::STATUS_BAR_NAME).expect("couldn't request token"); // this is a shared magic word to identify this process
+    security_tv.clear_area = true;
+    security_tv.invert = true;
+    write!(&mut security_tv, "{}", t!("secnote.startup", locales::LANG)).unwrap();
+    gam.post_textview(&mut security_tv).unwrap();
+    gam.draw_line(
+        status_gid,
+        Line::new_with_style(
+            Point::new(0, screensize.y),
+            screensize,
+            DrawStyle::new(PixelColor::Light, PixelColor::Light, 1),
+        ),
+    )
+    .unwrap();
+    gam.redraw().unwrap(); // initial boot redraw
 
-    log::info!("my PID is {}", xous::process::id());
+    // ------------------------ measure current security state and adjust messaging
+    let sec_notes = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    let mut last_sec_note_index = 0;
+    let mut last_sec_note_size = 0;
 
-    #[cfg(feature = "pio-test")]
-    {
-        log::info!("running PIO tests");
-        xous_pio::pio_tests::pio_tests();
-        log::info!("resuming console tests");
-    }
+    // ---------------------------- build menus
+    // used to hide time when the PDDB is not mounted
+    #[cfg(feature = "pddb")]
+    let pddb_poller = pddb::PddbMountPoller::new();
+    #[cfg(not(feature = "pddb"))]
+    gam.allow_mainmenu().ok();
 
-    #[cfg(feature = "pl230-test")]
-    {
-        log::info!("running PL230 tests");
-        xous_pl230::pl230_tests::pl230_tests();
-        log::info!("resuming console tests");
-    }
+    // these menus stake a claim on some security-sensitive connections; occupy them upstream of trying to do
+    // an update
+    log::debug!("starting main menu thread");
+    let main_menu_sid = xous::create_server().unwrap();
+    let status_cid = xous::connect(status_sid).unwrap();
+    let _menu_manager = mainmenu::create_main_menu(main_menu_sid, status_cid);
+    appmenu::create_app_menu(xous::connect(status_sid).unwrap());
+    let kbd = Arc::new(Mutex::new(keyboard::Keyboard::new(&xns).unwrap()));
 
-    let tt = xous_api_ticktimer::Ticktimer::new().unwrap();
-    let mut total = 0;
-    let mut iter = 0;
-    log::info!("running message passing test");
+    // ---------------------------- Background processes that claim contexts
+    // must be upstream of the update check, because we need to occupy the keyboard
+    // server slot to prevent e.g. a keyboard logger from taking our passwords!
+    kbd.lock()
+        .unwrap()
+        .register_observer(SERVER_NAME_STATUS, StatusOpcode::Keypress.to_u32().unwrap() as usize);
+
+    let _modals = modals::Modals::new(&xns).unwrap();
+
+    shell::start_shell();
+
+    let pump_run = Arc::new(AtomicBool::new(false));
+    let pump_conn = xous::connect(status_sid).unwrap();
+    let _ = thread::spawn({
+        let pump_run = pump_run.clone();
+        move || {
+            pump_thread(pump_conn as _, pump_run);
+        }
+    });
+
+    pump_run.store(true, Ordering::Relaxed); // start status thread updating
     loop {
-        // this conjures a scalar message
-        #[cfg(feature = "hwsim")]
-        core_csr.wfo(utra::main::REPORT_REPORT, 0x1111_0000 + iter);
-        let now = tt.elapsed_ms();
-        #[cfg(feature = "hwsim")]
-        core_csr.wfo(utra::main::REPORT_REPORT, 0x2222_0000 + iter);
-        total += now;
+        let msg = xous::receive_message(status_sid).unwrap();
+        let opcode: Option<StatusOpcode> = FromPrimitive::from_usize(msg.body.id());
+        log::debug!("{:?}", opcode);
+        match opcode {
+            Some(StatusOpcode::Pump) => {
+                let elapsed_time = tt.elapsed_ms();
+                {
+                    // update the time field
+                    // have to clear the entire rectangle area, because the text has a variable width and
+                    // dirty text will remain if the text is shortened
+                    gam.draw_rectangle(status_gid, time_rect).ok();
+                    uptime_tv.clear_str();
 
-        if iter >= 8 && iter < 12 {
-            #[cfg(feature = "hwsim")]
-            core_csr.wfo(utra::main::REPORT_REPORT, 0x5133_D001);
-            tt.sleep_ms(1).ok();
-        } else if iter >= 12 && iter < 13 {
-            #[cfg(feature = "hwsim")]
-            core_csr.wfo(utra::main::REPORT_REPORT, 0x5133_D002);
-            tt.sleep_ms(2).ok();
-        } else if iter >= 13 && iter < 14 {
-            #[cfg(feature = "hwsim")]
-            core_csr.wfo(utra::main::REPORT_REPORT, 0x5133_D002);
-            tt.sleep_ms(3).ok();
-        } else if iter >= 14 {
-            break;
-        }
+                    write!(
+                        &mut uptime_tv,
+                        " {}{}:{:02}:{:02}",
+                        t!("stats.uptime", locales::LANG),
+                        (elapsed_time / 3_600_000),
+                        (elapsed_time / 60_000) % 60,
+                        (elapsed_time / 1000) % 60,
+                    )
+                    .expect("|status: can't write string");
+                    gam.post_textview(&mut uptime_tv).expect("|status: can't draw uptime");
+                    if let Some(bounds) = uptime_tv.bounds_computed {
+                        if bounds.height() as i16 > screensize.y / 2 + 1 {
+                            // the clipping rectangle limits the bounds to the overall height of the status
+                            // area, so the overlap between status and secnotes
+                            // must be managed within this server
+                            log::info!(
+                                "Status text overstepped its intended bound. Forcing secnotes redraw."
+                            );
+                        }
+                    }
+                }
 
-        // something lame to just conjure a memory message
-        #[cfg(feature = "hwsim")]
-        core_csr.wfo(utra::main::REPORT_REPORT, 0x3333_0000 + iter);
-        let version = tt.get_version();
-        #[cfg(feature = "hwsim")]
-        core_csr.wfo(utra::main::REPORT_REPORT, 0x4444_0000 + iter);
-        total += version.len() as u64;
-        iter += 1;
-        #[cfg(feature = "hwsim")]
-        core_csr.wfo(utra::main::REPORT_REPORT, now as u32);
-        log::info!("message passing test progress: {}ms", tt.elapsed_ms());
-    }
-    #[cfg(feature = "hwsim")]
-    core_csr.wfo(utra::main::REPORT_REPORT, 0x6969_6969);
-    println!("Elapsed: {}", total);
-    #[cfg(feature = "hwsim")]
-    core_csr.wfo(utra::main::REPORT_REPORT, 0x600d_c0de);
+                // update the security status, if any
+                if secnotes_force_redraw
+                    || sec_notes.lock().unwrap().len() != last_sec_note_size
+                    || ((stats_phase % secnotes_interval) == 0)
+                {
+                    log::debug!("updating lock state text");
+                    if sec_notes.lock().unwrap().len() != last_sec_note_size {
+                        last_sec_note_size = sec_notes.lock().unwrap().len();
+                        if last_sec_note_size > 0 {
+                            last_sec_note_index = last_sec_note_size - 1;
+                        }
+                    }
 
-    #[cfg(feature = "hwsim")]
-    core_csr.wfo(utra::main::SUCCESS_SUCCESS, 1);
-    tt.sleep_ms(4).ok();
-    #[cfg(feature = "hwsim")]
-    core_csr.wfo(utra::main::DONE_DONE, 1); // this should stop the simulation
-    log::info!("message passing test done at {}ms!", tt.elapsed_ms());
+                    security_tv.clear_str();
+                    if last_sec_note_size > 0 {
+                        for (index, v) in sec_notes.lock().unwrap().values().enumerate() {
+                            if index == last_sec_note_index {
+                                write!(&mut security_tv, "{}", v.as_str()).unwrap();
+                                last_sec_note_index = (last_sec_note_index + 1) % last_sec_note_size;
+                                break;
+                            }
+                        }
+                    } else {
+                        write!(&mut security_tv, "{}", t!("secnote.allclear", locales::LANG)).unwrap();
+                    }
 
-    let xns = xous_api_names::XousNames::new().unwrap();
-    let mut ball = Ball::new(&xns);
-    loop {
-        ball.update();
-        /* // for testing full-frame graphics drawing
-            ball.draw_boot();
-            tt.sleep_ms(100).ok();
-        */
-    }
-}
+                    secnotes_force_redraw = false;
+                    gam.post_textview(&mut security_tv).unwrap();
+                    gam.draw_line(
+                        status_gid,
+                        Line::new_with_style(
+                            Point::new(0, screensize.y),
+                            screensize,
+                            DrawStyle::new(PixelColor::Light, PixelColor::Light, 1),
+                        ),
+                    )
+                    .unwrap();
+                }
 
-fn crappy_rng_u32() -> u32 { xous::create_server_id().unwrap().to_u32().0 }
+                log::trace!("status redraw## update");
+                gam.redraw().expect("|status: couldn't redraw");
 
-const BALL_RADIUS: i16 = 10;
-const MOMENTUM_LIMIT: i32 = 8;
-const BORDER_WIDTH: i16 = 5;
-use graphics_server::{Circle, ClipObjectList, ClipObjectType, DrawStyle, PixelColor, Point, Rectangle};
-
-struct Ball {
-    gfx: graphics_server::Gfx,
-    screensize: Point,
-    ball: Circle,
-    momentum: Point,
-    clip: Rectangle,
-}
-impl Ball {
-    pub fn new(xns: &xous_api_names::XousNames) -> Ball {
-        let gfx = graphics_server::Gfx::new(xns).unwrap();
-        gfx.draw_boot_logo().unwrap();
-
-        let screensize = gfx.screen_size().unwrap();
-        let mut ball = Circle::new(Point::new(screensize.x / 2, screensize.y / 2), BALL_RADIUS);
-        ball.style = DrawStyle::new(PixelColor::Dark, PixelColor::Dark, 1);
-        let clip = Rectangle::new(Point::new(0, 0), screensize);
-        gfx.draw_circle(ball).unwrap();
-        let x = ((crappy_rng_u32() / 2) as i32) % (MOMENTUM_LIMIT * 2) - MOMENTUM_LIMIT;
-        let y = ((crappy_rng_u32() / 2) as i32) % (MOMENTUM_LIMIT * 2) - MOMENTUM_LIMIT;
-        Ball { gfx, screensize, ball, momentum: Point::new(x as i16, y as i16), clip }
-    }
-
-    #[allow(dead_code)]
-    pub fn draw_boot(&self) { self.gfx.draw_boot_logo().ok(); }
-
-    pub fn update(&mut self) {
-        /* // for testing fonts, etc.
-        use std::fmt::Write;
-        let mut tv = graphics_server::TextView::new(
-            graphics_server::Gid::new([0, 0, 0, 0]),
-            graphics_server::TextBounds::BoundingBox(self.clip),
-        );
-        tv.clip_rect = Some(self.clip);
-        tv.set_dry_run(false);
-        tv.set_op(graphics_server::TextOp::Render);
-        tv.style = graphics_server::api::GlyphStyle::Tall;
-        write!(tv.text, "hello world! 😀").ok();
-        self.gfx.draw_textview(&mut tv).ok();
-        */
-        let mut draw_list = ClipObjectList::default();
-
-        // clear the previous location of the ball
-        self.ball.style = DrawStyle::new(PixelColor::Light, PixelColor::Light, 1);
-        draw_list.push(ClipObjectType::Circ(self.ball), self.clip).unwrap();
-
-        // update the ball position based on the momentum vector
-        self.ball.translate(self.momentum);
-
-        // check if the ball hits the wall, if so, snap its position to the wall
-        let mut hit_right = false;
-        let mut hit_left = false;
-        let mut hit_top = false;
-        let mut hit_bott = false;
-        if self.ball.center.x + (BALL_RADIUS + BORDER_WIDTH) >= self.screensize.x {
-            hit_right = true;
-            self.ball.center.x = self.screensize.x - (BALL_RADIUS + BORDER_WIDTH);
-        }
-        if self.ball.center.x - (BALL_RADIUS + BORDER_WIDTH) <= 0 {
-            hit_left = true;
-            self.ball.center.x = BALL_RADIUS + BORDER_WIDTH;
-        }
-        if self.ball.center.y + (BALL_RADIUS + BORDER_WIDTH) >= self.screensize.y {
-            hit_bott = true;
-            self.ball.center.y = self.screensize.y - (BALL_RADIUS + BORDER_WIDTH);
-        }
-        if self.ball.center.y - (BALL_RADIUS + BORDER_WIDTH) <= 0 {
-            hit_top = true;
-            self.ball.center.y = BALL_RADIUS + BORDER_WIDTH;
-        }
-
-        if hit_right || hit_left || hit_bott || hit_top {
-            let mut x = ((crappy_rng_u32() / 2) as i32) % (MOMENTUM_LIMIT * 2) - MOMENTUM_LIMIT;
-            let mut y = ((crappy_rng_u32() / 2) as i32) % (MOMENTUM_LIMIT * 2) - MOMENTUM_LIMIT;
-            if hit_right {
-                x = -x.abs();
+                stats_phase = stats_phase.wrapping_add(1);
             }
-            if hit_left {
-                x = x.abs();
+            Some(StatusOpcode::SubmenuPddb) => {
+                tt.sleep_ms(100).ok(); // yield for a moment to allow the previous menu to close
+                gam.raise_menu(gam::PDDB_MENU_NAME).expect("couldn't raise PDDB submenu");
             }
-            if hit_top {
-                y = y.abs();
+            Some(StatusOpcode::SubmenuApp) => {
+                tt.sleep_ms(100).ok(); // yield for a moment to allow the previous menu to close
+                gam.raise_menu(gam::APP_MENU_NAME).expect("couldn't raise App submenu");
             }
-            if hit_bott {
-                y = -y.abs();
+            Some(StatusOpcode::SwitchToShellchat) => {
+                tt.sleep_ms(100).ok();
+                sec_notes.lock().unwrap().remove(&"current_app".to_string());
+                sec_notes
+                    .lock()
+                    .unwrap()
+                    .insert("current_app".to_string(), format!("Running: Shellchat").to_string());
+                gam.switch_to_app(gam::APP_NAME_SHELLCHAT, security_tv.token.unwrap())
+                    .expect("couldn't raise shellchat");
+                secnotes_force_redraw = true;
+                send_message(cb_cid, Message::new_scalar(StatusOpcode::Pump.to_usize().unwrap(), 0, 0, 0, 0))
+                    .expect("couldn't trigger status update");
             }
-            self.momentum = Point::new(x as i16, y as i16);
+            Some(StatusOpcode::SwitchToApp) => msg_scalar_unpack!(msg, index, _, _, _, {
+                tt.sleep_ms(100).ok();
+                let app_name = app_autogen::app_index_to_name(index).expect("app index not found");
+                app_autogen::app_dispatch(&gam, security_tv.token.unwrap(), index)
+                    .expect("cannot switch to app");
+                sec_notes.lock().unwrap().remove(&"current_app".to_string());
+                sec_notes
+                    .lock()
+                    .unwrap()
+                    .insert("current_app".to_string(), format!("Running: {}", app_name).to_string());
+                secnotes_force_redraw = true;
+                send_message(cb_cid, Message::new_scalar(StatusOpcode::Pump.to_usize().unwrap(), 0, 0, 0, 0))
+                    .expect("couldn't trigger status update");
+            }),
+            Some(StatusOpcode::Keypress) => {
+                // placeholder
+            }
+
+            Some(StatusOpcode::Quit) => {
+                xous::return_scalar(msg.sender, 1).ok();
+                break;
+            }
+            None => {
+                log::error!("|status: received unknown Opcode");
+            }
         }
-
-        // draw the new location for the ball
-        self.ball.style = DrawStyle::new(PixelColor::Dark, PixelColor::Dark, 1);
-        draw_list.push(ClipObjectType::Circ(self.ball), self.clip).unwrap();
-
-        self.gfx.draw_object_list_clipped(draw_list).ok();
-        self.gfx.flush().unwrap();
     }
+    log::trace!("status thread exit, destroying servers");
+    unsafe {
+        if let Some(cb) = CB_TO_MAIN_CONN {
+            xous::disconnect(cb).unwrap();
+        }
+    }
+    unsafe {
+        xous::disconnect(pump_conn).unwrap();
+    }
+    xns.unregister_server(status_sid).unwrap();
+    xous::destroy_server(status_sid).unwrap();
+    log::trace!("status thread quitting");
+    xous::terminate_process(0)
 }

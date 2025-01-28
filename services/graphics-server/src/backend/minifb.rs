@@ -1,6 +1,6 @@
 #![cfg_attr(not(target_os = "none"), allow(dead_code))]
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use minifb::{Key, Window, WindowOptions};
 
@@ -16,7 +16,7 @@ pub const FB_WIDTH_PIXELS: usize = WIDTH as usize;
 pub const FB_LINES: usize = HEIGHT as usize;
 pub const FB_SIZE: usize = WIDTH_WORDS * HEIGHT as usize; // 44 bytes by 536 lines
 
-const MAX_FPS: u64 = 60;
+const MAX_FPS: usize = 60;
 const DARK_COLOUR: u32 = 0xB5B5AD;
 const LIGHT_COLOUR: u32 = 0x1B1B19;
 
@@ -150,23 +150,18 @@ impl XousDisplay {
 
 impl MinifbThread {
     pub fn run_while(self, mut predicate: impl FnMut() -> bool) {
-        let mut window = Window::new(
-            "Precursor",
-            WIDTH as usize,
-            HEIGHT as usize,
-            WindowOptions {
-                scale_mode: minifb::ScaleMode::AspectRatioStretch,
-                resize: true,
-                ..WindowOptions::default()
-            },
-        )
+        let mut window = Window::new("Precursor", WIDTH as usize, HEIGHT as usize, WindowOptions {
+            scale_mode: minifb::ScaleMode::AspectRatioStretch,
+            resize: true,
+            ..WindowOptions::default()
+        })
         .unwrap_or_else(|e| {
             log::error!("{e:?}");
             std::process::abort();
         });
 
         // Limit the maximum update rate
-        window.limit_update_rate(Some(std::time::Duration::from_micros(1000 * 1000 / MAX_FPS)));
+        window.set_target_fps(MAX_FPS);
 
         let xns = xous_names::XousNames::new().unwrap();
         let kbd = keyboard::Keyboard::new(&xns).expect("GFX|hosted can't connect to KBD for emulation");

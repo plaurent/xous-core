@@ -17,8 +17,6 @@ default-members = [
   "services/shellchat",
   "services/llio",
   "services/codec",
-  #  "services/engine-sha512",
-  "services/engine-25519",
   "services/aes",
   "services/spinor",
   "services/root-keys",
@@ -60,8 +58,6 @@ members = [
   "services/content-plugin-api",
   "services/llio",
   "services/codec",
-  #  "services/engine-sha512",
-  "services/engine-25519",
   "services/aes",
   "services/spinor",
   "services/root-keys",
@@ -100,13 +96,23 @@ members = [
   "kernel",
   "loader",
   "libs/chat",
+  "libs/flatipc",
+  "libs/flatipc-derive",
   "libs/perflib",
-  "libs/userprefs",
   "libs/tls",
-  "libs/xous-pio",
+  "libs/userprefs",
+  # "libs/xous-pio",
+  "libs/xous-bio",
+  "libs/xous-bio-bdma",
   "libs/xous-pl230",
   "libs/cramium-hal",
   "services/cram-hal-service",
+  "services/xous-swapper",
+  "services/test-swapper",
+  "services/cram-console",
+  "services/bao-video",
+  "services/usb-cramium",
+  "services/bao-console",
 ]
 resolver = "2"
 
@@ -125,6 +131,8 @@ exclude = [
   "api/xous-api-ticktimer",
   # The "packing" crate is forked and is a separate workspace
   "libs/mass-storage/packing",
+  # This directory is dedicated to out-of-tree tests and examples
+  "planning/",
 ]
 
 [profile.release]
@@ -139,33 +147,31 @@ opt-level = "s" # z,s: Optimize for size instead of performance; 1 for easier de
 # prefer hardware-accelerated versions of services
 [patch.crates-io]
 sha2 = { git = "https://github.com/betrusted-io/hashes.git", branch = "sha2-v0.10.8-xous" }
-sha2_legacy = { git = "https://github.com/RustCrypto/hashes.git", tag = "sha2-v0.9.9", package = "sha2" }
+# sha2 = { path = "../hashes/sha2" }
 
 [patch.crates-io.aes]
 path = "services/aes"
 
 [patch.crates-io.curve25519-dalek]
 git = "https://github.com/betrusted-io/curve25519-dalek.git"
-branch = "main"
-#path = "../curve25519-dalek"  # when doing local dev work
-# feature overrides are specified at the crate level
 
-[patch."https://github.com/betrusted-io/xous-engine-25519.git"]
-engine-25519 = { path = "services/engine-25519" }
+branch = "main" # c25519
+# path = "../curve25519-dalek/curve25519-dalek" # when doing local dev work
+# feature overrides are specified at the crate level
 
 [patch.crates-io.usb-device]
 git = "https://github.com/betrusted-io/usb-device.git"
 branch = "main"
 # local dev shortcuts
-#path = "../usb-device"
+# path = "../usb-device"
 
 [patch.crates-io.getrandom]
 path = "imports/getrandom"
 
 [patch.crates-io.ring]
-# path = "../ring-xous"  # for local dev only
+# path = "../ring-xous" # for local dev only
 git = "https://github.com/betrusted-io/ring-xous"
-rev = "4296c2e7904898766cf7d8d589759a129794783b"  # use the commitref because we're still updating the branch
+rev = "5f86cb10bebd521a45fb3abb06995200aeda2948"  # use the commitref because we're still updating the branch
 #branch="0.16.20-cleanup"
 
 ######################################################
@@ -197,3 +203,6 @@ path = "./svd2utra"
 # path = "./api/xous-api-log"
 # [patch.crates-io.xous-api-ticktimer]
 # path = "./api/xous-api-ticktimer"
+
+# [patch.crates-io.xous-tts-backend]
+# path = "../tts-backend"

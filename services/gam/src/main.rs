@@ -1,6 +1,3 @@
-#![cfg_attr(baremetal, no_main)]
-#![cfg_attr(baremetal, no_std)]
-
 mod api;
 use api::*;
 mod canvas;
@@ -18,18 +15,20 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use std::collections::HashMap;
 
 use api::Opcode;
+#[cfg(feature = "cramium-soc")]
+use cram_hal_service::trng;
 use gam::{MAIN_MENU_NAME, ROOTKEY_MODAL_NAME};
 use graphics_server::*;
 use log::info;
 use num_traits::*;
 use xous::{msg_blocking_scalar_unpack, msg_scalar_unpack};
-use xous_ipc::{Buffer, String};
+use xous_ipc::Buffer;
 
 /// This sets the initial app focus on boot
 const INITIAL_APP_FOCUS: &'static str = gam::APP_NAME_SHELLCHAT;
 
 static CB_TO_MAIN_CONN: AtomicU32 = AtomicU32::new(0);
-fn imef_cb(s: String<4000>) {
+fn imef_cb(s: String) {
     if CB_TO_MAIN_CONN.load(Ordering::Relaxed) != 0 {
         let cb_to_main_conn = CB_TO_MAIN_CONN.load(Ordering::Relaxed);
         let buf = xous_ipc::Buffer::into_buf(s).or(Err(xous::Error::InternalError)).unwrap();
@@ -54,7 +53,6 @@ fn wrapped_main() -> ! {
     // unlimited connections allowed; this is a gateway server
     let gam_sid = xns.register_name(api::SERVER_NAME_GAM, None).expect("can't register server");
     CB_TO_MAIN_CONN.store(xous::connect(gam_sid).unwrap(), Ordering::Relaxed);
-    log::trace!("starting up...");
 
     let ticktimer = ticktimer_server::Ticktimer::new().expect("Couldn't connect to Ticktimer");
 
@@ -68,6 +66,10 @@ fn wrapped_main() -> ! {
 
     let screensize = gfx.screen_size().expect("Couldn't get screen size");
     // the status canvas is special -- there can only be one, and it is ultimately trusted
+    #[cfg(feature = "cramium-soc")]
+    let glyph_height_hint = gfx.glyph_height_hint(GlyphStyle::Tall).expect("couldn't get glyph height");
+    #[cfg(not(feature = "cramium-soc"))]
+    let glyph_height_hint = gfx.glyph_height_hint(GlyphStyle::Cjk).expect("couldn't get glyph height");
     let status_canvas = Canvas::new(
         Rectangle::new_coords(
             0,
@@ -75,7 +77,7 @@ fn wrapped_main() -> ! {
             screensize.x,
             // note: if this gets modified, the "pop" routine in gfx/backend/betrusted.rs also needs to be
             // updated
-            gfx.glyph_height_hint(GlyphStyle::Cjk).expect("couldn't get glyph height") as i16 * 2,
+            glyph_height_hint as i16 * 2,
         ),
         255,
         &trng,
@@ -133,8 +135,9 @@ fn wrapped_main() -> ! {
     }
     loop {
         let mut msg = xous::receive_message(gam_sid).unwrap();
-        log::trace!("Message: {:?}", msg);
-        match FromPrimitive::from_usize(msg.body.id()) {
+        let op = FromPrimitive::from_usize(msg.body.id());
+        log::debug!("{:?}", op);
+        match op {
             Some(Opcode::ClearCanvas) => {
                 msg_scalar_unpack!(msg, g0, g1, g2, g3, {
                     let gid = Gid::new([g0 as _, g1 as _, g2 as _, g3 as _]);
@@ -529,7 +532,7 @@ fn wrapped_main() -> ! {
                 let mut buffer =
                     unsafe { Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap()) };
                 let mut tokenclaim = buffer.to_original::<TokenClaim, _>().unwrap();
-                tokenclaim.token = context_mgr.claim_token(tokenclaim.name.as_str().unwrap());
+                tokenclaim.token = context_mgr.claim_token(tokenclaim.name.as_str());
                 buffer.replace(tokenclaim).unwrap();
             }
             Some(Opcode::PredictorApiToken) => {
@@ -550,11 +553,7 @@ fn wrapped_main() -> ! {
                 let registration = buffer.to_original::<UxRegistration, _>().unwrap();
 
                 let init_focus_found =
-                    if registration.app_name.as_str().unwrap_or("UTF-8 error") == INITIAL_APP_FOCUS {
-                        true
-                    } else {
-                        false
-                    };
+                    if registration.app_name.as_str() == INITIAL_APP_FOCUS { true } else { false };
                 // note that we are currently assigning all Ux registrations a trust level consistent with a
                 // boot context (ultimately trusted) this needs to be modified later on once
                 // we allow post-boot apps to be created
@@ -574,10 +573,8 @@ fn wrapped_main() -> ! {
                         let gam_token = gam_token.clone();
                         let conn = CB_TO_MAIN_CONN.load(Ordering::SeqCst);
                         move || {
-                            let switchapp = SwitchToApp {
-                                token: gam_token,
-                                app_name: String::<128>::from_str(INITIAL_APP_FOCUS),
-                            };
+                            let switchapp =
+                                SwitchToApp { token: gam_token, app_name: String::from(INITIAL_APP_FOCUS) };
                             let buf = Buffer::into_buf(switchapp).or(Err(xous::Error::InternalError))?;
                             buf.send(conn, Opcode::SwitchToApp.to_u32().unwrap())
                                 .or(Err(xous::Error::InternalError))
@@ -594,7 +591,7 @@ fn wrapped_main() -> ! {
             Some(Opcode::InputLine) => {
                 // receive the keyboard input and pass it on to the context with focus
                 let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
-                let inputline = buffer.to_original::<String<4000>, _>().unwrap();
+                let inputline = buffer.to_original::<String, _>().unwrap();
                 log::debug!("received input line, forwarding on... {}", inputline);
                 match context_mgr.forward_input(inputline) {
                     Err(e) => log::warn!("InputLine missed its target {:?}; input ignored", e),
@@ -640,13 +637,11 @@ fn wrapped_main() -> ! {
                 let switchapp = buffer.to_original::<SwitchToApp, _>().unwrap();
                 log::debug!(
                     "trying to switch to {:?} with token {:?}",
-                    switchapp.app_name.as_str().unwrap(),
+                    switchapp.app_name.as_str(),
                     switchapp.token
                 );
 
-                if let Some(new_app_token) =
-                    context_mgr.find_app_token_by_name(switchapp.app_name.as_str().unwrap())
-                {
+                if let Some(new_app_token) = context_mgr.find_app_token_by_name(switchapp.app_name.as_str()) {
                     if new_app_token != context_mgr.focused_app().unwrap_or([0, 0, 0, 0]) {
                         // two things:
                         // 1. [0, 0, 0, 0] is simply a very unlikely GID because it's a 128 bit TRNG, and this
@@ -680,7 +675,7 @@ fn wrapped_main() -> ! {
                                         Ok(_) => (),
                                         Err(_) => log::warn!(
                                             "failed to switch to {}, silent error!",
-                                            switchapp.app_name.as_str().unwrap()
+                                            switchapp.app_name.as_str()
                                         ),
                                     }
                                     continue;
@@ -693,7 +688,7 @@ fn wrapped_main() -> ! {
                                 Ok(_) => (),
                                 Err(_) => log::warn!(
                                     "failed to switch to {}, silent error!",
-                                    switchapp.app_name.as_str().unwrap()
+                                    switchapp.app_name.as_str()
                                 ),
                             }
                         }
@@ -705,7 +700,7 @@ fn wrapped_main() -> ! {
                     unsafe { Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap()) };
                 let mut activation = buffer.to_original::<GamActivation, _>().unwrap();
                 log::debug!("got request to raise context {}", activation.name);
-                let result = context_mgr.raise_menu(activation.name.as_str().unwrap(), &gfx, &mut canvases);
+                let result = context_mgr.raise_menu(activation.name.as_str(), &gfx, &mut canvases);
                 activation.result = Some(match result {
                     Ok(_) => ActivationResult::Success,
                     Err(_) => ActivationResult::Failure,
@@ -732,9 +727,9 @@ fn wrapped_main() -> ! {
                     unsafe { Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap()) };
                 let mut spec = buffer.to_original::<Bip39Ipc, _>().unwrap();
                 let mut phrase = Vec::<std::string::String>::new();
-                for maybe_word in spec.words {
+                for maybe_word in spec.words.iter() {
                     if let Some(word) = maybe_word {
-                        phrase.push(word.as_str().unwrap().to_string());
+                        phrase.push(word.as_str().to_string());
                     }
                 }
                 match bip39::bip39_to_bytes(&phrase) {
@@ -757,7 +752,7 @@ fn wrapped_main() -> ! {
                 match bip39::bytes_to_bip39(&data) {
                     Ok(phrase) => {
                         for (word, returned) in phrase.iter().zip(spec.words.iter_mut()) {
-                            *returned = Some(xous_ipc::String::from_str(word));
+                            *returned = Some(String::from(word));
                         }
                     }
                     Err(_) => {
@@ -775,7 +770,7 @@ fn wrapped_main() -> ! {
                 let start = std::str::from_utf8(&spec.data[..spec.data_len as usize]).unwrap_or("");
                 let suggestions = bip39::suggest_bip39(start);
                 for (word, returned) in suggestions.iter().zip(spec.words.iter_mut()) {
-                    *returned = Some(xous_ipc::String::from_str(word));
+                    *returned = Some(String::from(word));
                 }
                 buffer.replace(spec).unwrap();
             }

@@ -33,16 +33,16 @@ pub fn basic_tests(pl230: &mut Pl230) -> bool {
 
     const DMA_LEN: usize = 16;
     // setup the PL230 to do a simple transfer between two memory regions
-    // dma_mainram feature will cause us to DMA between main memory regions. This works under RTL sims.
-    #[cfg(feature = "dma_mainram")]
+    // dma-mainram feature will cause us to DMA between main memory regions. This works under RTL sims.
+    #[cfg(feature = "dma-mainram")]
     let mut region_a = [0u32; DMA_LEN];
-    #[cfg(feature = "dma_mainram")]
+    #[cfg(feature = "dma-mainram")]
     let region_b = [0u32; DMA_LEN];
     // The alternate is to DMA between IFRAM regions. This works under FPGA and RTL sim.
-    #[cfg(not(feature = "dma_mainram"))]
+    #[cfg(not(feature = "dma-mainram"))]
     let region_a =
         unsafe { core::slice::from_raw_parts_mut((utralib::HW_IFRAM0_MEM + 4096) as *mut u32, DMA_LEN) };
-    #[cfg(not(feature = "dma_mainram"))]
+    #[cfg(not(feature = "dma-mainram"))]
     let region_b = unsafe { core::slice::from_raw_parts_mut(utralib::HW_IFRAM1_MEM as *mut u32, DMA_LEN) };
     let mut state = 0x1111_1111;
     for d in region_a.iter_mut() {
@@ -69,12 +69,18 @@ pub fn basic_tests(pl230: &mut Pl230) -> bool {
     // report_api("dma_len", DMA_LEN as u32);
     report_api("baseptr", cc_struct.channels.as_ptr() as u32);
     report_api("src start", region_a.as_ptr() as u32);
-    // report_api("baseptr[0]", unsafe{cc_struct.channels.as_ptr().read()}.src_end_ptr);
+    report_api("baseptr[0]", unsafe { cc_struct.channels.as_ptr().read() }.src_end_ptr);
     report_api("dst start", region_b.as_ptr() as u32);
-    // report_api("baseptr[1]", unsafe{cc_struct.channels.as_ptr().read()}.dst_end_ptr);
-    // report_api("baseptr[2]", unsafe{cc_struct.channels.as_ptr().read()}.control);
-    // report_api("baseptr[3]", unsafe{cc_struct.channels.as_ptr().read()}.reserved);
-    // report_api("baseptr reg", pl230.csr.r(utra::pl230::CTRLBASEPTR));
+    report_api("baseptr[1]", unsafe { cc_struct.channels.as_ptr().read() }.dst_end_ptr);
+    report_api("baseptr[2]", unsafe { cc_struct.channels.as_ptr().read() }.control);
+    report_api("baseptr[3]", unsafe { cc_struct.channels.as_ptr().read() }.reserved);
+    report_api("baseptr reg", pl230.csr.r(utra::pl230::CTRLBASEPTR));
+
+    unsafe {
+        for i in 0..16 {
+            report_api("pl230 reg ", pl230.csr.base().add(i as usize).read_volatile());
+        }
+    }
 
     // this should kick off the DMA
     pl230.csr.wo(utra::pl230::CHNLSWREQUEST, 1);
@@ -123,6 +129,22 @@ pub fn basic_tests(pl230: &mut Pl230) -> bool {
     }
     report_api("basic dma result (1=pass)", if passing { 1 } else { 0 });
     report_api("errs: ", errs);
+
+    report_api("baseptr", cc_struct.channels.as_ptr() as u32);
+    report_api("src start", region_a.as_ptr() as u32);
+    report_api("baseptr[0]", unsafe { cc_struct.channels.as_ptr().read() }.src_end_ptr);
+    report_api("dst start", region_b.as_ptr() as u32);
+    report_api("baseptr[1]", unsafe { cc_struct.channels.as_ptr().read() }.dst_end_ptr);
+    report_api("baseptr[2]", unsafe { cc_struct.channels.as_ptr().read() }.control);
+    report_api("baseptr[3]", unsafe { cc_struct.channels.as_ptr().read() }.reserved);
+    report_api("baseptr reg", pl230.csr.r(utra::pl230::CTRLBASEPTR));
+
+    unsafe {
+        for i in 0..16 {
+            report_api("pl230 reg ", pl230.csr.base().add(i as usize).read_volatile());
+        }
+    }
+
     passing
 }
 
@@ -137,7 +159,7 @@ pub fn pio_test(pl230: &mut Pl230) -> bool {
     report_api("id2", pl230.csr.r(utra::pl230::PERIPH_ID_2));
 
     // Configure PB15 -> PIO0 for test (although the code is capable of toggling all pins, only map one).
-    let mut iox = iox::Iox::new(utralib::generated::HW_IOX_BASE as *mut u32);
+    let iox = iox::Iox::new(utralib::generated::HW_IOX_BASE as *mut u32);
     let pin = iox.set_pio_bit_from_port_and_pin(iox::IoxPort::PB, 15).unwrap();
     report_api("Configured PIO pin: ", pin as u32);
 

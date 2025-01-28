@@ -7,33 +7,34 @@ description = "Xous root keys server"
 
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
-xous = "0.9.57"
-log-server = { package = "xous-api-log", version = "0.1.53" }
-ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.53" }
-xous-names = { package = "xous-api-names", version = "0.9.55" }
+xous = "0.9.64"
+log-server = { package = "xous-api-log", version = "0.1.63" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.63" }
+xous-names = { package = "xous-api-names", version = "0.9.65" }
 log = "0.4.14"
-susres = { package = "xous-api-susres", version = "0.9.53" }
+susres = { package = "xous-api-susres", version = "0.9.63" }
 trng = { path = "../trng" }
 spinor = { path = "../spinor" }
 llio = { path = "../llio" }
 com = { path = "../com" }
 xous-semver = "0.1.2"
-utralib = { version = "0.1.24", optional = true, default-features = false }
+utralib = { version = "0.1.25", optional = true, default-features = false }
 
-xous-ipc = "0.9.57"
-num-derive = { version = "0.3.3", default-features = false }
+xous-ipc = "0.10.4"
+num-derive = { version = "0.4.1", default-features = false }
 num-traits = { version = "0.2.14", default-features = false }
-rkyv = { version = "0.4.3", default-features = false, features = [
-    "const_generics",
+rkyv = { version = "0.8.8", default-features = false, features = [
+    "std",
+    "alloc",
 ] }
-zeroize = "1.3.0"
-rand_core = "0.5.1"
+zeroize = { version = "1.7.0", features = ["zeroize_derive"] }
+rand_core = "0.6.4"
 
 aes-kw = { version = "0.2.1", features = ["alloc"] }
 
 # bcrypt
 cipher = "0.4.3"
-blowfish = { version = "0.8.0", features = ["bcrypt"] }
+blowfish = { version = "0.9.1", features = ["bcrypt"] }
 
 # password modals - keep them in this crate to minimize plaintext password manipulations
 gam = { path = "../gam" }
@@ -63,23 +64,23 @@ keyboard = { path = "../keyboard" }
 # private keys
 #sha2 = {version = "0.9.5", default-features = false, features = []}
 sha2 = { version = "0.10.8" }
-digest = "0.9.0"
+digest = "0.10.7"
 aes = { path = "../aes" }
-engine-25519 = { path = "../engine-25519" }
-byteorder = "1.4.3"                         # used by keywrap
+# engine-25519 = { path = "../engine-25519" }
+byteorder = "1.4.3" # used by keywrap
 # hardware acceleration adaptations are inserted into a fork of the main branch.
 hex = { version = "0.4.3", default-features = false, features = [] }
 
 [dependencies.curve25519-dalek]
-version = "3.1.0"                       # note this is patched to our fork in ./Cargo.toml
+version = "=4.1.2"                           # note this is patched to our fork in ./Cargo.toml
 default-features = false
-features = ["u32_backend", "betrusted"]
+features = ["auto-release", "warn-fallback"]
 
 [dependencies.ed25519-dalek]
-version = "1.0.1"
+version = "2.1.0"
 #path = "../../../ed25519-dalek"
 default-features = false
-features = ["u32_backend", "rand"]
+features = ["rand_core", "digest"]
 
 [features]
 precursor = ["utralib/precursor", "sha2/precursor"]

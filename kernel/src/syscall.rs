@@ -11,6 +11,8 @@ use crate::irq::{interrupt_claim, interrupt_free};
 use crate::mem::{MemoryManager, PAGE_SIZE};
 use crate::server::{SenderID, WaitingMessage};
 use crate::services::SystemServices;
+#[cfg(feature = "swap")]
+use crate::swap::{Swap, SwapAbi};
 
 /* Quoth Xobs:
  The idea behind SWITCHTO_CALLER was that you'd have a process act as a scheduler,
@@ -43,7 +45,7 @@ enum ExecutionType {
 }
 
 #[cfg(baremetal)]
-pub fn reset_switchto_caller() { unsafe { SWITCHTO_CALLER = None }; }
+pub fn reset_switchto_caller() { unsafe { *(&mut *(&raw mut SWITCHTO_CALLER)) = None }; }
 
 fn retry_syscall(pid: PID, tid: TID) -> SysCallResult {
     if cfg!(baremetal) {
@@ -60,8 +62,9 @@ fn do_yield(_pid: PID, tid: TID) -> SysCallResult {
         return Ok(xous_kernel::Result::Ok);
     }
 
-    let (parent_pid, parent_ctx) =
-        unsafe { SWITCHTO_CALLER.take().expect("yielded when no parent context was present") };
+    let (parent_pid, parent_ctx) = unsafe {
+        (&mut *(&raw mut SWITCHTO_CALLER)).take().expect("yielded when no parent context was present")
+    };
     //println!("\n\r ***YIELD CALLED***");
     SystemServices::with_mut(|ss| {
         // TODO: Advance thread
@@ -175,7 +178,7 @@ fn send_message(pid: PID, tid: TID, cid: CID, message: Message) -> SysCallResult
 
             // Mark the server's context as "Ready". If this fails, return the context
             // to the blocking list.
-            #[cfg(target_os = "xous")]
+            #[cfg(baremetal)]
             ss.ready_thread(server_pid, server_tid).map_err(|e| {
                 ss.server_from_sidx_mut(sidx)
                     .expect("server couldn't be located")
@@ -188,7 +191,7 @@ fn send_message(pid: PID, tid: TID, cid: CID, message: Message) -> SysCallResult
             return if blocking && cfg!(baremetal) {
                 if !runnable {
                     // If it's not runnable (e.g. it's being debugged), switch to the parent.
-                    let (ppid, ptid) = unsafe { SWITCHTO_CALLER.take().unwrap() };
+                    let (ppid, ptid) = unsafe { (&mut *(&raw mut SWITCHTO_CALLER)).take().unwrap() };
                     klog!(
                         "Activating Server parent process (server is blocked) and switching away from Client"
                     );
@@ -709,27 +712,6 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
                 let range =
                     mm.map_range(phys_ptr, virt_ptr, size.get(), pid, req_flags, MemoryType::Default)?;
 
-                // If we're handing back an address in main RAM, zero it out. If
-                // phys is 0, then the page will be lazily allocated, so we
-                // don't need to do this.
-                // if !phys_ptr.is_null() {
-                //     for (phys, virt) in (phys_ptr as usize..range.len()).step_by(PAGE_SIZE).zip(
-                //         (range.as_ptr() as usize..(range.as_ptr() as usize + range.len()))
-                //             .step_by(PAGE_SIZE),
-                //     ) {
-                //         // Zero out the virtual page if it's in main memory
-                //         if mm.is_main_memory(phys as *mut u8) {
-                //             let start = virt as *mut usize;
-                //             for offset in 0..(PAGE_SIZE / core::mem::size_of::<usize>()) {
-                //                 unsafe { start.add(offset).write_volatile(0) };
-                //             }
-                //         }
-
-                //         // Hand the virtual page to the process
-                //         crate::arch::mem::hand_page_to_user(virt as *mut u8)
-                //             .expect("couldn't hand page to user");
-                //       }
-
                 if !phys_ptr.is_null() {
                     if mm.is_main_memory(phys_ptr) {
                         let range_start = range.as_mut_ptr() as *mut usize;
@@ -831,11 +813,11 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
         SysCall::SwitchTo(new_pid, new_tid) => SystemServices::with_mut(|ss| {
             unsafe {
                 assert!(
-                    SWITCHTO_CALLER.is_none(),
+                    (&mut *(&raw mut SWITCHTO_CALLER)).is_none(),
                     "SWITCHTO_CALLER was {:?} and not None, indicating SwitchTo was called twice",
-                    SWITCHTO_CALLER,
+                    (&mut *(&raw mut SWITCHTO_CALLER)),
                 );
-                SWITCHTO_CALLER = Some((pid, tid));
+                *(&mut *(&raw mut SWITCHTO_CALLER)) = Some((pid, tid));
             }
             // println!(
             //     "Activating process thread {} in pid {} coming from pid {} thread {}",
@@ -855,7 +837,7 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
         SysCall::Yield => do_yield(pid, tid),
         SysCall::ReturnToParent(_pid, _cpuid) => {
             unsafe {
-                if let Some((parent_pid, parent_ctx)) = SWITCHTO_CALLER.take() {
+                if let Some((parent_pid, parent_ctx)) = (&mut *(&raw mut SWITCHTO_CALLER)).take() {
                     crate::arch::irq::set_isr_return_pair(parent_pid, parent_ctx)
                 }
             };
@@ -866,7 +848,7 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
         SysCall::WaitEvent => SystemServices::with_mut(|ss| {
             let process = ss.get_process(pid).expect("Can't get current process");
             let ppid = process.ppid;
-            unsafe { SWITCHTO_CALLER = None };
+            unsafe { *(&mut *(&raw mut SWITCHTO_CALLER)) = None };
             // TODO: Advance thread
             if cfg!(baremetal) {
                 let result = ss
@@ -883,7 +865,7 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
         SysCall::CreateThread(thread_init) => SystemServices::with_mut(|ss| {
             ss.create_thread(pid, thread_init).map(|new_tid| {
                 // Set the return value of the existing thread to be the new thread ID
-                if cfg!(target_os = "xous") {
+                if cfg!(baremetal) {
                     // Immediately switch to the new thread
                     ss.switch_to_thread(pid, Some(new_tid)).expect("couldn't activate new thread");
                     ss.set_thread_result(pid, tid, xous_kernel::Result::ThreadID(new_tid))
@@ -1027,6 +1009,115 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
                 Err(_) => Err(xous_kernel::Error::BadAddress),
             }
         }
+        #[cfg(feature = "swap")]
+        SysCall::RegisterSwapper(s0, s1, s2, s3, handler, state) => {
+            Swap::with_mut(|swap| swap.register_handler(s0, s1, s2, s3, handler, state))
+        }
+        #[cfg(feature = "swap")]
+        SysCall::SwapOp(op, a1, a2, a3, a4, a5, a6) => {
+            #[cfg(feature = "debug-swap-verbose")]
+            println!("Swap ABI via syscall: {:?}", SwapAbi::from(op));
+            match SwapAbi::from(op) {
+                SwapAbi::ClearMemoryNow => {
+                    if pid.get() != xous_kernel::SWAPPER_PID {
+                        return Err(xous_kernel::Error::AccessDenied);
+                    } else {
+                        Swap::with_mut(|swap| {
+                            swap.clearmem_stop_irq();
+                            swap.hard_oom_syscall()
+                        })
+                    }
+                }
+                SwapAbi::GetFreePages => {
+                    if pid.get() != xous_kernel::SWAPPER_PID {
+                        return Err(xous_kernel::Error::AccessDenied);
+                    }
+                    Swap::with(|swap| swap.get_free_mem())
+                }
+                SwapAbi::StealPage => {
+                    if pid.get() != xous_kernel::SWAPPER_PID {
+                        return Err(xous_kernel::Error::AccessDenied);
+                    }
+                    let target_pid = a1 as u8;
+                    let vaddr = a2;
+                    match crate::arch::mem::evict_page_inner(
+                        PID::new(target_pid as u8).expect("Invalid PID"),
+                        vaddr,
+                    ) {
+                        Ok(ptr) => Ok(xous_kernel::Result::Scalar5(ptr, 0, 0, 0, 0)),
+                        Err(_e) => {
+                            #[cfg(feature = "debug-swap")]
+                            println!(
+                                "steal_page rejecting request for pid{}/{:x}: {:?}",
+                                target_pid, vaddr, _e
+                            );
+                            Err(xous_kernel::Error::BadAddress)
+                        }
+                    }
+                }
+                SwapAbi::ReleaseMemory => {
+                    if pid.get() != xous_kernel::SWAPPER_PID {
+                        return Err(xous_kernel::Error::AccessDenied);
+                    }
+                    let vaddr_to_release = a1;
+                    let original_pid = a2 as u8;
+                    MemoryManager::with_mut(|mm| {
+                        let paddr = crate::arch::mem::virt_to_phys(vaddr_to_release).unwrap() as usize;
+                        #[cfg(feature = "debug-swap-verbose")]
+                        println!("ReleaseMemory - paddr {:x}", paddr);
+                        // this call unmaps the virtual page from the page table
+                        crate::arch::mem::unmap_page_inner(mm, vaddr_to_release)
+                            .expect("couldn't unmap page");
+                        // This call releases the physical page from the RPT - the pid has to match that of
+                        // the original owner. This is the "pointy end" of the stick;
+                        // after this call, the memory is now back into the free pool.
+                        mm.release_page_swap(paddr as *mut usize, PID::new(original_pid).unwrap())
+                            .expect("couldn't free page that was swapped out");
+                        Ok(xous_kernel::Result::Ok)
+                    })
+                }
+                SwapAbi::HardOom => {
+                    // Hard OOM can be invoked from any PID, but, only by a kernel routine. Check that
+                    // we're in supervisor mode!
+                    if riscv::register::sstatus::read().spp() == riscv::register::sstatus::SPP::Supervisor {
+                        // any process can invoke the hard OOM syscall, but only from within the kernel
+                        Swap::with_mut(|swap| swap.hard_oom_syscall())
+                    } else {
+                        Err(xous_kernel::Error::AccessDenied)
+                    }
+                }
+                SwapAbi::RetrievePage => {
+                    if riscv::register::sstatus::read().spp() == riscv::register::sstatus::SPP::Supervisor {
+                        // any process can invoke RetrievePage, but only from within the kernel
+                        let target_vaddr_in_pid = a1;
+                        let paddr = a2;
+                        Swap::with_mut(|swap| swap.retrieve_page_syscall(target_vaddr_in_pid, paddr))
+                    } else {
+                        Err(xous_kernel::Error::AccessDenied)
+                    }
+                }
+                SwapAbi::Invalid => {
+                    println!(
+                        "Invalid SwapOp: {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
+                        op, a1, a2, a3, a4, a5, a6
+                    );
+                    Err(xous_kernel::Error::UnhandledSyscall)
+                }
+            }
+        }
+        #[cfg(feature = "raw-trng")]
+        SysCall::RawTrng(_a1, _a2, _a3, _a4, _a5, _a6, _a7) => {
+            // TODO: implement this platform call for other targets
+            // Right now, there is no get_raw_u32() for precursor/renode/hosted
+            Ok(xous_kernel::Result::Scalar5(
+                crate::platform::rand::get_raw_u32() as usize,
+                crate::platform::rand::get_raw_u32() as usize,
+                crate::platform::rand::get_raw_u32() as usize,
+                crate::platform::rand::get_raw_u32() as usize,
+                0,
+            ))
+        }
+
         /* https://github.com/betrusted-io/xous-core/issues/90
         SysCall::SetExceptionHandler(pc, sp) => SystemServices::with_mut(|ss| {
             ss.set_exception_handler(pid, pc, sp)

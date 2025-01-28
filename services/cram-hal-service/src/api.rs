@@ -1,4 +1,6 @@
-use cramium_hal::iox;
+pub mod keyboard;
+use cramium_hal::iox::{self, IoxPort, IoxValue};
+pub use keyboard::*;
 
 /// The Opcode numbers here should not be changed. You can add new ones,
 /// but do not re-use old numbers or repurpose them. This is because the
@@ -38,6 +40,16 @@ pub enum Opcode {
     ConfigureUdmaClock = 7,
     // blocking scalar
     ConfigureUdmaEvent = 8,
+
+    /// I2C operations
+    I2c = 9,
+
+    /// Peripheral reset
+    PeriphReset = 10,
+
+    /// Configure Iox IRQ
+    ConfigureIoxIrq = 11,
+    IrqLocalHandler = 12,
 
     /// Exit server
     Quit = 255,
@@ -102,4 +114,47 @@ pub struct IoxConfigMessage {
     pub pullup: Option<iox::IoxEnable>,
     pub slow_slew: Option<iox::IoxEnable>,
     pub strength: Option<iox::IoxDriveStrength>,
+}
+
+#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq)]
+pub enum I2cTransactionType {
+    Write,
+    Read,
+    ReadRepeatedStart,
+}
+
+#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum I2cResult {
+    /// For the outbound message holder
+    Pending,
+    /// Returns # of bytes read or written if successful
+    Ack(usize),
+    /// An error occurred.
+    Nack,
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct I2cTransaction {
+    pub i2c_type: I2cTransactionType,
+    pub device: u8,
+    pub address: u8,
+    pub data: Vec<u8>,
+    pub result: I2cResult,
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct I2cTransactions {
+    pub transactions: Vec<I2cTransaction>,
+}
+impl From<Vec<I2cTransaction>> for I2cTransactions {
+    fn from(value: Vec<I2cTransaction>) -> Self { Self { transactions: value } }
+}
+
+#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct IoxIrqRegistration {
+    pub server: String,
+    pub opcode: usize,
+    pub port: IoxPort,
+    pub pin: u8,
+    pub active: IoxValue,
 }

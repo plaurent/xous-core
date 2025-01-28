@@ -5,19 +5,19 @@ use frunk_core::hlist::{HCons, HNil};
 use fugit::ExtU32;
 use usb_device::device::UsbDeviceBuilder;
 use usb_device::{
+    UsbError,
     class_prelude::{UsbBus, UsbBusAllocator},
     device::{UsbDevice, UsbVidPid},
-    UsbError,
 };
 use usb_device_xous::UsbDeviceState;
 use xous_usb_hid::{
+    UsbHidError,
     device::DeviceClass,
     interface::{
         HeapInterface, HeapInterfaceBuilder, HeapInterfaceConfig, InBytes64, OutBytes64, ReportSingle,
         UsbAllocatable,
     },
     usb_class::{UsbHidClass, UsbHidClassBuilder},
-    UsbHidError,
 };
 
 use crate::api::HIDReport;
@@ -92,6 +92,7 @@ impl<'a, B: UsbBus + 'a> UsbAllocatable<'a, B> for AppHIDConfig<'a> {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AppHIDError {
     /// Returned when the maximum amount of packets allowed to stay in AppHID is reached, and the
     /// oldest is dropped.

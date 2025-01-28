@@ -466,8 +466,46 @@ perform the Xous firmware upgrade. This requires running manual update commands,
 - Formatting and contribution standards have been modified. Formatting with `rustfmt` and trailing white space removal is now mandatory for all Xous contributions, see [#477](https://github.com/betrusted-io/xous-core/pull/477) for a discussion of how we got there and why.
 - The repo has gone through a "flag day" where all the crates have been formatted, which means commits before the flag day may be more difficult to undo. The changes are committed on a crate-by-crate basis, so if something is really broken we can undo the formatting for the crate and add an exception to the rustfmt rules.
 - Implement #478: backlight should turn on automatically when a U2F/FIDO packet comes in from the host, allowing users in dark conditions to see the screen and know what they are approving.
-- the `sha2` API has been upgraded from 0.9.9 to 0.10.8. In the process of upgrading this, the `sha2` code is now domiciled in a fork of the `RustCrypto/hashes` repo. This should hopefully make tracking changes on RustCrypto somewhat easier, at the price of some difficulty in maintaining external crate pins (but I think that can be solved with some scripting). In the process of conversion, crates that depend on the 0.9.9 API for acceleration are now not accelerated. In particular, the ed25519-dalek signature check on the gateware at boot now runs with software SHA-512, which means that boot is much slower. This should be fixed before the release is live, but users testing the bleeding edge should be aware of this temporary regression in performance.
+- the `sha2` API has been upgraded from 0.9.9 to 0.10.8. In the process of upgrading this, the `sha2` code is now domiciled in a fork of the `RustCrypto/hashes` repo. This should hopefully make tracking changes on RustCrypto somewhat easier, at the price of some difficulty in maintaining external crate pins (but I think that can be solved with some scripting). In the process of conversion, crates that depend on the 0.9.9 API for acceleration are now not accelerated.
+- upgrade all other crypto APIs to latest version, with the exception of `p256` inside `vault` (this code is vendored from OpenSK), and the curve25519 implementations inside the loader (because they have been tightly optimized for size, we'll have to revisit the patch set later; but also, only verification steps are done in the loader so there is less risk of leaking secret key material - not as worried about ct_eq and zeroize bugs)
+- a number of other crates and pins were upgraded in the process due to a cargo `update` run; the `build.rs` changes were reviewed and nothing nefarious was found, so at least this process did not introduce any obvious attacks against build hosts through supply chain contamination.
 - @gsora has added the `hidapi` - apps can now register a HID descriptor for custom interactions over USB. See `apps/hidv2` for democumentation.
+- change kernel and loader targets to riscv-unknown-elf-none because `xous` is now a proper target (required for Rust 1.76 compatibility)
+- `curve25519-dalek` API is now at 4.1.2, thanks to @kotval for pulling it together. The new API removes `engine-25519` and rolls hardware allocate/release into the forked crate, similar to how sha2 was ported. `engine-25519` crate now removed from source tree, as it is now depracted since all the functionality was pulled into `curve25519-dalek`.
+- keymap is checked on every call to send a key to the USB keyboard. This allows us to toggle the keymap temporarily to allow typing into hosts with a different keymap (instead of requiring a reboot)
+- Encrypted swap: encrypted swap will allow Xous to run on microcontrollers that have small internal memory footprints, and rely on external SPI RAM for backing storage. This should create a step function in physical security when running on a microcontroller with sufficient internal protected RAM to hold the working set and core OS, as it will complicated attacks that attempt to read out off-chip RAM.
+
+# New in 0.10.0
+- Fix panic reporting in userspace panics. There was an API incompatibility between `std` and the panic handler where we instantiated the panic handler as a "well known service" but actually it needed to be registered with xous-names.
+- Added "device RAM allocation". A region of memory requested using the `map_memory` API with a physical address of `None` and a flag of `xous::MemoryFlags::DEV` will be allocated as contiguous physical pages of memory. It returns `OutOfMemory` if a contiguous block cannot be found; it is up to the userspace to de-allocate or swap out memory to create a large enough block. This API is useful for creating regions of RAM to be passed on to e.g. DMA devices or hardware coprocessors.
+- cleaned up swap API; removed elements that are no longer needed (e.g. SID/CID for userspace calls from kernel)
+- Cramium target:
+  - USB core able to enumerate, communicate to Linux devices. Windows compat still WIP.
+  - Mailbox protocol to other devices has been tested, working.
+  - TRNG has been tuned, partially validated.
+  - BIO-BDMA test cases added
+  - Full USB mass storage stack added in loader mode
+  - Interactive USB updates via loader mode
+  - Camera driver with live preview
+  - QR code decoding (up to version 8)
+- mini-gfx:
+  - New graphics crate for small screen targets that does not require windows or borders. Drops the GAM, condenses APIs together for smaller memory footprint devices.
+  - Very much a WIP
+- Various fixes to track changes in Rust 1.80/1.81/1.82/1.83
+- Add documentation to the `modals` library (thanks @rowr111)
+- Due to a breaking change in Renode, this release is only compatible with Renode equal to or later than 1.15.2.7965（e6e79aad-202408180425) (see issue #570 / PR #572)
+- Migrate to `rkyv` v0.8+.
+  - This is a breaking change: `xous-ipc` is now at 0.10
+  - Xous minor version incremented to 0.10.0 to note the breakage
+  - All prior `chat-test` sessions need to have their PDDB keys manually deleted due to changes in serialization format
+    - No other user-facing backward compatibility issues other than that noted above!
+  - `xous-ipc::String<N>` API is now deprecated. We can now serialize `String` natively between crates (and `Vec` too)
+    - Note that this pushes length-checking of `String` onto the caller: if the `String` is too large, you will get a run-time crash reported as a failure in `rancor-0.1.0` with a form like "created a new `Panic` from: overflowed buffer while writing ### bytes into buffer of length 0 (capacity is 4096)".
+    - The resolution to this is to either ensure that all elements can fit within a single page of memory (if that's the desired behavior)
+    - Or, check the total runtime size of the dynamic allocations and allocate more pages prior to sending the data
+  - Number of pages to allocate could be automated inside the `xous-ipc` crate, but this will be delegated to a future time with a new API.
+  - Most applications were forward-ported, except for `app-loader` which has already bit-rotted for other reasons and may be deprecated because we can use "swap" space to effectively do app loading (to be made available in future hardware revs)
+  - Serialization is a bit easier now with the new `rkyv`, we don't have to track a `pos` explicitly; all of the archival metadata is now stuck at the end of the archive, so all you need to know is the final length of the serialized record and you're done.
 
 
 ## Roadmap

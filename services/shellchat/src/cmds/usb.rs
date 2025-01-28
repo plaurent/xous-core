@@ -17,18 +17,14 @@ impl<'a> ShellCmdApi<'a> for Usb {
 
     // inserts boilerplate for command API
 
-    fn process(
-        &mut self,
-        args: xous_ipc::String<1024>,
-        _env: &mut CommonEnv,
-    ) -> Result<Option<xous_ipc::String<1024>>, xous::Error> {
-        let mut ret = xous_ipc::String::<1024>::new();
+    fn process(&mut self, args: String, _env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
+        let mut ret = String::new();
         #[cfg(not(feature = "mass-storage"))]
         let helpstring = "usb [hid] [fido] [debug] [send <string>] [status] [leds] [lock] [unlock] [kbdtest]";
         #[cfg(feature = "mass-storage")]
         let helpstring = "usb [hid] [fido] [ms] [debug] [send <string>] [status] [leds] [lock] [unlock] [kbdtest] [console] [noconsole]";
 
-        let mut tokens = args.as_str().unwrap().split(' ');
+        let mut tokens = args.split(' ');
 
         if let Some(sub_cmd) = tokens.next() {
             match sub_cmd {
@@ -150,6 +146,64 @@ impl<'a> ShellCmdApi<'a> for Usb {
                     self.usb_dev.restrict_debug_access(false).unwrap();
                     write!(ret, "USB debug port unlocked: portions of the device are readable via USB!")
                         .unwrap();
+                }
+                #[cfg(feature = "nettype")]
+                "nettype" => {
+                    use std::io::{Read, Write};
+                    use std::net::TcpStream;
+                    use std::time::Duration;
+                    if let Some(url) = tokens.next() {
+                        match url.split_once('/') {
+                            Some((host, path)) => match TcpStream::connect((host, 80)) {
+                                Ok(mut stream) => {
+                                    stream.set_read_timeout(Some(Duration::from_millis(10_000))).unwrap();
+                                    stream.set_write_timeout(Some(Duration::from_millis(10_000))).unwrap();
+                                    log::info!("sending GET request");
+                                    match write!(stream, "GET /{} HTTP/1.1\r\n", path) {
+                                        Ok(_) => log::trace!("sent GET"),
+                                        Err(e) => {
+                                            log::error!("GET err {:?}", e);
+                                            write!(ret, "Error sending GET: {:?}", e).unwrap();
+                                        }
+                                    }
+                                    write!(
+                                        stream,
+                                        "Host: {}\r\nAccept: */*\r\nUser-Agent: Precursor/0.9.16\r\n",
+                                        host
+                                    )
+                                    .expect("stream error");
+                                    write!(stream, "Connection: close\r\n").expect("stream error");
+                                    write!(stream, "\r\n").expect("stream error");
+                                    log::info!("fetching response....");
+                                    let mut buf = [0u8; 4096];
+                                    match stream.read(&mut buf) {
+                                        Ok(len) => {
+                                            let s = std::string::String::from_utf8_lossy(
+                                                &buf[..len.min(buf.len())],
+                                            );
+                                            let mut parts = s.splitn(2, "\r\n\r\n");
+                                            let _header = parts.next().unwrap_or("");
+                                            let body = parts.next().unwrap_or("");
+                                            match self.usb_dev.send_str(&body) {
+                                                Ok(n) => write!(ret, "Sent {} chars", n).unwrap(),
+                                                Err(_e) => {
+                                                    write!(ret, "Can't send: are we connected to a host?")
+                                                        .unwrap()
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            write!(ret, "Didn't get response from host: {:?}", e).unwrap()
+                                        }
+                                    }
+                                }
+                                Err(e) => write!(ret, "Couldn't connect to {}:80: {:?}", host, e).unwrap(),
+                            },
+                            _ => write!(ret, "Usage: nettype bunniefoo.com/bunnie/test.txt").unwrap(),
+                        }
+                    } else {
+                        write!(ret, "Usage: nettype bunniefoo.com/bunnie/test.txt").unwrap();
+                    }
                 }
                 _ => {
                     write!(ret, "{}", helpstring).unwrap();

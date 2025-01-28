@@ -2,7 +2,7 @@ use core::convert::TryFrom;
 
 use cbor::reader::DecoderError;
 use locales::t;
-use vault::ctap::hid::{send::HidPacketIterator, ChannelID, CtapHidCommand, Message};
+use vault::ctap::hid::{ChannelID, CtapHidCommand, Message, send::HidPacketIterator};
 use vault::vault_api::{COMMAND_BACKUP_TOTP_CODES, COMMAND_RESET_SESSION, COMMAND_RESTORE_TOTP_CODES};
 
 use crate::storage::{Error, PasswordRecord, TotpRecord};
@@ -194,6 +194,7 @@ pub fn handle_vendor_command(session: &mut VendorSession, allow_host: bool) -> H
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum BackupError {
     CborError(DecoderError),
     CborConversionError(backup::CborConversionError),

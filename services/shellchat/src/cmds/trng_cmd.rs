@@ -1,4 +1,4 @@
-use xous_ipc::String;
+use String;
 
 use crate::{CommonEnv, ShellCmdApi};
 
@@ -11,16 +11,12 @@ impl TrngCmd {
 impl<'a> ShellCmdApi<'a> for TrngCmd {
     cmd_api!(trng);
 
-    fn process(
-        &mut self,
-        args: String<1024>,
-        env: &mut CommonEnv,
-    ) -> Result<Option<String<1024>>, xous::Error> {
+    fn process(&mut self, args: String, env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         use core::fmt::Write;
-        let mut ret = String::<1024>::new();
+        let mut ret = String::new();
         let helpstring = "trng [avnist] [ronist] [runs] [excur] [errs] [pump]";
 
-        let mut tokens = args.as_str().unwrap().split(' ');
+        let mut tokens = args.split(' ');
 
         if let Some(sub_cmd) = tokens.next() {
             match sub_cmd {
@@ -74,20 +70,21 @@ impl<'a> ShellCmdApi<'a> for TrngCmd {
                 "pump" => {
                     const ROUNDS: usize = 16;
                     for i in 0..ROUNDS {
-                        log::debug!("pump round {}", i);
-                        let mut buf: [u32; 1024] = [0; 1024];
+                        log::info!("pump round {}", i);
+                        let mut buf: [u32; 1020] = [0; 1020];
                         env.trng.fill_buf(&mut buf).unwrap();
-                        log::debug!("pump samples: {:x}, {:x}, {:x}", buf[0], buf[512], buf[1023]);
+                        log::info!("pump samples: {:x}, {:x}, {:x}", buf[0], buf[512], buf[1019]);
                     }
                     write!(ret, "Pumped {}x1k values out of the engine", ROUNDS).unwrap();
                 }
-                // rand_core API tests - commented out because they only need to be run once, basically.
-                /*
+                // rand_core API tests - not included by default because it only needs to be run whenever
+                // the rand API is updated
+                #[cfg(feature = "rand-api")]
                 "api" => {
                     // the purpose of these tests is to check the edge-case code because
                     // the trng fetch is u32, but rand_core allows u8
-                    use rand::rngs::OsRng;
                     use rand::RngCore;
+                    use rand::rngs::OsRng;
                     let mut test1 = [0u8; 1];
                     OsRng.fill_bytes(&mut test1);
                     log::info!("test 1: {:?}", test1);
@@ -143,7 +140,7 @@ impl<'a> ShellCmdApi<'a> for TrngCmd {
                     let mut test4100 = [0u8; 4100];
                     OsRng.fill_bytes(&mut test4100);
                     log::info!("test 4100: {:?}", &test4100[4092..]);
-                } */
+                }
                 "errs" => {
                     write!(ret, "TRNG error stats: {:?}", env.trng.get_error_stats().unwrap()).unwrap();
                 }

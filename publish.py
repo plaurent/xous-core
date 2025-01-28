@@ -249,7 +249,7 @@ def main():
         print("Can't simultaneously change to local and remote paths. Pick only one operation.")
         exit(1)
 
-    crate_roots = ['.', '../hashes/sha2']
+    crate_roots = ['.', '../hashes/sha2', '../curve25519-dalek/curve25519-dalek']
 
     if args.bump or args.local_paths or args.remote_paths:
         cargo_toml_paths = []
@@ -305,6 +305,9 @@ def main():
         for patch in patches:
             patch.debug_mode(not args.wet_run)
             patch.increment_versions(mode)
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("Don't forget to check in & update git rev in Cargo.lock for: {}".format(crate_roots[1:]))
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
     if args.publish:
         # small quirk: if you're doing a utralib update, just use -u only.

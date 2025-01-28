@@ -4,14 +4,18 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use riscv::register::{scause, sepc, sstatus, stval};
-use xous_kernel::{SysCall, PID, TID};
+use xous_kernel::{PID, SysCall, TID};
 
 use crate::arch::current_pid;
 use crate::arch::exception::RiscvException;
 use crate::arch::mem::MemoryMapping;
+#[cfg(feature = "swap")]
+use crate::arch::process::RETURN_FROM_SWAPPER;
+use crate::arch::process::{EXIT_THREAD, RETURN_FROM_ISR, Thread};
 use crate::arch::process::{Process as ArchProcess, RETURN_FROM_EXCEPTION_HANDLER};
-use crate::arch::process::{Thread, EXIT_THREAD, RETURN_FROM_ISR};
 use crate::services::SystemServices;
+#[cfg(feature = "swap")]
+use crate::swap::Swap;
 
 extern "Rust" {
     fn _xous_syscall_return_result(result: &xous_kernel::Result, context: &Thread) -> !;
@@ -25,6 +29,9 @@ static IRQ_ENABLED: AtomicBool = AtomicBool::new(true);
 
 // Indicate when we handle an IRQ
 static HANDLING_IRQ: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "swap")]
+pub fn is_handling_irq() -> bool { HANDLING_IRQ.load(Ordering::SeqCst) }
 
 fn sim_read() -> usize {
     let existing: usize;
@@ -85,7 +92,7 @@ static mut PREVIOUS_PAIR: Option<(PID, TID)> = None;
 pub unsafe fn set_isr_return_pair(pid: PID, tid: TID) { PREVIOUS_PAIR = Some((pid, tid)); }
 
 #[cfg(feature = "gdb-stub")]
-pub unsafe fn take_isr_return_pair() -> Option<(PID, TID)> { PREVIOUS_PAIR.take() }
+pub unsafe fn take_isr_return_pair() -> Option<(PID, TID)> { (&mut *(&raw mut PREVIOUS_PAIR)).take() }
 
 /// Finish a pending ISR. Return `false` if there was none.
 fn finish_isr() -> bool {
@@ -97,7 +104,7 @@ fn finish_isr() -> bool {
     // we're in an interrupt context, it is safe to access this
     // global variable.
     let (previous_pid, previous_context) =
-        unsafe { PREVIOUS_PAIR.take().expect("got RETURN_FROM_ISR with no previous PID") };
+        unsafe { (&mut *(&raw mut PREVIOUS_PAIR)).take().expect("got RETURN_FROM_ISR with no previous PID") };
     // println!(
     //     "ISR: Resuming previous pair of ({}, {})",
     //     previous_pid, previous_context
@@ -183,6 +190,21 @@ pub extern "C" fn trap_handler(
     let epc = sepc::read();
 
     let ex = RiscvException::from_regs(sc.bits(), epc, stval::read());
+    #[cfg(any(feature = "debug-print"))] // , feature = "debug-swap-verbose"
+    {
+        let pid = current_pid();
+        let ex = RiscvException::from_regs(sc.bits(), sepc::read(), stval::read());
+        let tid = ArchProcess::with_current(|p| p.current_tid());
+        println!(
+            "IRQ ({}.{}): {} sepc {:x} sim {:x}", //  reg {:08x?}
+            pid,
+            tid,
+            ex,
+            sepc::read(),
+            sim_read(),
+            // ArchProcess::with_current(|p| p.current_thread().registers)
+        );
+    }
     match ex {
         // Syscall
         RiscvException::CallFromSMode(_epc, _) | RiscvException::CallFromUMode(_epc, _) => {
@@ -205,8 +227,9 @@ pub extern "C" fn trap_handler(
                 })
             });
 
-            let response = crate::syscall::handle(pid, tid, unsafe { PREVIOUS_PAIR.is_some() }, call)
-                .unwrap_or_else(xous_kernel::Result::Error);
+            let response =
+                crate::syscall::handle(pid, tid, unsafe { (&mut *(&raw mut PREVIOUS_PAIR)).is_some() }, call)
+                    .unwrap_or_else(xous_kernel::Result::Error);
 
             // println!("Syscall Result: {:?}", response);
             ArchProcess::with_current_mut(|p| {
@@ -229,9 +252,15 @@ pub extern "C" fn trap_handler(
             // Safe to access globals since interrupts are disabled
             // when this function runs.
             unsafe {
-                if PREVIOUS_PAIR.is_none() {
+                if (&mut *(&raw mut PREVIOUS_PAIR)).is_none() {
                     let tid = crate::arch::process::current_tid();
-                    PREVIOUS_PAIR = Some((pid, tid));
+                    // This is pretty verbose, so leave it commented out unless we're debugging a process
+                    // transition
+                    // #[cfg(feature = "debug-print")]
+                    // if pid.get() != 1 {
+                    //    println!("Hardware IRQ set PID{:?}, TID{:?}", pid, tid);
+                    // }
+                    *(&mut *(&raw mut PREVIOUS_PAIR)) = Some((pid, tid));
                 }
             }
             HANDLING_IRQ.store(true, Ordering::Relaxed);
@@ -246,12 +275,18 @@ pub extern "C" fn trap_handler(
         // and return right away.
         RiscvException::StorePageFault(_pc, addr) | RiscvException::LoadPageFault(_pc, addr) => {
             #[cfg(all(feature = "debug-print", feature = "print-panics"))]
-            print!("KERNEL({}): RISC-V fault: {} @ {:08x}, addr {:08x} - ", pid, ex, _pc, addr);
+            println!("KERNEL({}): RISC-V fault: {} @ {:08x}, addr {:08x} - ", pid, ex, _pc, addr);
             crate::arch::mem::ensure_page_exists_inner(addr)
                 .map(|_new_page| {
-                    #[cfg(all(feature = "debug-print", feature = "print-panics"))]
-                    klog!("Handing page {:08x} to process", _new_page);
                     ArchProcess::with_current_mut(|process| {
+                        #[cfg(all(feature = "debug-print", feature = "print-panics"))]
+                        println!(
+                            "SPF Handing page {:08x} to pid {} tid {} sepc {:x}",
+                            _new_page,
+                            process.pid().get(),
+                            process.current_tid(),
+                            process.current_thread().sepc,
+                        );
                         crate::arch::syscall::resume(current_pid().get() == 1, process.current_thread())
                     });
                 })
@@ -306,6 +341,75 @@ pub extern "C" fn trap_handler(
                 crate::arch::syscall::resume(current_pid().get() == 1, process.current_thread())
             });
         }
+        #[cfg(feature = "swap")]
+        RiscvException::InstructionPageFault(RETURN_FROM_SWAPPER, _offset) => {
+            /* #[cfg(feature = "debug-swap")]
+            {
+                let pid = crate::arch::process::current_pid();
+                let hardware_pid = (riscv::register::satp::read().bits() >> 22) & ((1 << 9) - 1);
+                println!("IPF RFS from PID{}, hw{}, offset {:x}", pid.get(), hardware_pid, _offset);
+            } */
+            // Cleanup after the swapper
+            let response = Swap::with_mut(|s|
+                // safety: this is safe because on return from swapper, we're in the swapper's memory space.
+                unsafe { s.exit_blocking_call() })
+            .unwrap_or_else(xous_kernel::Result::Error);
+
+            #[cfg(feature = "debug-swap-verbose")]
+            {
+                // debugging
+                SystemServices::with(|ss| {
+                    let hardware_pid = (riscv::register::satp::read().bits() >> 22) & ((1 << 9) - 1);
+                    let current = ss.get_process(current_pid()).unwrap();
+                    let state = current.state();
+                    ArchProcess::with_current(|p| {
+                        println!(
+                            "Swapper userspace handler returning to PID{}(hw{})-{:?} with result {:?}; tid {}, sepc {:x}\n{:x?}",
+                            current.pid.get(),
+                            hardware_pid,
+                            state,
+                            response,
+                            p.current_tid(),
+                            p.current_thread().sepc,
+                            p.current_thread().registers,
+                        );
+                    });
+                });
+            }
+
+            ArchProcess::with_current_mut(|p| {
+                let thread = p.current_thread();
+                #[cfg(feature = "debug-swap-verbose")]
+                println!(
+                    "Swapper syscall returning to address {:08x} in pid {}.{}",
+                    thread.sepc,
+                    p.pid().get(),
+                    p.current_tid(),
+                );
+                // this is necessary because ClearMemoryNow diverges on this path instead of
+                // cleaning exiting out of its entry point. Means every thunk out has to check
+                // this special case, even though it's rare...
+                Swap::with_mut(|s| s.clearmem_restore_irq());
+                unsafe { _xous_syscall_return_result(&response, thread) };
+            });
+        }
+
+        // Handle faulted instruction pages, because we can now actually have instruction pages that are
+        // swapped out.
+        #[cfg(feature = "swap")]
+        RiscvException::InstructionPageFault(_pc, addr) => {
+            #[cfg(all(feature = "debug-print", feature = "print-panics"))]
+            println!("IPF swap KERNEL({}): RISC-V fault: {} @ {:08x}, addr {:08x} - ", pid, ex, _pc, addr);
+            crate::arch::mem::ensure_page_exists_inner(addr)
+                .map(|_new_page| {
+                    #[cfg(all(feature = "debug-print", feature = "print-panics"))]
+                    println!("IPF Handing page {:08x} to process", _new_page);
+                    ArchProcess::with_current_mut(|process| {
+                        crate::arch::syscall::resume(current_pid().get() == 1, process.current_thread())
+                    });
+                })
+                .ok(); // If this fails, fall through.
+        }
 
         #[cfg(feature = "gdb-stub")]
         RiscvException::Breakpoint(_address) => {
@@ -337,9 +441,9 @@ pub extern "C" fn trap_handler(
 
         _ => {
             #[cfg(not(any(feature = "precursor", feature = "renode")))]
-            println!("!!! Unrecognized exception: {:?}", ex);
+            println!("!!! Unrecognized exception: {:x?}", ex);
             #[cfg(any(feature = "precursor", feature = "renode"))]
-            panic!("!!! Unrecognized exception: {:?}", ex);
+            panic!("!!! Unrecognized exception: {:x?}", ex);
         }
     }
 

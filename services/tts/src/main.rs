@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use api::*;
 use codec::{FrameRing, VolumeOps, ZERO_PCM};
 use num_traits::*;
-use xous::{msg_scalar_unpack, send_message, Message};
+use xous::{Message, msg_scalar_unpack, send_message};
 use xous_ipc::Buffer;
 use xous_tts_backend::*;
 
@@ -206,10 +206,10 @@ fn main() -> ! {
             Some(Opcode::TextToSpeech) => {
                 let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
                 let msg = buffer.to_original::<TtsFrontendMsg, _>().unwrap();
-                log::debug!("tts front end got string {}", msg.text.as_str().unwrap());
+                log::debug!("tts front end got string {}", msg.text.as_str());
                 wavbuf.lock().unwrap().clear(); // this will truncate any buffered audio that is playing
                 synth_done.store(false, Ordering::SeqCst);
-                tts_be.tts_simple(msg.text.as_str().unwrap()).unwrap();
+                tts_be.tts_simple(msg.text.as_str()).unwrap();
                 just_initiated.store(true, Ordering::SeqCst);
                 log::trace!("resuming codec");
                 codec.resume().unwrap();
@@ -217,10 +217,10 @@ fn main() -> ! {
             Some(Opcode::TextToSpeechBlocking) => {
                 let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
                 let msg = buffer.to_original::<TtsFrontendMsg, _>().unwrap();
-                log::debug!("tts blocking front end got string {}", msg.text.as_str().unwrap());
+                log::debug!("tts blocking front end got string {}", msg.text.as_str());
                 wavbuf.lock().unwrap().clear(); // this will truncate any buffered audio that is playing
                 synth_done.store(false, Ordering::SeqCst);
-                tts_be.tts_simple(msg.text.as_str().unwrap()).unwrap();
+                tts_be.tts_simple(msg.text.as_str()).unwrap();
                 just_initiated.store(true, Ordering::SeqCst);
                 log::trace!("resuming codec (blocking)");
                 codec.resume().unwrap();

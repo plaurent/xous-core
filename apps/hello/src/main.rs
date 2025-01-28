@@ -39,7 +39,7 @@ impl Hello {
         let gam = gam::Gam::new(&xns).expect("Can't connect to GAM");
         let gam_token = gam
             .register_ux(gam::UxRegistration {
-                app_name: xous_ipc::String::<128>::from_str(gam::APP_NAME_HELLO),
+                app_name: String::from(gam::APP_NAME_HELLO),
                 ux_type: gam::UxType::Chat,
                 predictor: None,
                 listener: sid.to_array(),
@@ -69,11 +69,11 @@ impl Hello {
         self.gam
             .draw_rectangle(
                 self.content,
-                Rectangle::new_with_style(
-                    Point::new(0, 0),
-                    self.screensize,
-                    DrawStyle { fill_color: Some(PixelColor::Light), stroke_color: None, stroke_width: 0 },
-                ),
+                Rectangle::new_with_style(Point::new(0, 0), self.screensize, DrawStyle {
+                    fill_color: Some(PixelColor::Light),
+                    stroke_color: None,
+                    stroke_width: 0,
+                }),
             )
             .expect("can't clear content area");
     }
