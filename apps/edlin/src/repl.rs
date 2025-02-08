@@ -118,22 +118,16 @@ impl Repl{
 
         let mut dirty = true;
         // take the input and pass it on to the various command parsers, and attach result
-        if let Some(local) = &self.input {
-            if let Some(res) = self.env.dispatch(Some(&mut xous_ipc::String::<1024>::from_str(&local)), None).expect("command dispatch failed") {
-                let output_history = History {
-                    text: String::from(res.as_str().unwrap_or("UTF-8 Error")),
-                    is_input: false
-                };
+        if let Some(local) = &mut self.input {
+            if let Some(res) = self.env.dispatch(Some(local), None).expect("command dispatch failed") {
+                let output_history = History { text: String::from(res.as_str()), is_input: false };
                 self.circular_push(output_history);
             } else {
                 dirty = false;
             }
         } else if let Some(msg) = &self.msg {
             if let Some(res) = self.env.dispatch(None, Some(msg)).expect("callback failed") {
-                let output_history = History {
-                    text: String::from(res.as_str().unwrap_or("UTF-8 Error")),
-                    is_input: false
-                };
+                let output_history = History { text: String::from(res.as_str()), is_input: false };
                 self.circular_push(output_history);
             } else {
                 dirty = false;

@@ -2204,8 +2204,13 @@ dependencies = [
  "ime-plugin-shell",
  "llio",
  "locales",
+<<<<<<< HEAD
  "log",
  "num-derive",
+=======
+ "log 0.4.22",
+ "num-derive 0.4.2",
+>>>>>>> 8de32f8f3 (fix strings, edlin ? prints line cursor position)
  "num-traits",
  "trng",
  "ureq",
@@ -2213,7 +2218,11 @@ dependencies = [
  "xous-api-log",
  "xous-api-names",
  "xous-api-ticktimer",
+<<<<<<< HEAD
  "xous-ipc 0.9.57 (registry+https://github.com/rust-lang/crates.io-index)",
+=======
+ "xous-ipc 0.10.4 (registry+https://github.com/rust-lang/crates.io-index)",
+>>>>>>> 8de32f8f3 (fix strings, edlin ? prints line cursor position)
 ]
 
 [[package]]

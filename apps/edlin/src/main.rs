@@ -25,7 +25,8 @@ pub(crate) const SERVER_NAME_EDLIN: &str = "_Edlin line-based text editor_";
 
 fn main() -> ! {
     log_server::init_wait().unwrap();
-    log::set_max_level(log::LevelFilter::Info);
+    log::set_max_level(log::LevelFilter::Debug);
+    //log::set_max_level(log::LevelFilter::Info);
     log::info!("my PID is {}", xous::process::id());
 
     let xns = xous_names::XousNames::new().unwrap();
@@ -43,7 +44,7 @@ fn main() -> ! {
         match FromPrimitive::from_usize(msg.body.id()) {
             Some(ReplOp::Line) => {
                 let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
-                let s = buffer.as_flat::<xous_ipc::String<4000>, _>().unwrap();
+                let s = buffer.as_flat::<String, _>().unwrap();
                 log::trace!("repl got input line: {}", s.as_str());
                 repl.input(s.as_str()).expect("REPL couldn't accept input string");
                 update_repl = true; // set a flag, instead of calling here, so message can drop and calling server is released
