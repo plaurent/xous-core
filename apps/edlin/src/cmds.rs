@@ -1,5 +1,4 @@
 use xous::{MessageEnvelope};
-use xous_ipc::String;
 use core::fmt::Write;
 use std::fs::File;
 use std::io::{Write as StdWrite, Error};
@@ -23,9 +22,9 @@ use std::collections::HashMap;
 pub trait ShellCmdApi<'a> {
     // user implemented:
     // called to process the command with the remainder of the string attached
-    fn process(&mut self, args: String::<1024>, env: &mut CommonEnv) -> Result<Option<String::<1024>>, xous::Error>;
+    fn process(&mut self, args: String, env: &mut CommonEnv) -> Result<Option<String>, xous::Error>;
     // called to process incoming messages that may have been origniated by the most recently issued command
-    fn callback(&mut self, msg: &MessageEnvelope, _env: &mut CommonEnv) -> Result<Option<String::<1024>>, xous::Error> {
+    fn callback(&mut self, msg: &MessageEnvelope, _env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         log::info!("received unhandled message {:?}", msg);
         Ok(None)
     }
@@ -62,12 +61,12 @@ pub struct CommonEnv {
     codec: codec::Codec,
     ticktimer: ticktimer_server::Ticktimer,
     gam: gam::Gam,
-    cb_registrations: HashMap::<u32, String::<256>>,
+    cb_registrations: HashMap::<u32, String>,
     trng: Trng,
     xns: xous_names::XousNames,
 }
 impl CommonEnv {
-    pub fn register_handler(&mut self, verb: String::<256>) -> u32 {
+    pub fn register_handler(&mut self, verb: String) -> u32 {
         let mut key: u32;
         loop {
             key = self.trng.get_u32().unwrap();
@@ -378,12 +377,12 @@ impl Edlin {
                     let mut LEN_FOR_WRAP = 35;
                     if !line.starts_with("#") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let mut number = digits.join("").parse::<usize>().unwrap();
+                        let number = digits.join("").parse::<usize>().unwrap();
                         LEN_FOR_WRAP = number;
                     }
                     let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-                    let remove_dup_spaces = one_long_string.replace("  ", " ");
-                    let words = remove_dup_spaces.split(" ");
+                    let remove_dup_spaces_and_newlines = one_long_string.replace("  ", " ").replace("\n\n", "\n");
+                    let words = remove_dup_spaces_and_newlines.split(" ");
                     self.data.clear();
                     let mut line = std::string::String::new();
                     for word in words {
@@ -428,7 +427,7 @@ impl Edlin {
                 }
                 if line.to_lowercase().starts_with("?"){
                     //return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
-                    return vec![format!("Edlin help. {} lines.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness", self.data.len())];
+                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness", self.line_cursor, self.data.len())];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
@@ -560,7 +559,7 @@ impl Edlin {
 
 pub struct CmdEnv {
     common_env: CommonEnv,
-    lastverb: String::<256>,
+    lastverb: String,
     ///// 2. declare storage for your command here.
     //audio_cmd: Audio,
     edlin: Edlin,
@@ -597,15 +596,15 @@ impl CmdEnv {
         log::info!("done creating CommonEnv");
         CmdEnv {
             common_env: common,
-            lastverb: String::<256>::new(),
+            lastverb: String::new(),
             ///// 3. initialize your storage, by calling new()
             //audio_cmd: Audio::new(&xns),
             edlin: edlin,
         }
     }
 
-    pub fn dispatch(&mut self, maybe_cmdline: Option<&mut String::<1024>>, maybe_callback: Option<&MessageEnvelope>) -> Result<Option<String::<1024>>, xous::Error> {
-        let mut ret = String::<1024>::new();
+    pub fn dispatch(&mut self, maybe_cmdline: Option<&mut String>, maybe_callback: Option<&MessageEnvelope>) -> Result<Option<String>, xous::Error> {
+        let mut ret = String::new();
 
         let commands: &mut [& mut dyn ShellCmdApi] = &mut [
             ///// 4. add your command to this array, so that it can be looked up and dispatched
@@ -622,7 +621,7 @@ impl CmdEnv {
                 EdlinMode::Inserting => {
                 }
             }
-            let line = std::string::String::from(cmdline.as_str().unwrap());
+            let line = std::string::String::from(cmdline.as_str());
             self.edlin.com.set_backlight(self.edlin.current_backlight_setting, self.edlin.current_backlight_setting).unwrap();
 
             let result = self.edlin.process(&line);
@@ -678,14 +677,14 @@ impl CmdEnv {
             //    Ok(None)
             //}
         } else if let Some(callback) = maybe_callback {
-            let mut cmd_ret: Result<Option<String::<1024>>, xous::Error> = Ok(None);
+            let mut cmd_ret: Result<Option<String>, xous::Error> = Ok(None);
             // first check and see if we have a callback registration; if not, just map to the last verb
             let verb = match self.common_env.cb_registrations.get(&(callback.body.id() as u32)) {
                 Some(verb) => {
-                    verb.to_str()
+                    verb
                 },
                 None => {
-                    self.lastverb.to_str()
+                    &self.lastverb
                 }
             };
             // now dispatch
@@ -711,29 +710,29 @@ impl CmdEnv {
 /// extract the first token, as delimited by spaces
 /// modifies the incoming line by removing the token and returning the remainder
 /// returns the found token
-pub fn tokenize(line: &mut String::<1024>) -> Option<String::<1024>> {
-    let mut token = String::<1024>::new();
-    let mut retline = String::<1024>::new();
+pub fn tokenize(line: &mut String) -> Option<String> {
+    let mut token = String::new();
+    let mut retline = String::new();
 
-    let lineiter = line.as_str().unwrap().chars();
+    let lineiter = line.as_str().chars();
     let mut foundspace = false;
     let mut foundrest = false;
     for ch in lineiter {
         if ch != ' ' && !foundspace {
-            token.push(ch).unwrap();
+            token.push(ch);
         } else if foundspace && foundrest {
-            retline.push(ch).unwrap();
+            retline.push(ch);
         } else if foundspace && ch != ' ' {
             // handle case of multiple spaces in a row
             foundrest = true;
-            retline.push(ch).unwrap();
+            retline.push(ch);
         } else {
             foundspace = true;
             // consume the space
         }
     }
     line.clear();
-    write!(line, "{}", retline.as_str().unwrap()).unwrap();
+    write!(line, "{}", retline.as_str()).unwrap();
     if token.len() > 0 {
         Some(token)
     } else {
