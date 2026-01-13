@@ -3,8 +3,7 @@ use core::fmt::Write;
 use std::fs::File;
 use std::io::{Write as StdWrite, Error};
 use std::path::PathBuf;
-use std::io::{Read, ErrorKind};
-use std::time::{Duration, Instant};
+use std::io::{Read};
 use std::net::{IpAddr, TcpStream, TcpListener};
 
 const ACCEPT: &str = "Accept";
@@ -20,9 +19,11 @@ use retrobasic;
 use std::collections::HashMap;
 /////////////////////////// Common items to all commands
 pub trait ShellCmdApi<'a> {
-    // user implemented:
-    // called to process the command with the remainder of the string attached
-    fn process(&mut self, args: String, env: &mut CommonEnv) -> Result<Option<String>, xous::Error>;
+    // // user implemented:
+    // // called to process the command with the remainder of the string attached
+    // fn process(&mut self, args: String, env: &mut CommonEnv) -> Result<Option<String>, xous::Error>;
+    // // returns my verb
+    // fn verb(&self) -> &'static str;
     // called to process incoming messages that may have been origniated by the most recently issued command
     fn callback(&mut self, msg: &MessageEnvelope, _env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         log::info!("received unhandled message {:?}", msg);
@@ -32,24 +33,22 @@ pub trait ShellCmdApi<'a> {
     // created with cmd_api! macro
     // checks if the command matches the current verb in question
     fn matches(&self, verb: &str) -> bool;
-    // returns my verb
-    fn verb(&self) -> &'static str;
 }
-// the argument to this macro is the command verb
-macro_rules! cmd_api {
-    ($verb:expr) => {
-        fn verb(&self) -> &'static str {
-            stringify!($verb)
-        }
-        fn matches(&self, verb: &str) -> bool {
-            if verb == stringify!($verb) {
-                true
-            } else {
-                false
-            }
-        }
-    };
-}
+// // the argument to this macro is the command verb
+// macro_rules! cmd_api {
+//     ($verb:expr) => {
+//         fn verb(&self) -> &'static str {
+//             stringify!($verb)
+//         }
+//         fn matches(&self, verb: &str) -> bool {
+//             if verb == stringify!($verb) {
+//                 true
+//             } else {
+//                 false
+//             }
+//         }
+//     };
+// }
 
 use trng::*;
 /////////////////////////// Command shell integration
@@ -66,18 +65,18 @@ pub struct CommonEnv {
     xns: xous_names::XousNames,
 }
 impl CommonEnv {
-    pub fn register_handler(&mut self, verb: String) -> u32 {
-        let mut key: u32;
-        loop {
-            key = self.trng.get_u32().unwrap();
-            // reserve the bottom 1000 IDs for the main loop enums.
-            if !self.cb_registrations.contains_key(&key) && (key > 1000) {
-                break;
-            }
-        }
-        self.cb_registrations.insert(key, verb);
-        key
-    }
+    // pub fn register_handler(&mut self, verb: String) -> u32 {
+    //     let mut key: u32;
+    //     loop {
+    //         key = self.trng.get_u32().unwrap();
+    //         // reserve the bottom 1000 IDs for the main loop enums.
+    //         if !self.cb_registrations.contains_key(&key) && (key > 1000) {
+    //             break;
+    //         }
+    //     }
+    //     self.cb_registrations.insert(key, verb);
+    //     key
+    // }
 }
 
 /*
@@ -131,7 +130,7 @@ impl Edlin {
         let mut keypath = PathBuf::new();
         keypath.push(EDLIN_DICT);
 
-        for dir in std::fs::read_dir(&keypath) {
+        if let Ok(dir) = std::fs::read_dir(&keypath) {
             for entry in dir {
                 let path0 = entry.unwrap().path();
                 let path = path0.to_str().unwrap();
@@ -148,11 +147,11 @@ impl Edlin {
     }
 
 
-    pub fn post_string(&mut self, url: &str, request_body: &str) -> Result<ureq::Response, ureq::Error> {
-    ureq::post(&url)
-        .set(ACCEPT, ACCEPT_JSON)
-        .send_string(request_body)
-    }
+    //pub fn post_string(&mut self, url: &str, request_body: &str) -> Result<ureq::Response, ureq::Error> {
+    //ureq::post(&url)
+    //    .set(ACCEPT, ACCEPT_JSON)
+    //    .send_string(request_body)
+    //}
 
     pub fn post_json(&mut self, url: &str, data: &str) -> Result<ureq::Response, ureq::Error> {
     ureq::post(&url)
@@ -162,11 +161,11 @@ impl Edlin {
         }))
     }
 
-    pub fn get_json(url: &str) -> Result<ureq::Response, ureq::Error> {
-    ureq::get(&url)
-        .set(ACCEPT, ACCEPT_JSON)
-        .call()
-    }
+    //pub fn get_json(url: &str) -> Result<ureq::Response, ureq::Error> {
+    //ureq::get(&url)
+    //    .set(ACCEPT, ACCEPT_JSON)
+    //    .call()
+    //}
 
     pub fn get_texthtml(&mut self, url: &str) -> Result<ureq::Response, ureq::Error> {
     ureq::get(&url)
@@ -208,7 +207,7 @@ impl Edlin {
         let mut keypath = PathBuf::new();
         keypath.push(EDLIN_DICT);
 
-        for dir in std::fs::read_dir(&keypath) {
+        if let Ok(dir) = std::fs::read_dir(&keypath) {
             for entry in dir {
                 let path0 = entry.unwrap().path();
                 let path = path0.to_str().unwrap();
@@ -217,10 +216,7 @@ impl Edlin {
                 let needstartwith1 = format!("edlin/{}_", filename);
                 let needstartwith2 = format!("edlin:{}_", filename);
                 if path.starts_with(needstartwith1.as_str()) || path.starts_with(needstartwith2.as_str()) {
-                    //log::info!("WOULD DELETE '{}'", path);
-                    std::fs::remove_file(&path0);
-                    //let row = format!("{}", std::string::String::from(path).replace("edlin/", "").replace("_line0", ""));
-                    //result.push(row);
+                    let _ = std::fs::remove_file(&path0);
                 } else {
                     //log::info!("not deleting '{}'", path);
                 }
@@ -355,9 +351,9 @@ impl Edlin {
                     // let body = std::string::String::from("This is a test of data via json");
                     let result = self.post_json(url.as_str(), body.as_str()).expect("Post didn't work");
                     log::info!("--> posted {}", line);
-                    let resultString = std::string::String::from(result.into_string().unwrap());
-                    log::info!("result was {}", resultString);
-                    return vec![resultString];
+                    let result_string = std::string::String::from(result.into_string().unwrap());
+                    log::info!("result was {}", result_string);
+                    return vec![result_string];
                 }
                 if line.starts_with("b") {  // set brightness
                     let digits: Vec<&str> = line.matches(char::is_numeric).collect();
@@ -370,15 +366,15 @@ impl Edlin {
                     let mut one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
                     one_long_string.push_str("\n");
                     let result = retrobasic::run_prog(one_long_string);
-                    return vec![format!("result {}.", result)];
+                    return vec![format!("{}", result)];
                 }
 
                 if line.ends_with("#") {
-                    let mut LEN_FOR_WRAP = 35;
+                    let mut len_for_wrap = 35;
                     if !line.starts_with("#") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
                         let number = digits.join("").parse::<usize>().unwrap();
-                        LEN_FOR_WRAP = number;
+                        len_for_wrap = number;
                     }
                     let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
                     let remove_dup_spaces_and_newlines = one_long_string.replace("  ", " ").replace("\n\n", "\n");
@@ -388,7 +384,7 @@ impl Edlin {
                     for word in words {
                         line.push_str(format!("{} ", word).as_str());
                         //log::info!("Adding line '{}' len is {} ", line, line.len());
-                        if line.len() > LEN_FOR_WRAP {
+                        if line.len() > len_for_wrap {
                             self.data.push(line.clone());
                             line = std::string::String::from("");
                         }
@@ -401,8 +397,12 @@ impl Edlin {
                 if line.to_lowercase().starts_with("w") {
                     let filename = line.replacen("w ", "", 1).replacen("W ", "", 1);
                     if filename.len() > 0 {
-                        self.save(filename);
-                        return vec![format!("*{}:", self.line_cursor)];
+
+                        if let Err(_e) = self.save(filename) {
+                            return vec![std::string::String::from("Failed to save file.")];
+                        }
+
+                        return vec![format!("Save ok *{}:", self.line_cursor)];
                     } else {
                         return vec![std::string::String::from("Please enter a filename after w.")];
                     }
@@ -410,7 +410,9 @@ impl Edlin {
                 if line.to_lowercase().starts_with("r"){
                     let filename = line.replacen("r ", "", 1).replacen("R ", "", 1);
                     if filename.len() > 0 {
-                        self.load(filename);
+                        if let Err(_e) = self.load(filename) {
+                            return vec![std::string::String::from("Failed to load file.")];
+                        }
                         return vec![format!("*{}:", self.line_cursor)];
                     } else {
                         return vec![std::string::String::from("Please enter a filename after r.")];
@@ -419,8 +421,10 @@ impl Edlin {
                 if line.to_lowercase().starts_with("x"){
                     let filename = line.replacen("x ", "", 1).replacen("X ", "", 1);
                     if filename.len() > 0 {
-                        self.rm(filename);
-                        return vec![std::string::String::from("Ok.")];
+                        if let Err(_e) = self.rm(filename) {
+                            return vec![std::string::String::from("Failed to delete file.")];
+                        }
+                        return vec![std::string::String::from("File deleted ok.")];
                     } else {
                         return vec![std::string::String::from("Please enter a filename after x.")];
                     }
@@ -459,23 +463,27 @@ impl Edlin {
                     if del_start > del_cease {
                         del_start = del_cease;
                     }
-                    if del_start <= self.data.len() - 1 && del_cease <= self.data.len() {
-                        println!("Deleting {} to {}", del_start, del_cease);
-                        if del_start == del_cease {
-                            self.data.remove(del_start);
-                            if self.line_cursor > self.data.len() {
-                                self.line_cursor = self.data.len()
+                    if self.data.len() > 0 {
+                        if del_start <= self.data.len() - 1 && del_cease <= self.data.len() {
+                            println!("Deleting {} to {}", del_start, del_cease);
+                            if del_start == del_cease {
+                                self.data.remove(del_start);
+                                if self.line_cursor > self.data.len() {
+                                    self.line_cursor = self.data.len()
+                                }
                             }
-                        }
-                        for i in (del_start..del_cease).rev() {
-                            self.data.remove(i);
-                            if self.line_cursor > self.data.len() {
-                                self.line_cursor = self.data.len()
+                            for i in (del_start..del_cease).rev() {
+                                self.data.remove(i);
+                                if self.line_cursor > self.data.len() {
+                                    self.line_cursor = self.data.len()
+                                }
                             }
+                            return vec![format!("Deleted {} to {}", del_start, del_cease)];
+                        } else {
+                            return vec![format!("Can't delete beyond {}", self.data.len()-1)];
                         }
-                        return vec![format!("Deleted {} to {}", del_start, del_cease)];
                     } else {
-                        return vec![format!("Can't delete beyond {}", self.data.len()-1)];
+                        return vec![format!("Memory is empty.")];
                     }
                 }
                 if line.contains("v") || line.contains("v") {
@@ -501,16 +509,16 @@ impl Edlin {
                         let line_to_next_from = digits.join("").parse::<usize>().unwrap();
                         self.line_cursor = line_to_next_from;
                     }
-                    let NUM_LINES_PER_PAGE = 5;
+                    let num_lines_per_page = 5;
                     let mut result: Vec<std::string::String> = Vec::new();
-                    let mut upto = self.line_cursor + NUM_LINES_PER_PAGE;
+                    let mut upto = self.line_cursor + num_lines_per_page;
                     if upto > self.data.len()  {
                         upto = self.data.len();
                     }
                     for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
                         result.insert(i, format!("{}: {}", self.line_cursor+i, line));
                     }
-                    self.line_cursor = self.line_cursor + NUM_LINES_PER_PAGE;
+                    self.line_cursor = self.line_cursor + num_lines_per_page;
                     if self.line_cursor > self.data.len()-1 {
                         self.line_cursor = self.data.len()-1;
                     }
@@ -522,12 +530,14 @@ impl Edlin {
                     // TODO remove duplication
                     if !line.to_lowercase().starts_with("p") && !line.eq("") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let line_to_next_from = digits.join("").parse::<usize>().unwrap();
-                        self.line_cursor = line_to_next_from;
+                        if !digits.is_empty() {
+                            let line_to_next_from = digits.join("").parse::<usize>().unwrap();
+                            self.line_cursor = line_to_next_from;
+                        }
                     }
-                    let NUM_LINES_PER_PAGE = 5;
+                    let num_lines_per_page = 5;
                     let mut result: Vec<std::string::String> = Vec::new();
-                    let mut upto = self.line_cursor + NUM_LINES_PER_PAGE;
+                    let mut upto = self.line_cursor + num_lines_per_page;
                     if upto > self.data.len()  {
                         upto = self.data.len();
                     }
@@ -541,7 +551,7 @@ impl Edlin {
                     let one_long_string = result.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
                     let remove_dup_spaces = one_long_string.replace("  ", " ");
 
-                    self.line_cursor = self.line_cursor + NUM_LINES_PER_PAGE;
+                    self.line_cursor = self.line_cursor + num_lines_per_page;
                     if self.line_cursor > self.data.len()-1 {
                         self.line_cursor = self.data.len()-1;
                     }
@@ -630,9 +640,9 @@ impl CmdEnv {
             //for result_line in result {
             for (i, result_line) in result.iter().enumerate() {  // self.data.iter().enumerate() {
                 if i < result.len()-1 {
-                    write!(ret, "{}\n", result_line);
+                    let _ = write!(ret, "{}\n", result_line);
                 } else {
-                    write!(ret, "{}", result_line);
+                    let _ = write!(ret, "{}", result_line);
                 }
             }
 
@@ -707,35 +717,3 @@ impl CmdEnv {
     }
 }
 
-/// extract the first token, as delimited by spaces
-/// modifies the incoming line by removing the token and returning the remainder
-/// returns the found token
-pub fn tokenize(line: &mut String) -> Option<String> {
-    let mut token = String::new();
-    let mut retline = String::new();
-
-    let lineiter = line.as_str().chars();
-    let mut foundspace = false;
-    let mut foundrest = false;
-    for ch in lineiter {
-        if ch != ' ' && !foundspace {
-            token.push(ch);
-        } else if foundspace && foundrest {
-            retline.push(ch);
-        } else if foundspace && ch != ' ' {
-            // handle case of multiple spaces in a row
-            foundrest = true;
-            retline.push(ch);
-        } else {
-            foundspace = true;
-            // consume the space
-        }
-    }
-    line.clear();
-    write!(line, "{}", retline.as_str()).unwrap();
-    if token.len() > 0 {
-        Some(token)
-    } else {
-        None
-    }
-}
