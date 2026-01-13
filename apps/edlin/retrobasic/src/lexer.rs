@@ -164,9 +164,9 @@ impl Lexer {
 
         match self.la() {
             '\n' => self.newline(),
-            '0'...'9' | '.' => self.number(),
+            '0'..='9' | '.' => self.number(),
             '"' => self.str(),
-            'a'...'z' | 'A'...'Z' => self.identifier(),
+            'a'..='z' | 'A'..='Z' => self.identifier(),
             '=' | ':' | ';' | ',' | '*' | '/' | '+' | '-' | '^' | '<' | '>' | '(' | ')' => {
                 self.operator()
             }
