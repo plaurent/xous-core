@@ -1,7 +1,7 @@
 use super::*;
 use gam::UxRegistration;
-use graphics_server::{Gid, Point, Rectangle, TextBounds, TextView, DrawStyle, PixelColor};
-use graphics_server::api::GlyphStyle;
+use gam::{Gid, Point, Rectangle, TextBounds, TextView, DrawStyle, PixelColor};
+use gam::GlyphStyle;
 use xous::MessageEnvelope;
 use core::fmt::Write;
 use locales::t;
@@ -193,7 +193,7 @@ impl Repl{
             if let Some(bounds) = bubble_tv.bounds_computed {
                 // we only subtract 1x of the margin because the bounds were computed from a "bottom right" that already counted
                 // the margin once.
-                bubble_baseline -= (bounds.br.y - bounds.tl.y) + self.bubble_space + self.bubble_margin.y;
+                bubble_baseline -= (bounds.br.y - bounds.tl.y) + (self.bubble_space as isize) + self.bubble_margin.y;
                 if bubble_baseline <= 0 {
                     // don't draw history that overflows the top of the screen
                     break;
