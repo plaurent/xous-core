@@ -3,14 +3,15 @@
 
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering::Relaxed};
 
+use xous_kernel::arch::PAGE_SIZE;
 use xous_kernel::*;
 
 use crate::arch;
 use crate::arch::process::Process as ArchProcess;
 use crate::irq::{interrupt_claim, interrupt_free};
-use crate::mem::{MemoryManager, PAGE_SIZE};
+use crate::mem::MemoryManager;
 use crate::server::{SenderID, WaitingMessage};
-use crate::services::SystemServices;
+use crate::services::{PostActivateOp, SystemServices};
 #[cfg(feature = "swap")]
 use crate::swap::{Swap, SwapAbi};
 
@@ -69,7 +70,7 @@ fn do_yield(_pid: PID, tid: TID) -> SysCallResult {
     SystemServices::with_mut(|ss| {
         // TODO: Advance thread
         let result = ss
-            .activate_process_thread(tid, parent_pid, parent_ctx, true)
+            .activate_process_thread(tid, parent_pid, parent_ctx, true, PostActivateOp::None)
             .map(|_| Ok(xous_kernel::Result::ResumeProcess))
             .unwrap_or(Err(xous_kernel::Error::ProcessNotFound));
 
@@ -161,17 +162,7 @@ fn send_message(pid: PID, tid: TID, cid: CID, message: Message) -> SysCallResult
             //     "there are threads available in PID {} to handle this message -- marking as Ready",
             //     server_pid
             // );
-            let sender_idx = if message.is_blocking() {
-                ss.remember_server_message(sidx, pid, tid, &message, client_address).map_err(|e| {
-                    klog!("error remembering server message: {:?}", e);
-                    ss.server_from_sidx_mut(sidx)
-                        .expect("server couldn't be located")
-                        .return_available_thread(server_tid);
-                    e
-                })?
-            } else {
-                0
-            };
+            let sender_idx = 0; // lazy-evaluate to a real number for blocking messages; eagerly set to 0 for non-blocking
             let sender = SenderID::new(sidx, sender_idx, Some(pid));
             klog!("server connection data: sidx: {}, idx: {}, server pid: {}", sidx, sender_idx, server_pid);
             let envelope = MessageEnvelope { sender: sender.into(), body: message };
@@ -190,19 +181,35 @@ fn send_message(pid: PID, tid: TID, cid: CID, message: Message) -> SysCallResult
             // --- NOTE: Returning this value //
             return if blocking && cfg!(baremetal) {
                 if !runnable {
+                    // re-bind the envelope because the sender_idx binding is lazily evaluated
+                    let message = envelope.take_message();
+                    let sender_idx = ss
+                        .remember_server_message(sidx, pid, tid, &message, client_address)
+                        .map_err(|e| {
+                            klog!("error remembering server message: {:?}", e);
+                            ss.server_from_sidx_mut(sidx)
+                                .expect("server couldn't be located")
+                                .return_available_thread(server_tid);
+                            e
+                        })?;
+                    let sender = SenderID::new(sidx, sender_idx, Some(pid));
+                    let envelope = MessageEnvelope { sender: sender.into(), body: message };
+
                     // If it's not runnable (e.g. it's being debugged), switch to the parent.
                     let (ppid, ptid) = unsafe { (&mut *(&raw mut SWITCHTO_CALLER)).take().unwrap() };
                     klog!(
                         "Activating Server parent process (server is blocked) and switching away from Client"
                     );
-                    ss.set_thread_result(
-                        server_pid,
-                        server_tid,
-                        xous_kernel::Result::MessageEnvelope(envelope),
-                    )
-                    .expect("couldn't set result for server thread");
                     let result = ss
-                        .activate_process_thread(tid, ppid, ptid, false)
+                        .activate_process_thread(
+                            tid,
+                            ppid,
+                            ptid,
+                            false,
+                            PostActivateOp::SetThreadResult {
+                                result: xous_kernel::Result::MessageEnvelope(envelope),
+                            },
+                        )
                         .map(|_| Ok(xous_kernel::Result::ResumeProcess))
                         .unwrap_or(Err(xous_kernel::Error::ProcessNotFound));
 
@@ -218,11 +225,42 @@ fn send_message(pid: PID, tid: TID, cid: CID, message: Message) -> SysCallResult
                 } else {
                     // Switch to the server, since it's in a state to be run.
                     klog!("Activating Server context and switching away from Client");
-                    ss.activate_process_thread(tid, server_pid, server_tid, false)
-                        .map(|_| Ok(xous_kernel::Result::MessageEnvelope(envelope)))
-                        .unwrap_or(Err(xous_kernel::Error::ProcessNotFound))
+                    let message = envelope.take_message();
+                    match ss.activate_process_thread(
+                        tid,
+                        server_pid,
+                        server_tid,
+                        false,
+                        PostActivateOp::RememberServerMessage {
+                            sidx,
+                            current_pid: pid,
+                            current_thread: tid,
+                            message: &message,
+                            client_address,
+                        },
+                    ) {
+                        Ok(sender_idx) => {
+                            let sender = SenderID::new(sidx, sender_idx, Some(pid));
+                            let envelope = MessageEnvelope { sender: sender.into(), body: message };
+                            Ok(xous_kernel::Result::MessageEnvelope(envelope))
+                        }
+                        _ => Err(xous_kernel::Error::ProcessNotFound),
+                    }
                 }
             } else if blocking && !cfg!(baremetal) {
+                // re-bind the envelope: lazy eval has to happen now.
+                let message = envelope.take_message();
+                let sender_idx =
+                    ss.remember_server_message(sidx, pid, tid, &message, client_address).map_err(|e| {
+                        klog!("error remembering server message: {:?}", e);
+                        ss.server_from_sidx_mut(sidx)
+                            .expect("server couldn't be located")
+                            .return_available_thread(server_tid);
+                        e
+                    })?;
+                let sender = SenderID::new(sidx, sender_idx, Some(pid));
+                let envelope = MessageEnvelope { sender: sender.into(), body: message };
+
                 klog!("Blocking client, since it sent a blocking message");
                 ss.unschedule_thread(pid, tid)?;
                 ss.switch_to_thread(server_pid, Some(server_tid))?;
@@ -261,7 +299,7 @@ fn send_message(pid: PID, tid: TID, cid: CID, message: Message) -> SysCallResult
                 let ppid = process.ppid;
                 unsafe { SWITCHTO_CALLER = None };
                 let result = ss
-                    .activate_process_thread(tid, ppid, 0, false)
+                    .activate_process_thread(tid, ppid, 0, false, PostActivateOp::None)
                     .map(|_| Ok(xous_kernel::Result::ResumeProcess))
                     .unwrap_or(Err(xous_kernel::Error::ProcessNotFound));
 
@@ -589,13 +627,16 @@ fn reply_and_receive_next(
         } else {
             // For baremetal targets, switch away from this process.
             if cfg!(baremetal) {
-                // Set the thread result for the client
-                ss.set_thread_result(response.pid, response.tid, response.result)?;
-
-                // Activate the client thread and switch to it
-                ss.activate_process_thread(server_tid, response.pid, response.tid, false)
-                    .map(|_| Ok(xous_kernel::Result::ResumeProcess))
-                    .unwrap_or(Err(xous_kernel::Error::ProcessNotFound))
+                // Set the thread result for the client and activate the client thread and switch to it
+                ss.activate_process_thread(
+                    server_tid,
+                    response.pid,
+                    response.tid,
+                    false,
+                    PostActivateOp::SetThreadResult { result: response.result },
+                )
+                .map(|_| Ok(xous_kernel::Result::ResumeProcess))
+                .unwrap_or(Err(xous_kernel::Error::ProcessNotFound))
             }
             // For hosted targets, simply return `BlockedProcess` indicating we'll make
             // a callback to their socket at a later time.
@@ -649,7 +690,7 @@ fn receive_message(pid: PID, tid: TID, sid: SID, blocking: ExecutionType) -> Sys
             let ppid = ss.get_process(pid).expect("Can't get current process").ppid;
             // TODO: Advance thread
             let result = ss
-                .activate_process_thread(tid, ppid, 0, false)
+                .activate_process_thread(tid, ppid, 0, false, PostActivateOp::None)
                 .map(|_| Ok(xous_kernel::Result::ResumeProcess))
                 .unwrap_or(Err(xous_kernel::Error::ProcessNotFound));
             ss.set_last_thread(PID::new(ORIGINAL_PID.load(Relaxed)).unwrap(), ORIGINAL_TID.load(Relaxed))
@@ -696,7 +737,9 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
                 let virt_ptr = virt.map(|x| x.get() as *mut u8).unwrap_or(core::ptr::null_mut());
 
                 // Don't let the address exceed the user area (unless it's PID 1)
-                if pid.get() != 1 && virt.map(|x| x.get() >= arch::mem::USER_AREA_END).unwrap_or(false) {
+                if pid.get() != 1
+                    && virt.map(|x| x.get() >= xous_kernel::arch::USER_AREA_END).unwrap_or(false)
+                {
                     klog!("Exceeded user area");
                     return Err(xous_kernel::Error::BadAddress);
 
@@ -709,6 +752,21 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
                 //     "Mapping {:08x} -> {:08x} ({} bytes, flags: {:?})",
                 //     phys_ptr as u32, virt_ptr as u32, size, req_flags
                 // );
+
+                #[cfg(feature = "memmap-flash")]
+                if phys_ptr.is_null() && mm.is_mapped_flash(virt_ptr) {
+                    // handle mapped flash case
+                    let range = mm.map_range(
+                        phys_ptr,
+                        virt_ptr,
+                        size.get(),
+                        pid,
+                        req_flags | MemoryFlags::VIRT,
+                        MemoryType::Default,
+                    )?;
+                    return Ok(xous_kernel::Result::MemoryRange(range));
+                }
+
                 let range =
                     mm.map_range(phys_ptr, virt_ptr, size.get(), pid, req_flags, MemoryType::Default)?;
 
@@ -802,7 +860,7 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
 
             // Unmap the pages from the heap
             MemoryManager::with_mut(|mm| {
-                for page in ((end - delta)..end).step_by(crate::arch::mem::PAGE_SIZE) {
+                for page in ((end - delta)..end).step_by(xous_kernel::arch::PAGE_SIZE) {
                     mm.unmap_page(page as *mut usize).expect("unable to unmap page");
                 }
             });
@@ -823,7 +881,7 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
             //     "Activating process thread {} in pid {} coming from pid {} thread {}",
             //     new_context, new_pid, pid, tid
             // );
-            let new_tid = ss.activate_process_thread(tid, new_pid, new_tid, true)?;
+            let new_tid = ss.activate_process_thread(tid, new_pid, new_tid, true, PostActivateOp::None)?;
             ORIGINAL_PID.store(new_pid.get(), Relaxed);
             ORIGINAL_TID.store(new_tid, Relaxed);
             Ok(xous_kernel::Result::ResumeProcess)
@@ -852,7 +910,7 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
             // TODO: Advance thread
             if cfg!(baremetal) {
                 let result = ss
-                    .activate_process_thread(tid, ppid, 0, false)
+                    .activate_process_thread(tid, ppid, 0, false, PostActivateOp::None)
                     .map(|_| Ok(xous_kernel::Result::ResumeProcess))
                     .unwrap_or(Err(xous_kernel::Error::ProcessNotFound));
                 ss.set_last_thread(PID::new(ORIGINAL_PID.load(Relaxed)).unwrap(), ORIGINAL_TID.load(Relaxed))
@@ -1096,6 +1154,52 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
                         Err(xous_kernel::Error::AccessDenied)
                     }
                 }
+                SwapAbi::WritePage => {
+                    if pid.get() != xous_kernel::SWAPPER_PID {
+                        return Err(xous_kernel::Error::AccessDenied);
+                    }
+                    let src_pid = PID::new(a1 as u8).unwrap();
+                    // strip off the virtual addres prefix: by definition this region is 1:1 mapped in the
+                    // LSBs
+                    let flash_offset = a2 & 0x0FFF_FFFF;
+                    let page_vaddr_in_swapper = a3;
+                    Swap::with_mut(|swap| {
+                        swap.write_page_syscall(src_pid, flash_offset, page_vaddr_in_swapper);
+                    });
+                    Ok(xous_kernel::Result::Ok)
+                }
+                SwapAbi::BlockErase => {
+                    if pid.get() != xous_kernel::SWAPPER_PID {
+                        return Err(xous_kernel::Error::AccessDenied);
+                    }
+                    let src_pid = PID::new(a1 as u8).unwrap();
+                    let flash_offset = a2 & 0x0FFF_FFFF;
+                    let len = a3;
+                    Swap::with_mut(|swap| {
+                        swap.block_erase_syscall(src_pid, flash_offset, len);
+                    });
+                    Ok(xous_kernel::Result::Ok)
+                }
+                SwapAbi::DebugServers => {
+                    crate::services::SystemServices::with(|system_services| {
+                        println!("Servers in use:");
+                        println!(" idx | pid | process              | sid");
+                        println!(" --- + --- + -------------------- | ------------------");
+                        for (idx, server) in system_services.servers.iter().enumerate() {
+                            if let Some(s) = server {
+                                println!(
+                                    " {:3} | {:3} | {:20} | {:x?}",
+                                    idx,
+                                    s.pid,
+                                    system_services.process_name(s.pid).unwrap_or(""),
+                                    /* s.sid */
+                                    "redacted" // redact SIDs for security, as some may be secrets
+                                );
+                            }
+                        }
+                    });
+                    Ok(xous_kernel::Result::Ok)
+                }
                 SwapAbi::Invalid => {
                     println!(
                         "Invalid SwapOp: {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
@@ -1116,6 +1220,172 @@ pub fn handle_inner(pid: PID, tid: TID, in_irq: bool, call: SysCall) -> SysCallR
                 crate::platform::rand::get_raw_u32() as usize,
                 0,
             ))
+        }
+
+        #[cfg(feature = "bao1x")]
+        SysCall::PlatformSpecific(op, a2, a3, a4, a5, a6, a7) => {
+            use core::fmt::Write;
+
+            use xous_kernel::PageBuf;
+
+            use crate::platform::bao1x::PlatformCallAbi;
+
+            match PlatformCallAbi::from(op) {
+                #[cfg(feature = "debug-proc")]
+                PlatformCallAbi::DebugProcesses
+                | PlatformCallAbi::DebugFreeMem
+                | PlatformCallAbi::DebugInterrupts => {
+                    // The address of the PageBuffer is in a2. This needs to be a page-sized, page-aligned
+                    // `PageBuf` object. anything else will cause this routine to write
+                    // garbage into a userspace page corresponding to the object at the
+                    // virtual address in a2.
+                    //
+                    // This could be a security risk, and so, the implementation is feature-gated.
+                    let userspace_vaddr = a2;
+                    let phys_addr = crate::arch::mem::virt_to_phys(userspace_vaddr as usize)?;
+                    // ensure that the physical page is actually somewhere in RAM. This helps protect against
+                    // this being used as a primitive to corrupt data into peripherals, ROM, etc.
+                    assert!(phys_addr >= utralib::HW_SRAM_MEM);
+                    assert!(phys_addr < utralib::HW_SRAM_MEM + utralib::HW_SRAM_MEM_LEN);
+                    // map the userspace page into the kernel so it can write it. In this case, we didn't
+                    // unmap it from userspace - which means we are temporarily violating
+                    // the rule that a page cannot be owned by two processes at once. I
+                    // think this is OK because it is immediately unmapped
+                    // at the conclusion of this call.
+                    SystemServices::with(|system_services| {
+                        // swap into the kernel's memory space
+                        let kernel_map = system_services.get_process(PID::new(1).unwrap()).unwrap().mapping;
+                        kernel_map.activate().unwrap();
+                    });
+                    crate::mem::MemoryManager::with_mut(|mm| {
+                        // map it to the USERSPACE_BUFFER virtuall address in the kernel
+                        crate::arch::mem::map_page_inner(
+                            mm,
+                            PID::new(1).unwrap(),
+                            phys_addr,
+                            xous_kernel::arch::USERSPACE_BUFFER,
+                            MemoryFlags::R | MemoryFlags::W,
+                            false,
+                        )
+                        .unwrap();
+                    });
+                    // USERSPACE_BUFFER now aliases to the physical page handed to us by the userspace.
+                    let page_buf = unsafe { PageBuf::from_raw_ptr_mut(xous_kernel::arch::USERSPACE_BUFFER) };
+                    // don't assume the userspace did this correctly
+                    page_buf.clear();
+                    // now dispatch the various debug calls, copying their output into the page provided
+                    match PlatformCallAbi::from(op) {
+                        PlatformCallAbi::DebugProcesses => {
+                            crate::services::SystemServices::with(|system_services| {
+                                let current_pid = system_services.current_pid();
+                                for process in &system_services.processes {
+                                    if !process.free() {
+                                        process.activate().unwrap();
+                                        let mut connection_count = 0;
+                                        ArchProcess::with_inner(|process_inner| {
+                                            for conn in &process_inner.connection_map {
+                                                if conn.is_some() {
+                                                    connection_count += 1;
+                                                }
+                                            }
+                                        });
+                                        SystemServices::with(|system_services| {
+                                            let kernel_map = system_services
+                                                .get_process(PID::new(1).unwrap())
+                                                .unwrap()
+                                                .mapping;
+                                            kernel_map.activate().unwrap();
+                                        });
+                                        writeln!(
+                                            page_buf,
+                                            "{:x?} conns:{}/32 {}",
+                                            process,
+                                            connection_count,
+                                            system_services.process_name(process.pid).unwrap_or("")
+                                        )
+                                        .ok();
+                                    }
+                                }
+                                system_services.get_process(current_pid).unwrap().activate().unwrap();
+                            });
+                        }
+                        PlatformCallAbi::DebugFreeMem => {
+                            let mut total_bytes = 0;
+                            crate::services::SystemServices::with(|system_services| {
+                                crate::mem::MemoryManager::with(|mm| {
+                                    for process in &system_services.processes {
+                                        if !process.free() {
+                                            let bytes_used = mm.ram_used_by(process.pid);
+                                            total_bytes += bytes_used;
+                                            SystemServices::with(|system_services| {
+                                                let kernel_map = system_services
+                                                    .get_process(PID::new(1).unwrap())
+                                                    .unwrap()
+                                                    .mapping;
+                                                kernel_map.activate().unwrap();
+                                            });
+                                            writeln!(
+                                                page_buf,
+                                                "    PID {:>3}: {:>4} k {}",
+                                                process.pid,
+                                                bytes_used / 1024,
+                                                system_services.process_name(process.pid).unwrap_or("")
+                                            )
+                                            .ok();
+                                        }
+                                    }
+                                });
+                            });
+                            writeln!(page_buf, "{} k total", total_bytes / 1024).ok();
+                        }
+                        PlatformCallAbi::DebugInterrupts => {
+                            writeln!(page_buf, "  IRQ | Process | Handler | Argument").ok();
+                            crate::services::SystemServices::with(|system_services| {
+                                crate::irq::for_each_irq(|irq, pid, address, arg| {
+                                    writeln!(
+                                        page_buf,
+                                        "    {}:  {} @ {:x?} {:x?}",
+                                        irq,
+                                        system_services.process_name(*pid).unwrap_or(""),
+                                        address,
+                                        arg
+                                    )
+                                    .ok();
+                                });
+                            });
+                        }
+                        _ => unreachable!(),
+                    }
+                    // return to the kernel memory space
+                    SystemServices::with(|system_services| {
+                        let kernel_map = system_services.get_process(PID::new(1).unwrap()).unwrap().mapping;
+                        kernel_map.activate().unwrap();
+                    });
+                    // unmap the aliased page from kernel memory space
+                    crate::mem::MemoryManager::with_mut(|mm| {
+                        crate::arch::mem::unmap_page_inner(mm, xous_kernel::arch::USERSPACE_BUFFER).unwrap();
+                    });
+                    // return to the caller's memory space
+                    SystemServices::with(|system_services| {
+                        let user_map = system_services.get_process(pid).unwrap().mapping;
+                        user_map.activate().unwrap();
+                    });
+                    // return with the calling virtual address as affirmation of the call
+                    Ok(xous_kernel::Result::Scalar5(a2, 0, 0, 0, 0))
+                }
+                _ => {
+                    println!(
+                        "Invalid PlatformCallAbi: {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
+                        op, a2, a3, a4, a5, a6, a7
+                    );
+                    Err(xous_kernel::Error::UnhandledSyscall)
+                }
+            }
+        }
+
+        #[cfg(not(feature = "bao1x"))]
+        SysCall::PlatformSpecific(_a1, _a2, _a3, _a4, _a5, _a6, _a7) => {
+            unimplemented!("No platform specific calls for this platform")
         }
 
         /* https://github.com/betrusted-io/xous-core/issues/90

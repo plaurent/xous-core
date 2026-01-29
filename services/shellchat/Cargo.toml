@@ -8,21 +8,22 @@ version = "0.1.0"
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
 com = { path = "../com" }
-content-plugin-api = { path = "../content-plugin-api" }                     # all content canvas providers must provide this API
+content-plugin-api = { path = "../content-plugin-api" }                   # all content canvas providers must provide this API
 gam = { path = "../gam" }
-graphics-server = { path = "../graphics-server" }
+blitstr2 = { path = "../../libs/blitstr2" }
+ux-api = { path = "../../libs/ux-api" }
 ime-plugin-api = { path = "../ime-plugin-api" }
 ime-plugin-shell = { path = "../ime-plugin-shell" }
 ime-plugin-tts = { path = "../ime-plugin-tts" }
 llio = { path = "../llio" }
 log = "0.4.14"
-log-server = { package = "xous-api-log", version = "0.1.63" }
-ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.63" }
-xous = "0.9.64"
-xous-ipc = "0.10.4"
-xous-names = { package = "xous-api-names", version = "0.9.65" }
+log-server = { package = "xous-api-log", version = "0.1.68" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.69" }
+xous = "0.9.69"
+xous-ipc = "0.10.9"
+xous-names = { package = "xous-api-names", version = "0.9.70" }
 keyboard = { path = "../keyboard" }
-susres = { package = "xous-api-susres", version = "0.9.63" }
+susres = { path = "../../api/xous-api-susres", package = "xous-api-susres" }
 codec = { path = "../codec" }
 sha2 = { version = "0.10.8" }
 digest = "0.10.7"
@@ -30,13 +31,16 @@ aes = { path = "../aes" }
 cipher = "0.4.4"
 spinor = { path = "../spinor" }
 root-keys = { path = "../root-keys" }
+keystore-api = { path = "../../libs/keystore-api", features = ["gen1"] }
 jtag = { path = "../jtag" }
 net = { path = "../net" }
 dns = { path = "../dns" }
 pddb = { path = "../pddb" }
 modals = { path = "../modals" }
 usb-device-xous = { path = "../usb-device-xous" }
-utralib = { version = "0.1.25", optional = true, default-features = false }
+precursor-hal = { path = "../../libs/precursor-hal" }
+
+utralib = { version = "0.1.26", optional = true, default-features = false }
 
 tts-frontend = { path = "../tts" }
 locales = { path = "../../locales" }
@@ -118,9 +122,10 @@ default-features = false
 features = ["rand_core"]
 
 [features]
-precursor = ["utralib/precursor", "sha2/precursor"]
+vexii-test = ["aes/vexii-test"]
+precursor = ["utralib/precursor", "sha2/precursor", "aes/precursor"]
 hosted = ["utralib/hosted", "sha2/hosted", "random-pick"]
-renode = ["utralib/renode", "sha2/renode"]
+renode = ["utralib/renode", "sha2/renode", "aes/renode"]
 debugprint = []
 spinortest = [
 ] # for spinor testing. contra-indicated with PDDB, as it steals memory from the PDDB.

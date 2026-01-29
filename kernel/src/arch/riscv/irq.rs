@@ -33,18 +33,52 @@ static HANDLING_IRQ: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "swap")]
 pub fn is_handling_irq() -> bool { HANDLING_IRQ.load(Ordering::SeqCst) }
 
+#[cfg(not(feature = "vexii-test"))]
 fn sim_read() -> usize {
     let existing: usize;
     unsafe { core::arch::asm!("csrrs {0}, 0x9C0, zero", out(reg) existing) };
     existing
 }
 
+#[cfg(not(feature = "vexii-test"))]
 fn sim_write(new: usize) { unsafe { core::arch::asm!("csrrw zero, 0x9C0, {0}", in(reg) new) }; }
 
+#[cfg(not(feature = "vexii-test"))]
 fn sip_read() -> usize {
     let existing: usize;
     unsafe { core::arch::asm!("csrrs {0}, 0xDC0, zero", out(reg) existing) };
     existing
+}
+
+// using verilator-only as a proxy for the bao1x config;
+// when the flag is off, assume precursor config
+#[cfg(all(feature = "vexii-test", feature = "verilator-only"))]
+use crate::platform::bao1x::{
+    LEGACY_INT_VMEM,
+    legacy_int::{SUPER_MASK, SUPER_PENDING},
+};
+#[cfg(all(feature = "vexii-test", not(feature = "verilator-only")))]
+use crate::platform::precursor::{
+    LEGACY_INT_VMEM,
+    legacy_int::{SUPER_MASK, SUPER_PENDING},
+};
+
+#[cfg(feature = "vexii-test")]
+fn sim_read() -> usize {
+    let legacy_int = utralib::CSR::new(LEGACY_INT_VMEM as *mut u32);
+    legacy_int.r(SUPER_MASK) as usize
+}
+
+#[cfg(feature = "vexii-test")]
+fn sim_write(new: usize) {
+    let mut legacy_int = utralib::CSR::new(LEGACY_INT_VMEM as *mut u32);
+    legacy_int.wo(SUPER_MASK, new as u32);
+}
+
+#[cfg(feature = "vexii-test")]
+fn sip_read() -> usize {
+    let legacy_int = utralib::CSR::new(LEGACY_INT_VMEM as *mut u32);
+    legacy_int.r(SUPER_PENDING) as usize
 }
 
 /// Disable external interrupts
@@ -183,6 +217,7 @@ pub extern "C" fn trap_handler(
     {
         let pid = current_pid();
         let ex = RiscvException::from_regs(sc.bits(), sepc::read(), stval::read());
+        MemoryMapping::current().print_map();
         panic!("KERNEL({}): RISC-V fault: {} - maybe ran out of kernel stack?", pid, ex);
     }
 

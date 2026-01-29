@@ -2,9 +2,10 @@
 #![cfg_attr(target_os = "none", no_main)]
 use core::fmt::Write;
 
-use graphics_server::api::GlyphStyle;
-use graphics_server::{DrawStyle, Gid, PixelColor, Point, Rectangle, TextBounds, TextView};
+use blitstr2::GlyphStyle;
 use num_traits::*;
+use ux_api::minigfx::*;
+use ux_api::service::api::*;
 mod flash_drive;
 
 pub(crate) const SERVER_NAME_TRANSIENTDISK: &str = "_Transient Disk_";
@@ -64,11 +65,11 @@ impl UI {
         self.gam
             .draw_rectangle(
                 self.content,
-                Rectangle::new_with_style(Point::new(0, 0), self.screensize, DrawStyle {
-                    fill_color: Some(PixelColor::Light),
-                    stroke_color: None,
-                    stroke_width: 0,
-                }),
+                Rectangle::new_with_style(
+                    Point::new(0, 0),
+                    self.screensize,
+                    DrawStyle { fill_color: Some(PixelColor::Light), stroke_color: None, stroke_width: 0 },
+                ),
             )
             .expect("can't clear content area");
     }

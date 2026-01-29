@@ -1,14 +1,77 @@
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(not(test), no_std)]
 
+// Vex-II porting notes:
+//
+// Vex-II is currently supported as a "testing" stub. Compatibility to Vex-I is maintained
+// through the "legacy-int" shim, which implements Vex-I style litex interrupt handling and
+// masking through a CSR.
+//
+// ** Interrupts **
+// The final version of Vex-II will introduce a PLIC. This will sit in between the litex
+// interrupt controller and be largely a pass-through in Xous, but is provided so that other
+// OSes which assume PLIC can port more easily to the SoC. This means that the stubs in
+// kernel/src/arch/riscv/irq.rs (sim_read(), sim_write, sip_read()) will need to be re-written
+// to either setup the PLIC and forget it or work the PLIC directly into the handler loop.
+// Tasks:
+//   -[ ] Add PLIC into Vex-ii implementation
+//   -[ ] Refactor kernel/src/arch/riscv/irq.rs to handle this
+//
+// ** MMU **
+// Vex-II includes support for -A and -D flags in the MMU. The current work-around in Xous is
+// to simply set A for all R pages, and D for all W pages. Instead, A/D should be cleared
+// in the loader, and inside the OS when a page is "read" but "A" is missing, A should be
+// set and the read is retried. Likewise, when a page is "written" but "D" is missing,
+// "D" should be set and the write retried. This implementation will allow the MMU to skip
+// writing pages out to swap that are clean, and to also pick only pages that have not been
+// accessed to consider as candidates for swapping out.
+// Tasks:
+//   -[ ] Remove A/D "on by default" in loader/src/phase2.rs/ProgramDescription/Load() - multiple locations
+//   -[ ] Remove A/D "on by default" in kernel/src/arch/riscv/mem.rs/translate_flags()
+//   -[ ] Add handler for A/D trap inside
+//        kernel/src/arch/riscv/irq.rs/trap_handler/RiscvException::StoragePageFault | LoadPage Fault
+//   -[ ] Update swap handler to use the A/D features - not sure exact files, need to research this
+//
+// ** No curve25519 engine **
+// To make space for the Vex-II core the curve25519 engine was gutted. This means there is no signature
+// verification in the boot process. For the final Denarius implementation, this won't be a big impact
+// because there is crypto hardware there on the SoC, but for Precursor validation model this means a lot
+// of the L1 bootloader is stubbed out, and some stub code is put into the loader to "fake" the items
+// now missing due to this omission. These are clearly delineated with a "vexii-test" fetaure flag.
+//
+// ** Clocking differences & TRNG **
+// Vex-II on Precursor runs at 50MHz. This means that all of the other dependent clocks also have
+// to down-clock. This breaks XADC and causes the TrngManager to fail test. Since this is a temporary
+// config, the SoC bypasses the self-test and just causes the system to run in a more or less deterministic
+// mode of operation. The TRNG will come from a different source on Denarius.
+//
+// ** Cache flush **
+// Vex-II implements cmo.flush instructions. This means that the flush routine inside SPINOR needs
+// to be handled differently: flushes need to address a specific address to flush.
+//   -[ ] services/spinor/src/lib.rs/Spinor/patch() has multiple locations where the API is modified
+//        to allow a specific virtual address to be pushed back to the flush routine.
+//
+// ** AES **
+// Vex-II implements compliant AES instructions to the -Zkn standards (unlike Vex-I).
+// The AES library has flags that recognize the "vexii-testing" feature, and implements acceleration
+// for AES-256 (but falls back to software for AES-128). This will need to be revisited regardless
+// for the bao1x/bao1x bring-up.
+//
+// ** Testing features **
+//   -[ ] libs/precursor/hal/src/board/precursors.rs - PDDB_LEN is shortened for vexii-test target
+
+extern crate alloc;
+
 #[macro_use]
 mod args;
 use args::{KernelArgument, KernelArguments};
+#[cfg(feature = "bao1x")]
+use bao1x_api::UUID;
 
 #[cfg_attr(feature = "atsama5d27", path = "platform/atsama5d27/debug.rs")]
 mod debug;
 mod fonts;
-#[cfg(feature = "secboot")]
+#[cfg(all(feature = "secboot", not(feature = "vexii-test")))]
 mod secboot;
 
 #[cfg_attr(feature = "atsama5d27", path = "platform/atsama5d27/asm.rs")]
@@ -16,6 +79,7 @@ mod asm;
 mod bootconfig;
 #[cfg_attr(feature = "atsama5d27", path = "platform/atsama5d27/consts.rs")]
 mod consts;
+mod env;
 mod minielf;
 #[cfg(feature = "resume")]
 mod murmur3;
@@ -25,9 +89,13 @@ mod platform;
 #[cfg(feature = "swap")]
 pub mod swap;
 
+#[cfg(feature = "bao1x")]
+use core::convert::TryInto;
 use core::{mem, ptr, slice};
 
 use asm::*;
+#[cfg(feature = "bao1x")]
+use bao1x_hal::board::{BOOKEND_END, BOOKEND_START};
 use bootconfig::BootConfig;
 use consts::*;
 pub use loader::*;
@@ -47,6 +115,22 @@ const SDBG: bool = false; // swap debug
 
 #[cfg(test)]
 mod test;
+
+// Bao1x needs a heap because the signature checking code assumes its availability.
+// However the heap promises not to allocate any objects that are needed by the kernel,
+// so we stick it in a region in low RAM, just about the statics, and restrict it to
+// just 4k in size. Note that maybe we should strive to avoid the loader from allocating
+// into these regions - but actually, later in the loader, we should avoid using the heaps
+// and most data is done with, and it's nice to be able to reclaim these pages, so we
+// somewhat dangerously tell the loader to go ahead and allocate over this region by
+// telling it has the whole rest of SRAM to stick initial process pages in.
+#[global_allocator]
+static ALLOCATOR: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
+// heap start is selected by looking at the total reserved .data + .bss region in the compiled loader.
+// it hovers at 0x5000 unless I start adding lots of statics to the loader (which there are not).
+pub const HEAP_OFFSET: usize = 0x5000;
+// just a small heap, big enough for us to use alloc to simplify argument processing
+pub const HEAP_LEN: usize = 0x1000;
 
 #[repr(C)]
 pub struct MemoryRegionExtra {
@@ -83,32 +167,293 @@ pub enum IniType {
 /// This function is safe to call exactly once.
 #[export_name = "rust_entry"]
 pub unsafe extern "C" fn rust_entry(signed_buffer: *const usize, signature: u32) -> ! {
-    #[cfg(all(feature = "cramium-soc", not(feature = "verilator-only")))]
     let perclk_freq = crate::platform::early_init(); // sets up PLLs so we're not running at 16MHz...
-    // need to make this "official" for NTO, the feature flag combo below works around some simulation config
-    // conflicts.
-    #[cfg(all(feature = "verilator-only", not(feature = "cramium-mpw")))]
+    // need to make this "official" for bao1x, the feature flag combo below works around some simulation
+    // config conflicts.
+    #[cfg(all(feature = "verilator-only", not(feature = "bao1x-mpw")))]
     platform::coreuser_config();
-
-    #[cfg(not(all(feature = "cramium-soc", not(feature = "verilator-only"))))]
-    let perclk_freq = 0;
-
-    #[cfg(all(feature = "cramium-soc", feature = "updates"))]
-    crate::platform::process_update(perclk_freq);
 
     // initially validate the whole image on disk (including kernel args)
     // kernel args must be validated because tampering with them can change critical assumptions about
     // how data is loaded into memory
-    #[cfg(feature = "secboot")]
+    #[cfg(all(feature = "secboot", not(feature = "vexii-test")))]
     let mut fs_prehash = [0u8; 64];
-    #[cfg(not(feature = "secboot"))]
+    #[cfg(not(all(feature = "secboot", not(feature = "vexii-test"))))]
     let fs_prehash = [0u8; 64];
-    #[cfg(feature = "secboot")]
+    #[cfg(all(feature = "secboot", not(feature = "vexii-test")))]
     if !secboot::validate_xous_img(signed_buffer as *const u32, &mut fs_prehash) {
         loop {}
     };
+
+    #[cfg(all(feature = "vexii-test", not(feature = "verilator-only")))]
+    {
+        // fake the prehash
+        use ed25519_dalek_loader::Digest;
+        #[repr(C)]
+        struct SignatureInFlash {
+            pub version: u32,
+            pub signed_len: u32,
+            pub signature: [u8; 64],
+        }
+        let sig_ptr = signed_buffer as *const SignatureInFlash;
+        let sig: &SignatureInFlash = unsafe { sig_ptr.as_ref().unwrap() };
+        let signed_len = sig.signed_len;
+        let image: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                (signed_buffer as usize + SIGBLOCK_SIZE) as *const u8,
+                signed_len as usize,
+            )
+        };
+        let mut h: sha2_loader::Sha512 = sha2_loader::Sha512::new();
+        h.update(&image);
+        let prehash = h.finalize();
+        fs_prehash.copy_from_slice(prehash.as_slice());
+
+        // ensure the crypto unit is on - necessary for TRNG to operate
+        let mut power = utralib::CSR::new(utralib::utra::power::HW_POWER_BASE as *mut u32);
+        power.rmwf(utralib::utra::power::POWER_CRYPTO_ON, 1);
+        let mut trng = utralib::CSR::new(utralib::utra::trng_server::HW_TRNG_SERVER_BASE as *mut u32);
+        trng.wo(utralib::utra::trng_server::CONTROL, 0x5); // disable avalanche generator
+
+        // debug output on TRNG unit.
+        println!(
+            "trng: cha/{:x} dat/{:x} sta/{:x}",
+            trng.r(utralib::utra::trng_server::CHACHA),
+            trng.r(utralib::utra::trng_server::DATA),
+            trng.r(utralib::utra::trng_server::STATUS)
+        );
+        let trngk = utralib::utra::trng_kernel::HW_TRNG_KERNEL_BASE as *const u32;
+        for i in 0..utralib::utra::trng_kernel::TRNG_KERNEL_NUMREGS {
+            println!("trngk{}: {:x}", i, trngk.add(i).read_volatile())
+        }
+        let trngs = utralib::utra::trng_server::HW_TRNG_SERVER_BASE as *const u32;
+        for i in 0..utralib::utra::trng_server::TRNG_SERVER_NUMREGS {
+            println!("trngs{}: {:x}", i, trngs.add(i).read_volatile())
+        }
+
+        // allow cache flushes to be initiated from supervisor and userspace
+        // I guess this creates a potential sidechannel, but we're not a multitenant
+        // threat model - if someone is running code on the SoC that can trigger
+        // cache flushes to exfil data, we've got bigger problems...?
+        core::arch::asm!(
+            "li   t0, 0x30 | 0x40", // XENVCFG_CBIE_OK | XENVCFG_CBCFE_OK
+            "csrw 0x30a, t0", // allow supervisor
+            "csrw 0x10a, t0", // allow user
+            out("t0") _, // clobber t0
+        );
+    }
+
+    // Initialize the allocator with heap memory range. The heap memory is "throw-away"
+    // so we stick it near the bottom of RAM, with the assumption that the loader process
+    // won't smash over it.
+    #[cfg(feature = "bao1x")]
+    {
+        // heap is needed for bao1x-boot because signature depends on it
+        let heap_start = utralib::HW_SRAM_MEM + HEAP_OFFSET;
+        println!("Setting up heap @ {:x}-{:x}", heap_start, heap_start + HEAP_LEN);
+        unsafe {
+            ALLOCATOR.lock().init(heap_start as *mut u8, HEAP_LEN);
+        }
+    }
+
+    #[cfg(feature = "bao1x")]
+    let mut csprng = bao1x_hal::hardening::Csprng::new();
+    #[cfg(feature = "bao1x")]
+    csprng.random_delay();
+    #[cfg(feature = "bao1x")]
+    // it's security-important to ensure we're running off the PLL
+    bao1x_hal::hardening::check_pll();
+
+    // Run kernel image validation now that the heap is set up.
+    #[cfg(feature = "bao1x")]
+    let detached_app = {
+        use bao1x_api::{PARANOID_MODE, PARANOID_MODE_DUPE, bollard, pubkeys::LOADER_TO_KERNEL};
+        use bao1x_hal::{buram::ERASURE_PROOF_RANGE_BYTES, sigcheck::ERASE_VALUE};
+
+        let owc = bao1x_hal::acram::OneWayCounter::new();
+        let backup = bao1x_hal::buram::BackupManager::new();
+        let (paranoid1, paranoid2) = owc.hardened_get2(PARANOID_MODE, PARANOID_MODE_DUPE).unwrap();
+        let (dev_mode1, dev_mode2) = owc.hardened_get(bao1x_api::DEVELOPER_MODE).unwrap();
+        let (init1, init2) = owc.hardened_get(bao1x_api::IN_SYSTEM_BOOT_SETUP_DONE).unwrap();
+        csprng.random_delay();
+        bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+        // validate using the bao1x signature scheme
+        match bao1x_hal::sigcheck::validate_image(LOADER_TO_KERNEL, None, Some(&mut csprng)) {
+            Ok((key, key_inv, tag, _target)) => {
+                if paranoid1 == 0 && paranoid2 == 0 {
+                    // only print if not in paranoid mode; the DUART output can be used to align a glitch
+                    println!(
+                        "*** Kernel signature check by key @ {}/{}({}) OK ***",
+                        key,
+                        !key_inv,
+                        core::str::from_utf8(&tag).unwrap_or("invalid tag")
+                    );
+                }
+                if key != !key_inv {
+                    bao1x_hal::sigcheck::die_no_std();
+                }
+                // we can't erase keys in the loader, because the keys have already been locked
+                // out at this point. Thus, ensure that the system is already in developer mode.
+                csprng.random_delay();
+                // k is just a nominal slot number. If either match, assume we are dealing with a
+                // developer image.
+                csprng.random_delay();
+                bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+                // this has to gate on keys being initialized, because without key setup nothing gets erased
+                if tag == *bao1x_api::pubkeys::KEYSLOT_INITIAL_TAGS[bao1x_api::pubkeys::DEVELOPER_KEY_SLOT]
+                    || key == bao1x_api::pubkeys::DEVELOPER_KEY_SLOT
+                {
+                    csprng.random_delay();
+                    let erase_proof: &[u8; 32] =
+                        backup.get_slice(ERASURE_PROOF_RANGE_BYTES).try_into().unwrap();
+                    if dev_mode1 == 0 || (erase_proof != &[ERASE_VALUE; 32]) && (init1 != 0) {
+                        if paranoid1 == 0 && paranoid2 == 0 {
+                            println!("{}LOADER.KERNDIE,{}", BOOKEND_START, BOOKEND_END);
+                            println!("Kernel is devkey signed, but system is not in developer mode. Dying!");
+                        }
+                        bao1x_hal::sigcheck::die_no_std();
+                    } else {
+                        println!("{}LOADER.KERNDEV,{}", BOOKEND_START, BOOKEND_END);
+                        println!("Developer key detected on kernel. Proceeding in developer mode!");
+                    }
+                }
+                csprng.random_delay();
+                // this consumes dev_mode2 & !k2 - the alternate version - preventing the check from being
+                // optimized out
+                bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+                if !key_inv == bao1x_api::pubkeys::DEVELOPER_KEY_SLOT {
+                    csprng.random_delay();
+                    let erase_proof: &[u8; 32] =
+                        backup.get_slice(ERASURE_PROOF_RANGE_BYTES).try_into().unwrap();
+                    if dev_mode2 == 0 || (erase_proof != &[ERASE_VALUE; 32] && (init2 != 0)) {
+                        if paranoid1 == 0 && paranoid2 == 0 {
+                            println!("{}LOADER.KERNDIE,{}", BOOKEND_START, BOOKEND_END);
+                            println!("Kernel is devkey signed, but system is not in developer mode. Dying!");
+                        }
+                        bao1x_hal::sigcheck::die_no_std();
+                    } else {
+                        println!("{}LOADER.KERNDEV,{}", BOOKEND_START, BOOKEND_END);
+                        println!("Developer key detected on kernel. Proceeding in developer mode!");
+                    }
+                }
+                bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+                // Why no further hardening / duplicate sig check:
+                //   - At this point, we're locked out of erasing keys anyways. If the adversary can get us to
+                //     run dev keys signed code at this point, we have limited options to do reactive
+                //     security.
+                //   - The "prize" thus for the adversary at this point is to glitch the kernel or keystore
+                //     directly. Need to think through the ramifications of e.g. ASID setting and how to
+                //     harden that. There is no TOCTOU on the sig check versus code run because the keystore
+                //     is always implemented in XIP code.
+                //   - A duplicate sig check would be pretty expensive because the kernel is not small
+            }
+            Err(e) => {
+                println!("Kernel failed signature check. Dying: {:?}", e);
+                println!("{}LOADER.KERNFAIL,{}", BOOKEND_START, BOOKEND_END);
+                bao1x_hal::sigcheck::die_no_std();
+            }
+        }
+
+        if owc.get_decoded::<bao1x_api::BoardTypeCoding>().expect("Board type coding error")
+            == bao1x_api::BoardTypeCoding::Dabao
+        {
+            use bao1x_api::pubkeys::LOADER_TO_DETACHED_APP;
+
+            csprng.random_delay();
+            match bao1x_hal::sigcheck::validate_image(LOADER_TO_DETACHED_APP, None, Some(&mut csprng)) {
+                Ok((key, key_inv, tag, _target)) => {
+                    if paranoid1 == 0 && paranoid2 == 0 {
+                        println!(
+                            "*** Detached app signature check by key @ {}/{}({}) OK ***",
+                            key,
+                            !key_inv,
+                            core::str::from_utf8(&tag).unwrap_or("invalid tag")
+                        );
+                    }
+                    // k is just a nominal slot number. If either match, assume we are dealing with a
+                    // developer image.
+                    if key != !key_inv {
+                        bao1x_hal::sigcheck::die_no_std();
+                    }
+                    csprng.random_delay();
+                    bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+                    if (tag
+                        == *bao1x_api::pubkeys::KEYSLOT_INITIAL_TAGS[bao1x_api::pubkeys::DEVELOPER_KEY_SLOT]
+                        || key == bao1x_api::pubkeys::DEVELOPER_KEY_SLOT)
+                        && (init1 != 0)
+                    {
+                        let erase_proof: &[u8; 32] =
+                            backup.get_slice(ERASURE_PROOF_RANGE_BYTES).try_into().unwrap();
+                        // we can't erase keys in the loader, because the keys have already been locked
+                        // out at this point. Thus, ensure that the system is already in developer mode.
+                        if dev_mode1 == 0 || erase_proof != &[ERASE_VALUE; 32] {
+                            if paranoid1 == 0 && paranoid2 == 0 {
+                                println!("{}LOADER.APPDIE,{}", BOOKEND_START, BOOKEND_END);
+                                println!(
+                                    "Detached app is devkey signed, but system is not in developer mode. Dying!"
+                                );
+                            }
+                            bao1x_hal::sigcheck::die_no_std();
+                        } else {
+                            println!("{}LOADER.APPDEV,{}", BOOKEND_START, BOOKEND_END);
+                            println!("Developer key detected on detached app. Proceeding in developer mode!");
+                        }
+                    }
+                    csprng.random_delay();
+                    bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+                    if (!key_inv == bao1x_api::pubkeys::DEVELOPER_KEY_SLOT) && (init2 != 0) {
+                        let erase_proof: &[u8; 32] =
+                            backup.get_slice(ERASURE_PROOF_RANGE_BYTES).try_into().unwrap();
+                        if dev_mode2 == 0 || erase_proof != &[ERASE_VALUE; 32] {
+                            if paranoid1 == 0 && paranoid2 == 0 {
+                                println!("{}LOADER.APPDIE,{}", BOOKEND_START, BOOKEND_END);
+                                println!(
+                                    "Detached app is devkey signed, but system is not in developer mode. Dying!"
+                                );
+                            }
+                            bao1x_hal::sigcheck::die_no_std();
+                        } else {
+                            println!("{}LOADER.APPDEV,{}", BOOKEND_START, BOOKEND_END);
+                            println!("Developer key detected on detached app. Proceeding in developer mode!");
+                        }
+                    }
+
+                    // Why no further hardening - in theory, it's pretty "safe" to run developer
+                    // images at this point, because kernel isolation should be protecting the keys.
+                    true
+                }
+                Err(_e) => {
+                    println!("{}LOADER.APPFAIL,{}", BOOKEND_START, BOOKEND_END);
+                    println!("No valid detached app found");
+                    false
+                }
+            }
+        } else {
+            // no detached apps on other boards
+            false
+        }
+    };
+
+    #[cfg(feature = "bao1x")]
+    {
+        csprng.random_delay();
+        bao1x_hal::hardening::check_pll();
+        // Follow up the mesh check in loader - it takes 100ms or so for the mesh to settle, we can't afford
+        // to wait that long in boot1.
+        let one_way = bao1x_hal::acram::OneWayCounter::new();
+        bao1x_hal::hardening::mesh_check_and_react(&mut csprng, &one_way);
+    }
+
+    #[cfg(not(feature = "bao1x"))]
+    let detached_app = false;
+
     // the kernel arg buffer is SIG_BLOCK_SIZE into the signed region
-    let arg_buffer = (signed_buffer as u32 + SIGBLOCK_SIZE as u32) as *const usize;
+    #[cfg(not(feature = "bao1x"))]
+    let signature_size = SIGBLOCK_SIZE;
+    #[cfg(feature = "bao1x")]
+    let signature_size = bao1x_api::signatures::SIGBLOCK_LEN;
+    let arg_buffer = (signed_buffer as u32 + signature_size as u32) as *const usize;
+    println!("arg_buffer: {:x}", arg_buffer as usize);
 
     // perhaps later on in these sequences, individual sub-images may be validated
     // against sub-signatures; or the images may need to be re-validated after loading
@@ -116,16 +461,19 @@ pub unsafe extern "C" fn rust_entry(signed_buffer: *const usize, signature: u32)
     // But for now, the basic "validate everything as a blob" is perhaps good enough to
     // armor code-at-rest against front-line patching attacks.
     let kab = KernelArguments::new(arg_buffer);
-    boot_sequence(kab, signature, fs_prehash, perclk_freq);
+    boot_sequence(kab, signature, fs_prehash, perclk_freq, detached_app);
 }
 
-fn boot_sequence(args: KernelArguments, _signature: u32, fs_prehash: [u8; 64], _perclk_freq: u32) -> ! {
+fn boot_sequence(
+    args: KernelArguments,
+    _signature: u32,
+    fs_prehash: [u8; 64],
+    _perclk_freq: u32,
+    detached_app: bool,
+) -> ! {
     // Store the initial boot config on the stack.  We don't know
     // where in heap this memory will go.
     #[allow(clippy::cast_ptr_alignment)] // This test only works on 32-bit systems
-    #[cfg(feature = "platform-tests")]
-    platform::platform_tests();
-
     let mut cfg = BootConfig { base_addr: args.base as *const usize, args, ..Default::default() };
     #[cfg(feature = "swap")]
     println!("Size of BootConfig: {:x}", core::mem::size_of::<BootConfig>());
@@ -136,41 +484,69 @@ fn boot_sequence(args: KernelArguments, _signature: u32, fs_prehash: [u8; 64], _
         cfg.swap_hal = SwapHal::new(&cfg, _perclk_freq);
         read_swap_config(&mut cfg);
     }
+    if detached_app {
+        read_detached_app_config(&mut cfg);
+    }
 
     // check to see if we are recovering from a clean suspend or not
     #[cfg(feature = "resume")]
     let (clean, was_forced_suspend, susres_pid) = check_resume(&mut cfg);
     #[cfg(not(feature = "resume"))]
-    let clean = {
-        // cold boot path
-        println!("No suspend marker found, doing a cold boot!");
-        #[cfg(feature = "simulation-only")]
-        println!("Configured for simulation. Skipping RAM clear!");
-        #[cfg(not(any(feature = "cramium-soc", feature = "cramium-fpga")))]
-        // cramium target clears RAM with assembly routine on boot
-        clear_ram(&mut cfg);
-        phase_1(&mut cfg);
-        phase_2(&mut cfg, &fs_prehash);
-        #[cfg(any(feature = "debug-print", feature = "swap"))]
-        if VDBG || SDBG {
-            check_load(&mut cfg);
-        }
-        println!("done initializing for cold boot.");
-        false
-    };
-    #[cfg(feature = "resume")]
+    let clean = false;
     if !clean {
+        #[cfg(not(feature = "bao1x"))]
+        {
+            // setup heap so we can make env. It's not set up earlier in precursor environment
+            // because it's not safe to smash memory on a resume
+            let heap_start = utralib::HW_SRAM_EXT_MEM + HEAP_OFFSET;
+            // for precursor, clear this region, as it is only cleared later in the boot process
+            let ram_init = utralib::HW_SRAM_EXT_MEM as *mut u32;
+            for i in 0..(HEAP_LEN + HEAP_OFFSET) / size_of::<u32>() {
+                unsafe { ram_init.add(i).write_volatile(0) };
+            }
+            println!("Setting up heap @ {:x}-{:x}", heap_start, heap_start + HEAP_LEN);
+            unsafe {
+                ALLOCATOR.lock().init(heap_start as *mut u8, HEAP_LEN);
+            }
+        }
+        // build the environment variables - requires heap
+        let mut env_variables = crate::env::EnvVariables::new();
+        env_variables.add_var("ROOT_FILESYSTEM_HASH", &crate::env::to_hex_ascii(&fs_prehash));
+
+        #[cfg(feature = "bao1x")]
+        {
+            let owc = bao1x_hal::acram::OneWayCounter::new();
+            let slot_mgr = bao1x_hal::acram::SlotManager::new();
+            let sn = bao1x_hal::usb::derive_usb_serial_number(&owc, &slot_mgr);
+            env_variables.add_var("PUBLIC_SERIAL", &sn);
+            let hex_uuid = hex::encode(slot_mgr.read(&UUID).unwrap());
+            env_variables.add_var("UUID", &hex_uuid);
+        }
+
         // cold boot path
         println!("No suspend marker found, doing a cold boot!");
         clear_ram(&mut cfg);
-        phase_1(&mut cfg);
-        phase_2(&mut cfg, &fs_prehash);
+        phase_1(&mut cfg, detached_app);
+        phase_2(&mut cfg, env_variables);
         #[cfg(any(feature = "debug-print", feature = "swap"))]
         if VDBG || SDBG {
             check_load(&mut cfg);
         }
         println!("done initializing for cold boot.");
-    } else {
+        #[cfg(feature = "bao1x")]
+        {
+            // cleanup the leaked key to the backup registers
+            let mut buram = bao1x_hal::buram::BackupManager::new();
+            bao1x_api::bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+            // safety: this specific region is not part of the hash-checked register bank
+            unsafe {
+                buram.store_slice_no_hash(&[0u8; 32], bao1x_hal::buram::ERASURE_PROOF_RANGE_BYTES.start);
+            }
+            bao1x_api::bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+        }
+    }
+    #[cfg(feature = "resume")]
+    if clean {
         // resume path
         use utralib::generated::*;
         // flip my self-power-on switch: otherwise, I might turn off before the whole sequence is finished.
@@ -214,6 +590,18 @@ fn boot_sequence(args: KernelArguments, _signature: u32, fs_prehash: [u8; 64], _
     // condense debug and resume arguments into a single register, so we have space for XPT
     let debug_resume = if cfg.debug { 0x1 } else { 0x0 } | if clean { 0x2 } else { 0x0 };
     if !clean {
+        #[cfg(feature = "bao1x")]
+        {
+            // clean it twice, just in case the first cleanup was glitched past
+            let mut buram = bao1x_hal::buram::BackupManager::new();
+            bao1x_api::bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+            // safety: this specific region is not part of the hash-checked register bank
+            unsafe {
+                buram.store_slice_no_hash(&[0u8; 32], bao1x_hal::buram::ERASURE_PROOF_RANGE_BYTES.start);
+            }
+            bao1x_api::bollard!(bao1x_hal::sigcheck::die_no_std, 4);
+        }
+
         // The MMU should be set up now, and memory pages assigned to their
         // respective processes.
         let krn_struct_start = cfg.sram_start as usize + cfg.sram_size - cfg.init_size + cfg.swap_offset;
@@ -293,12 +681,15 @@ fn boot_sequence(args: KernelArguments, _signature: u32, fs_prehash: [u8; 64], _
 
         #[cfg(not(feature = "atsama5d27"))]
         {
-            #[cfg(not(any(feature = "cramium-soc", feature = "cramium-fpga")))]
+            #[cfg(not(any(feature = "bao1x")))]
             {
                 // uart mux only exists on the FPGA variant
                 use utralib::generated::*;
                 let mut gpio_csr = CSR::new(utra::gpio::HW_GPIO_BASE as *mut u32);
+                #[cfg(not(feature = "early-printk"))]
                 gpio_csr.wfo(utra::gpio::UARTSEL_UARTSEL, 1); // patch us over to a different UART for debug (1=LOG 2=APP, 0=KERNEL(hw reset default))
+                #[cfg(feature = "early-printk")]
+                gpio_csr.wfo(utra::gpio::UARTSEL_UARTSEL, 0); // on early printk, leave us on the kernel owning the UART
             }
 
             start_kernel(
@@ -427,7 +818,7 @@ pub fn read_initial_config(cfg: &mut BootConfig) {
 #[cfg(feature = "swap")]
 pub fn read_swap_config(cfg: &mut BootConfig) {
     // Read in the swap arguments: should be located at beginning of the encrypted image in swap.
-    let page0 = cfg.swap_hal.as_mut().unwrap().decrypt_src_page_at(0x0);
+    let page0 = cfg.swap_hal.as_mut().unwrap().decrypt_src_page_at(0x0).unwrap();
     let swap_args = KernelArguments::new(page0.as_ptr() as *const usize);
     for tag in swap_args.iter() {
         if tag.name == u32::from_le_bytes(*b"IniS") {
@@ -442,6 +833,18 @@ pub fn read_swap_config(cfg: &mut BootConfig) {
             }
         } else {
             println!("Unhandled argument in swap: {:x}", tag.name);
+        }
+    }
+}
+
+pub fn read_detached_app_config(cfg: &mut BootConfig) {
+    let app_args = KernelArguments::new(
+        (bao1x_api::offsets::dabao::APP_RRAM_START + bao1x_api::signatures::SIGBLOCK_LEN) as *const usize,
+    );
+    for tag in app_args.iter() {
+        if tag.name == u32::from_le_bytes(*b"IniF") {
+            assert!(tag.size >= 4, "invalid Init size");
+            cfg.init_process_count += 1;
         }
     }
 }
@@ -505,19 +908,23 @@ fn check_resume(cfg: &mut BootConfig) -> (bool, bool, u32) {
 /// Clears all of RAM. This is a must for systems that have suspend-to-RAM for security.
 /// It is configured to be skipped in simulation only, to accelerate the simulation times
 /// since we can initialize the RAM to zero in simulation.
-#[cfg(all(not(feature = "simulation-only"), not(feature = "cramium-soc")))]
+#[cfg(all(not(feature = "simulation-only")))]
 fn clear_ram(cfg: &mut BootConfig) {
     // clear RAM on a cold boot.
     // RAM is persistent and battery-backed. This means secret material could potentially
     // stay there forever, if not explicitly cleared. This clear adds a couple seconds
     // to a cold boot, but it's probably worth it. Note that it doesn't happen on a suspend/resume.
     let ram: *mut u32 = cfg.sram_start as *mut u32;
+    #[cfg(feature = "swap")]
+    let clear_limit = GUARD_MEMORY_BYTES;
+    #[cfg(not(feature = "swap"))]
     let clear_limit = ((4096 + core::mem::size_of::<BootConfig>()) + 4095) & !4095;
     if VDBG {
         println!("Stack clearing limit: {:x}", clear_limit);
     }
+    let clear_start = HEAP_OFFSET + HEAP_LEN;
     unsafe {
-        for addr in 0..(cfg.sram_size - clear_limit) / 4 {
+        for addr in clear_start..(cfg.sram_size - clear_limit) / 4 {
             // 8k is reserved for our own stack
             ram.add(addr).write_volatile(0);
         }

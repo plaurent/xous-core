@@ -4,7 +4,7 @@
 use core::num::NonZeroU8;
 
 use xous_kernel::MemoryRange;
-use xous_kernel::arch::ProcessStartup;
+use xous_kernel::arch::*;
 // use core::mem;
 use xous_kernel::{
     CID, Error, MemoryAddress, Message, PID, ProcessInit, SID, TID, ThreadInit, pid_from_usize,
@@ -64,6 +64,20 @@ pub struct SystemServices {
 
     /// A table of all servers in the system
     pub servers: [Option<Server>; MAX_SERVER_COUNT],
+}
+
+pub enum PostActivateOp<'a> {
+    None,
+    SetThreadResult {
+        result: xous_kernel::Result,
+    },
+    RememberServerMessage {
+        sidx: usize,
+        current_pid: PID,
+        current_thread: TID,
+        message: &'a Message,
+        client_address: Option<MemoryAddress>,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -219,11 +233,11 @@ pub struct ProcessInner {
 impl Default for ProcessInner {
     fn default() -> Self {
         ProcessInner {
-            mem_default_base: arch::mem::DEFAULT_BASE,
-            mem_default_last: arch::mem::DEFAULT_BASE,
-            mem_message_base: arch::mem::DEFAULT_MESSAGE_BASE,
-            mem_message_last: arch::mem::DEFAULT_MESSAGE_BASE,
-            mem_heap_base: arch::mem::DEFAULT_HEAP_BASE,
+            mem_default_base: DEFAULT_BASE,
+            mem_default_last: DEFAULT_BASE,
+            mem_message_base: DEFAULT_MESSAGE_BASE,
+            mem_message_last: DEFAULT_MESSAGE_BASE,
+            mem_heap_base: DEFAULT_HEAP_BASE,
             mem_heap_size: 0,
             mem_heap_max: if cfg!(feature = "big-heap") { 1024 * 1024 * 12 } else { 1024 * 512 },
             connection_map: [None; 32],
@@ -713,9 +727,15 @@ impl SystemServices {
         // causing an instruction fault and exiting the interrupt.
         ArchProcess::with_current_mut(|arch_process| {
             let sp = if pid.get() == 1 {
-                arch::mem::EXCEPTION_STACK_TOP
+                EXCEPTION_STACK_TOP
             } else {
-                arch_process.current_thread().stack_pointer()
+                match cb_type {
+                    // for swap, we have to provide our own stack, because we can have a fault
+                    // *inside* an IRQ handler, which leaves us with no stack (as the IRQ handler
+                    // is already planning on vampiring off an existing thread's stack).
+                    CallbackType::Swap(_) | CallbackType::SwapInIrq(_) => SWAP_STACK_TOP_VADDR,
+                    _ => arch_process.current_thread().stack_pointer(),
+                }
             };
 
             // Activate the current context
@@ -1042,13 +1062,21 @@ impl SystemServices {
 
     /// Resume the given process, picking up exactly where it left off. If the
     /// process is in the Setup state, set it up and then resume.
+    ///
+    /// `lazy_arg` is an argument that should be placed in the activated target process,
+    ///   after the activation is complete. The purpose of this is to reduce the incidence
+    ///   of the idiom where we swap into the a target process' memory state just to emplace
+    ///   a small argument or piece of data, only to swap back to then return to it on activation.
+    ///   This optimization improves message latency by around 15% in the fast path.
     pub fn activate_process_thread(
         &mut self,
         previous_tid: TID,
         new_pid: PID,
         mut new_tid: TID,
         can_resume: bool,
+        lazy_arg: PostActivateOp,
     ) -> Result<TID, xous_kernel::Error> {
+        let mut sender_idx: Option<usize> = None;
         let previous_pid = self.current_pid();
 
         #[cfg(feature = "debug-print")]
@@ -1060,59 +1088,63 @@ impl SystemServices {
 
         // Save state if the PID has changed.  This will activate the new memory
         // space.
-        let new = self.get_process_mut(new_pid)?;
         if new_pid != previous_pid {
-            klog!("New process original state: {:?}", new.state);
+            {
+                let new = self.get_process_mut(new_pid)?;
+                klog!("New process original state: {:?}", new.state);
 
-            // Ensure the new process can be run.
-            match new.state {
-                ProcessState::Free => {
-                    klog!("PID {} was free", new_pid);
-                    return Err(xous_kernel::Error::ProcessNotFound);
-                }
-                ProcessState::Setup(_) | ProcessState::Allocated => new_tid = INITIAL_TID,
-                ProcessState::Exception(_) => {
-                    new_tid = crate::arch::process::EXCEPTION_TID;
-                    // new.current_thread = new_tid;
-                }
-                ProcessState::Ready(x) => {
-                    // If no new context is specified, take the previous
-                    // context.  If that is not runnable, do a round-robin
-                    // search for the next available context.
-                    assert!(x != 0, "process was {:?} but had no runnable threads", new.state);
-                    if new_tid == 0 {
-                        new_tid = Self::find_next_thread(x, new.current_thread);
-                    }
-                    if x & (1 << new_tid) == 0 {
-                        println!(
-                            "process state is {:?}, but new thread {} is not runnable",
-                            new.state, new_tid
-                        );
+                // Ensure the new process can be run.
+                match new.state {
+                    ProcessState::Free => {
+                        klog!("PID {} was free", new_pid);
                         return Err(xous_kernel::Error::ProcessNotFound);
                     }
-                    new.current_thread = new_tid as _;
-                }
-                ProcessState::Running(_) => {
-                    panic!("process was running even though the pid was different")
-                }
-                #[cfg(feature = "gdb-stub")]
-                ProcessState::Debug(_) | ProcessState::DebugIrq(_) => {
-                    return Err(xous_kernel::Error::ProcessNotFound);
-                }
-                ProcessState::Sleeping | ProcessState::BlockedException(_) => {
-                    // println!("PID {} was sleeping or being debugged", new_pid);
-                    return Err(xous_kernel::Error::ProcessNotFound);
+                    ProcessState::Setup(_) | ProcessState::Allocated => new_tid = INITIAL_TID,
+                    ProcessState::Exception(_) => {
+                        new_tid = crate::arch::process::EXCEPTION_TID;
+                        // new.current_thread = new_tid;
+                    }
+                    ProcessState::Ready(x) => {
+                        // If no new context is specified, take the previous
+                        // context.  If that is not runnable, do a round-robin
+                        // search for the next available context.
+                        assert!(x != 0, "process was {:?} but had no runnable threads", new.state);
+                        if new_tid == 0 {
+                            new_tid = Self::find_next_thread(x, new.current_thread);
+                        }
+                        if x & (1 << new_tid) == 0 {
+                            println!(
+                                "process state is {:?}, but new thread {} is not runnable",
+                                new.state, new_tid
+                            );
+                            return Err(xous_kernel::Error::ProcessNotFound);
+                        }
+                        new.current_thread = new_tid as _;
+                    }
+                    ProcessState::Running(_) => {
+                        panic!("process was running even though the pid was different")
+                    }
+                    #[cfg(feature = "gdb-stub")]
+                    ProcessState::Debug(_) | ProcessState::DebugIrq(_) => {
+                        return Err(xous_kernel::Error::ProcessNotFound);
+                    }
+                    ProcessState::Sleeping | ProcessState::BlockedException(_) => {
+                        // println!("PID {} was sleeping or being debugged", new_pid);
+                        return Err(xous_kernel::Error::ProcessNotFound);
+                    }
                 }
             }
 
             // Perform the actual switch to the new memory space.  From this
             // point onward, we will need to activate the previous memory space
             // if we encounter an error.
+            let new = self.get_process(new_pid)?;
             new.mapping.activate()?;
 
             // Set up the new process, if necessary.  Remove the new thread from
             // the list of ready threads.
             // let old_state = new.state;
+            let new = self.get_process_mut(new_pid)?;
             new.state = match new.state {
                 ProcessState::Setup(thread_init) => {
                     // klog!("Setting up new process...");
@@ -1141,6 +1173,27 @@ impl SystemServices {
             };
             // log_process_update(file!(), line!(), new, old_state);
             new.activate()?;
+            match lazy_arg {
+                PostActivateOp::RememberServerMessage {
+                    sidx,
+                    current_pid,
+                    current_thread,
+                    message,
+                    client_address,
+                } => {
+                    let si = {
+                        let server =
+                            self.server_from_sidx_mut(sidx).expect("couldn't re-discover server index");
+                        server.queue_response(current_pid, current_thread, message, client_address)?
+                    };
+                    sender_idx = Some(si);
+                }
+                PostActivateOp::SetThreadResult { result } => {
+                    let mut arch_process = ArchProcess::current();
+                    arch_process.set_thread_result(new_tid, result);
+                }
+                PostActivateOp::None => (),
+            }
 
             // Mark the previous process as ready to run, since we just switched
             // away
@@ -1196,6 +1249,26 @@ impl SystemServices {
             //     can_resume
             // );
         } else {
+            match lazy_arg {
+                PostActivateOp::RememberServerMessage {
+                    sidx,
+                    current_pid,
+                    current_thread,
+                    message,
+                    client_address,
+                } => {
+                    let si = {
+                        let server =
+                            self.server_from_sidx_mut(sidx).expect("couldn't re-discover server index");
+                        server.queue_response(current_pid, current_thread, message, client_address)?
+                    };
+                    sender_idx = Some(si);
+                }
+                PostActivateOp::SetThreadResult { result } => {
+                    ArchProcess::current().set_thread_result(new_tid, result);
+                }
+                PostActivateOp::None => (),
+            }
             let new = self.get_process_mut(new_pid)?;
 
             // If we wanted to switch to a "new" thread, and it's the same
@@ -1253,7 +1326,9 @@ impl SystemServices {
             self.get_process_mut(new_pid)?.state
         );
 
-        Ok(new_tid)
+        // return argument based upon the lazy_arg type
+        // we get "lucky" in that sender_idx *and* new_tid are both `usize` types underneath
+        Ok(sender_idx.unwrap_or(new_tid))
     }
 
     /// Move memory from one process to another.
@@ -1304,7 +1379,7 @@ impl SystemServices {
         if dest_virt as usize & 0xfff != 0 {
             return Err(xous_kernel::Error::BadAddress);
         }
-        if (dest_virt as usize) + len > crate::arch::mem::USER_AREA_END {
+        if (dest_virt as usize) + len > USER_AREA_END {
             return Err(xous_kernel::Error::BadAddress);
         }
 
@@ -1313,7 +1388,7 @@ impl SystemServices {
         // Iterators and `ptr.wrapping_add()` operate on `usize` types,
         // which effectively lowers the `len`.
         let usize_len = len / core::mem::size_of::<usize>();
-        let usize_page = crate::mem::PAGE_SIZE / core::mem::size_of::<usize>();
+        let usize_page = PAGE_SIZE / core::mem::size_of::<usize>();
 
         // If the dest and src PID is the same, do nothing.
         if current_pid == dest_pid {
@@ -1420,7 +1495,7 @@ impl SystemServices {
         // Iterators and `ptr.wrapping_add()` operate on `usize` types,
         // which effectively lowers the `len`.
         let usize_len = len / core::mem::size_of::<usize>();
-        let usize_page = crate::mem::PAGE_SIZE / core::mem::size_of::<usize>();
+        let usize_page = xous_kernel::arch::PAGE_SIZE / core::mem::size_of::<usize>();
 
         let current_pid = self.current_pid();
         // If it's within the same process, ignore the move operation and
@@ -1551,7 +1626,7 @@ impl SystemServices {
         // Iterators and `ptr.wrapping_add()` operate on `usize` types,
         // which effectively lowers the `len`.
         let usize_len = len / core::mem::size_of::<usize>();
-        let usize_page = crate::mem::PAGE_SIZE / core::mem::size_of::<usize>();
+        let usize_page = PAGE_SIZE / core::mem::size_of::<usize>();
 
         let current_pid = self.current_pid();
         // If it's within the same process, ignore the operation.
@@ -1725,7 +1800,7 @@ impl SystemServices {
         if arch_process.thread_exists(join_tid) {
             // The target thread exists -- put this thread to sleep
             let ppid = self.get_process(pid).unwrap().ppid;
-            self.activate_process_thread(tid, ppid, 0, false)
+            self.activate_process_thread(tid, ppid, 0, false, PostActivateOp::None)
                 .map(|_| Ok(xous_kernel::Result::ResumeProcess))
                 .unwrap_or(Err(xous_kernel::Error::ProcessNotFound))
         } else {
@@ -1765,7 +1840,7 @@ impl SystemServices {
                 #[cfg(baremetal)]
                 // Allocate a single page for the server queue
                 let backing = crate::mem::MemoryManager::with_mut(|mm| unsafe {
-                    MemoryRange::new(mm.map_zeroed_page(pid, false)? as _, crate::arch::mem::PAGE_SIZE)
+                    MemoryRange::new(mm.map_zeroed_page(pid, false)? as _, PAGE_SIZE)
                 })?;
 
                 #[cfg(not(baremetal))]

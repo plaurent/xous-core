@@ -1,6 +1,9 @@
 #[cfg(feature = "ditherpunk")]
 use gam::Tile;
+#[cfg(not(any(feature = "hosted-baosec", feature = "board-baosec")))]
 use gam::modal::*;
+#[cfg(any(feature = "hosted-baosec", feature = "board-baosec"))]
+use ux_api::widgets::*;
 
 pub(crate) const SERVER_NAME_MODALS: &str = "_Modal Dialog Server_";
 
@@ -9,6 +12,7 @@ pub struct Validation {
     pub text: TextEntryPayload,
     pub opcode: u32,
 }
+#[allow(dead_code)]
 #[derive(num_derive::FromPrimitive, num_derive::ToPrimitive, Debug)]
 pub(crate) enum ValidationOp {
     Validate,
@@ -24,6 +28,7 @@ pub struct ManagedPromptWithFixedResponse {
 pub struct ManagedListItem {
     pub token: [u32; 4],
     pub item: ItemName,
+    pub state: bool,
 }
 
 #[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
@@ -167,4 +172,9 @@ pub(crate) enum Opcode {
     Gutter = 29,
 
     Quit = 30,
+
+    #[cfg(feature = "no-gam")]
+    ReleaseFocus = 1024,
+    #[cfg(feature = "no-gam")]
+    AcquireFocus = 1025,
 }

@@ -1,6 +1,6 @@
 [package]
 name = "utralib"
-version = "0.1.25"
+version = "0.1.26"
 authors = ["Sean Cross <sean@xobs.io>", "bunnie <bunnie@kosagi.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ homepage = "https://betrusted.io/xous-book/"
 [dependencies]
 
 [build-dependencies]
-svd2utra = "0.1.23"
+svd2utra = "0.1.24"
 
 # UTRA pre-generated version tracker
 [features]
@@ -47,9 +47,14 @@ renode = []
 # ATSAMA5D27 ARMv7A SoC
 atsama5d27 = []
 
-# Cramium SoC & FPGA model
-cramium-soc = []
-cramium-fpga = []
+# Baochip-1x SoC & FPGA model
+bao1x = []
+# Emulation for bao1x
+hosted-baosec = []
+
+# Arty targets
+artybio = []
+artyvexii = []
 
 # Specify a Precusor default so that we can pass packaging CI tests.
 default = ["hosted"]

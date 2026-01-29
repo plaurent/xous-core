@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use api::*;
 use num_traits::*;
+use precursor_hal::board::*;
 use xous::{msg_blocking_scalar_unpack, msg_scalar_unpack};
 use xous_ipc::Buffer;
 
@@ -569,6 +570,7 @@ mod implementation {
         /// Not sure why :-/, but, I stopped caring because ".word 0x500F" works!
         #[inline]
         fn flush_dcache(&self, _start: u32, _len: u32) {
+            #[cfg(not(feature = "vexii-test"))]
             unsafe {
                 #[rustfmt::skip]
                 core::arch::asm!(
@@ -582,6 +584,22 @@ mod implementation {
                     "nop",
                     "nop",
                     "nop",
+                );
+            }
+            #[cfg(feature = "vexii-test")]
+            unsafe {
+                // fence.i / fence invalidates only i-cache, and syncs write-back of d-cache but
+                // d-cache is not invalidated. We need to explicitly invalidate d-cache range, which
+                // means we need to know what addresses we're updating. The arguments to the flush
+                // instruction need to be virtual addresses in the process space of the process
+                // that might be reading the data. Thus, we do not implement the invalidation here,
+                // but instead we do it in the lib.rs file of the spinor crate, so that the caller
+                // is doing the invalidation within their address space after interactions with the
+                // spinor server have occurred.
+                #[rustfmt::skip]
+                core::arch::asm!(
+                    "fence.i",
+                    "fence",
                 );
             }
             // augment with manual flushing, because the above instruction didn't seem to do the trick??
@@ -929,10 +947,9 @@ fn main() -> ! {
                 let mut wr = buffer.to_original::<WriteRegion, _>().unwrap();
                 let mut authorized = true;
                 if let Some(st) = soc_token {
-                    if staging_write_protect
-                        && ((wr.start >= xous::SOC_REGION_LOC) && (wr.start < xous::LOADER_LOC))
+                    if staging_write_protect && ((wr.start >= SOC_REGION_LOC) && (wr.start < LOADER_LOC))
                         || !staging_write_protect
-                            && ((wr.start >= xous::SOC_REGION_LOC) && (wr.start < xous::SOC_STAGING_GW_LOC))
+                            && ((wr.start >= SOC_REGION_LOC) && (wr.start < SOC_STAGING_GW_LOC))
                     {
                         // if only the holder of the ID that matches the SoC token can write to the SOC flash
                         // area other areas are not as strictly controlled because
@@ -972,9 +989,7 @@ fn main() -> ! {
                 let mut wr = buffer.to_original::<BulkErase, _>().unwrap();
                 // bounds check to within the PDDB region for bulk erases. Please use standard patching for
                 // other regions.
-                let authorized = if (wr.start >= xous::PDDB_LOC)
-                    && ((wr.start + wr.len) <= (xous::PDDB_LOC + xous::PDDB_LEN))
-                {
+                let authorized = if (wr.start >= PDDB_LOC) && ((wr.start + wr.len) <= (PDDB_LOC + PDDB_LEN)) {
                     true
                 } else {
                     false

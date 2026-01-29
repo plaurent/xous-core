@@ -2,12 +2,16 @@ use std::thread;
 
 #[cfg(feature = "ditherpunk")]
 use bitmap::PixelType;
+#[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
 use gam::*;
+#[cfg(any(feature = "hosted-baosec", feature = "bao1x"))]
+use ux_api::widgets::*;
 use xous_names::XousNames;
 
 use super::*;
 
 const RADIO_TEST: [&'static str; 4] = ["zebra", "cow", "horse", "cat"];
+const TEST_LOC: u32 = 0x01D8_0000; // this is PDDB_LOC from the precursor hardware config, chosen for "accurate" test case
 
 const CHECKBOX_TEST: [&'static str; 5] =
     ["happy", "😃", "安", "peace &\n tranquility", "Once apon a time, in a land far far away, there was a"];
@@ -32,7 +36,7 @@ pub fn spawn_test() {
             log::info!(
                 "modal data: {:#?}",
                 modals
-                    .alert_builder("Four items with maybe defaults. Press select to close.")
+                    .alert_builder("Four items.")
                     .field(Some("first".to_string()), None)
                     .field(Some("second".to_string()), None)
                     .field(None, None)
@@ -44,14 +48,9 @@ pub fn spawn_test() {
             // The start and end items are deliberately structured to be not zero-indexed; the use of PDDB_LOC
             // is just a convenient global constant.
             modals
-                .start_progress(
-                    "Progress Quest",
-                    xous::PDDB_LOC,
-                    xous::PDDB_LOC + 64 * 1024 * 128,
-                    xous::PDDB_LOC,
-                )
+                .start_progress("Progress Quest", TEST_LOC, TEST_LOC + 64 * 1024 * 128, TEST_LOC)
                 .expect("couldn't raise progress bar");
-            for i in (xous::PDDB_LOC..xous::PDDB_LOC + 64 * 1024 * 128).step_by(64 * 1024 * 16) {
+            for i in (TEST_LOC..TEST_LOC + 64 * 1024 * 128).step_by(64 * 1024 * 16) {
                 modals.update_progress(i).expect("couldn't update progress bar");
                 tt.sleep_ms(100).unwrap();
             }
@@ -124,7 +123,11 @@ pub fn spawn_test() {
 
             // 2. test the modal dialog box function
             log::info!("test text input");
-            match modals.alert_builder("Test input").field(None, Some(test_validator)).build() {
+            match modals
+                .alert_builder("Enter a number")
+                .field(Some("-0.0".to_string()), Some(test_validator))
+                .build()
+            {
                 Ok(text) => {
                     log::info!("Input: {}", text.content()[0].content);
                 }
@@ -202,8 +205,8 @@ fn clifford() -> Img {
 
 fn test_validator(input: &TextEntryPayload) -> Option<String> {
     let text_str = input.as_str();
-    match text_str.parse::<u32>() {
+    match text_str.parse::<f32>() {
         Ok(_input_int) => None,
-        _ => return Some(String::from("enter an integer value")),
+        _ => return Some(String::from("enter a number")),
     }
 }

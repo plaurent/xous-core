@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
-#[cfg(feature = "cramium-soc")]
-use cram_hal_service::trng;
-use graphics_server::*;
+#[cfg(feature = "bao1x")]
+use bao1x_hal_service::trng;
+use ux_api::minigfx::*;
+use ux_api::service::api::*;
 
 use crate::api::CanvasType;
 use crate::contexts::MISC_CONTEXT_DEFAULT_TRUST;
@@ -57,7 +58,7 @@ impl LayoutApi for Framebuffer {
     fn resize_height(
         &mut self,
         _gfx: &graphics_server::Gfx,
-        new_height: i16,
+        new_height: isize,
         _status_canvas: &Rectangle,
         canvases: &mut HashMap<Gid, Canvas>,
     ) -> Result<Point, xous::Error> {

@@ -1,6 +1,6 @@
 use std::env;
 use std::fs::OpenOptions;
-#[cfg(not(feature = "hosted"))]
+#[cfg(not(any(feature = "hosted", feature = "hosted-baosec")))]
 use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
@@ -88,8 +88,9 @@ fn main() {
         "hosted",
         "renode",
         "atsama5d27",
-        "cramium-soc",
-        "cramium-fpga"
+        "bao1x",
+        "artybio",
+        "artyvexii"
     );
 
     #[cfg(feature = "precursor")]
@@ -121,15 +122,24 @@ fn main() {
     #[cfg(feature = "atsama5d27")]
     let generated_filename = "src/generated/atsama5d27.rs";
 
-    #[cfg(feature = "cramium-soc")]
-    let svd_filenames = vec!["cramium/core.svd", "cramium/daric.svd"];
-    #[cfg(feature = "cramium-soc")]
-    let generated_filename = "src/generated/cramium_soc.rs";
+    #[cfg(feature = "bao1x")]
+    let mut svd_filenames = vec!["bao1x/core.svd", "bao1x/bao1x_peri.svd"];
+    #[cfg(feature = "bao1x")]
+    if std::path::Path::new("bao1x/soc.svd").exists() {
+        svd_filenames.push("bao1x/soc.svd");
+    }
+    #[cfg(feature = "bao1x")]
+    let generated_filename = "src/generated/bao1x.rs";
 
-    #[cfg(feature = "cramium-fpga")]
-    let svd_filenames = vec!["cramium/soc.svd", "cramium/core.svd", "cramium/daric.svd"];
-    #[cfg(feature = "cramium-fpga")]
-    let generated_filename = "src/generated/cramium_fpga.rs";
+    #[cfg(feature = "artybio")]
+    let svd_filenames = vec!["artybio/soc.svd", "artybio/bio.svd"];
+    #[cfg(feature = "artybio")]
+    let generated_filename = "src/generated/artybio.rs";
+
+    #[cfg(feature = "artyvexii")]
+    let svd_filenames = vec!["artyvexii/soc.svd"];
+    #[cfg(feature = "artyvexii")]
+    let generated_filename = "src/generated/artyvexii.rs";
 
     // ----- control file generation and rebuild sequence -----
     // check and see if the configuration has changed since the last build. This should be
@@ -137,7 +147,7 @@ fn main() {
     //
     // Debug this using:
     //  $env:CARGO_LOG="cargo::core::compiler::fingerprint=info"
-    #[cfg(not(feature = "hosted"))]
+    #[cfg(not(any(feature = "hosted", feature = "hosted-baosec")))]
     {
         let mut svd_files = Vec::new();
         for svd in svd_filenames.iter() {
@@ -180,7 +190,7 @@ fn main() {
             writeln!(svd_file, "utralib/{}", svd).unwrap();
         }
     }
-    #[cfg(feature = "hosted")]
+    #[cfg(any(feature = "hosted", feature = "hosted-baosec"))]
     {
         let svd_path = out_dir().join("../../SVD_PATH");
         let mut svd_file = OpenOptions::new().create(true).write(true).truncate(true).open(svd_path).unwrap();

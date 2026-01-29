@@ -21,24 +21,30 @@ pub const FLG_A: usize = 0x40;
 pub const FLG_D: usize = 0x80;
 pub const FLG_P: usize = 0x200;
 
+pub const SWAP_FLG_WIRED: u32 = 0x1_00;
+// Note: this flag is currently not used. It was an aborted attempt to do
+// auto-write on dirty page but due to lack of hw synchronization we couldn't
+// guarantee atomicity. Flag can be removed or re-used in the future if another
+// attempt is tried on a system that has hardware dirty page updating.
+pub const SWAP_FLG_DIRTY: u32 = 0x2_00;
 pub const FLG_SWAP_USED: u32 = 0x8000_0000;
 
 // Locate the hard-wired IFRAM allocations for UDMA
 #[allow(dead_code)]
-#[cfg(feature = "cramium-soc")]
-pub const UART_IFRAM_ADDR: usize = cramium_hal::board::UART_DMA_TX_BUF_PHYS;
+#[cfg(feature = "bao1x")]
+pub const UART_IFRAM_ADDR: usize = bao1x_hal::board::UART_DMA_TX_BUF_PHYS;
 #[allow(dead_code)]
-#[cfg(feature = "cramium-soc")]
-pub const APP_UART_IFRAM_ADDR: usize = cramium_hal::board::APP_UART_IFRAM_ADDR;
+#[cfg(feature = "bao1x")]
+pub const APP_UART_IFRAM_ADDR: usize = bao1x_hal::board::APP_UART_IFRAM_ADDR;
 
 /// This is the amount of space that the loader stack will occupy as it runs, assuming no swap and giving one
 /// page for the clean suspend marker
 #[cfg(not(feature = "swap"))]
 pub const GUARD_MEMORY_BYTES: usize = 3 * crate::PAGE_SIZE;
 /// Amount of space for loader stack only, with swap
-#[cfg(all(feature = "swap", not(feature = "resume"), not(feature = "cramium-soc")))]
+#[cfg(all(feature = "swap", not(feature = "resume"), not(feature = "bao1x")))]
 pub const GUARD_MEMORY_BYTES: usize = 7 * crate::PAGE_SIZE;
-#[cfg(all(feature = "swap", not(feature = "resume"), feature = "cramium-soc"))]
+#[cfg(all(feature = "swap", not(feature = "resume"), feature = "bao1x"))]
 pub const GUARD_MEMORY_BYTES: usize = 7 * crate::PAGE_SIZE;
 /// Amount of space for loader stack plus clean suspend, with swap
 #[cfg(all(feature = "swap", feature = "resume"))]
@@ -46,3 +52,6 @@ pub const GUARD_MEMORY_BYTES: usize = 8 * crate::PAGE_SIZE; // 1 extra page for 
 
 #[cfg(feature = "swap")]
 pub const SWAPPER_PID: u8 = 2;
+
+#[cfg(feature = "bao1x")]
+pub const SYSTEM_CLOCK_FREQUENCY: u32 = bao1x_hal::board::DEFAULT_FCLK_FREQUENCY / 2;

@@ -8,20 +8,32 @@ use std::collections::HashMap;
 #[cfg(any(all(feature = "pddbtest", feature = "autobasis"), not(feature = "deterministic")))]
 use std::collections::HashSet;
 use std::convert::TryInto;
+#[allow(unused_imports)]
 use std::io::{Error, ErrorKind, Result};
 
+#[cfg(feature = "gen1")]
+use aes::BLOCK_SIZE;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, generic_array::GenericArray};
-use aes::{Aes256, BLOCK_SIZE, Block};
+use aes::{Aes256, Block};
 use aes_gcm_siv::aead::{Aead, Payload};
 use aes_gcm_siv::{Aes256GcmSiv, Nonce, Tag};
 use backend::bcrypt::*;
+#[cfg(all(feature = "gen2"))]
+use bao1x_hal::board::{SPINOR_BULK_ERASE_SIZE, SPINOR_ERASE_SIZE};
+#[cfg(feature = "gen1")]
+use keystore_api::AesRootkeyType;
+use keystore_api::{Checksums, KeywrapError};
 use modals::Modals;
-use root_keys::api::AesRootkeyType;
-use root_keys::api::KeywrapError;
+#[cfg(feature = "gen1")]
+use precursor_hal::board::{BOOKEND_END, BOOKEND_START};
 use sha2::{Digest, Sha512_256Hw, Sha512_256Sw};
-use spinor::SPINOR_BULK_ERASE_SIZE;
+#[cfg(feature = "gen1")]
+use spinor::{SPINOR_BULK_ERASE_SIZE, SPINOR_ERASE_SIZE};
 use subtle::ConstantTimeEq;
+#[cfg(all(feature = "gen2", target_os = "xous"))]
+use xous::arch::MMAP_VIRT_BASE;
 
+use crate::PDDB_A_LOC;
 use crate::*;
 
 #[cfg(not(feature = "deterministic"))]
@@ -43,7 +55,7 @@ pub(crate) const MBBB_PAGES: usize = 10;
 pub(crate) const FSCB_PAGES: usize = 16;
 
 /// size of a physical page
-pub const PAGE_SIZE: usize = spinor::SPINOR_ERASE_SIZE as usize;
+pub const PAGE_SIZE: usize = SPINOR_ERASE_SIZE as usize;
 /// size of a virtual page -- after the AES encryption and journaling overhead is subtracted
 pub const VPAGE_SIZE: usize = PAGE_SIZE - size_of::<Nonce>() - size_of::<Tag>() - size_of::<JournalType>();
 
@@ -57,6 +69,9 @@ const SCD_VERSION: u32 = 2;
 
 #[cfg(all(feature = "pddbtest", feature = "autobasis"))]
 pub const BASIS_TEST_ROOTNAME: &'static str = "test";
+
+#[cfg(all(feature = "gen2", target_os = "xous"))]
+const DOMAIN_SEPERATOR: &'static str = "PDDB's key";
 
 #[derive(Zeroize)]
 #[zeroize(drop)]
@@ -132,14 +147,22 @@ type EmuMemoryRange = EmuStorage;
 type EmuSpinor = HostedSpinor;
 
 // native hardware
-#[cfg(any(feature = "precursor", feature = "renode"))]
+#[cfg(any(feature = "precursor", feature = "renode", feature = "board-baosec", feature = "board-baosor"))]
 type EmuMemoryRange = xous::MemoryRange;
 #[cfg(any(feature = "precursor", feature = "renode"))]
 type EmuSpinor = spinor::Spinor;
 
 pub(crate) struct PddbOs {
+    #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
     spinor: EmuSpinor,
+    #[cfg(all(feature = "gen2", target_os = "xous"))]
+    swapper: xous_swapper::Swapper,
+    #[cfg(all(feature = "gen2", target_os = "xous"))]
+    flash_page: RefCell<xous_swapper::FlashPage>,
+    #[cfg(feature = "gen1")]
     rootkeys: root_keys::RootKeys,
+    #[cfg(feature = "gen2")]
+    rootkeys: keystore::Keystore,
     tt: ticktimer_server::Ticktimer,
     pddb_mr: EmuMemoryRange,
     /// page table base -- location in FLASH, offset from physical bottom of pddb_mr
@@ -177,6 +200,7 @@ pub(crate) struct PddbOs {
     /// reference to a TrngPool object that's shared among all the hardware functions
     entropy: Rc<RefCell<TrngPool>>,
     /// connection to the password request manager
+    #[cfg(feature = "gen1")]
     pw_cid: xous::CID,
     /// Number of consecutive failed login attempts
     failed_logins: u64,
@@ -193,14 +217,27 @@ pub(crate) struct PddbOs {
 }
 
 impl PddbOs {
+    #[allow(unused_variables)]
     pub fn new(trngpool: Rc<RefCell<TrngPool>>, pw_cid: xous::CID) -> PddbOs {
         let xns = xous_names::XousNames::new().unwrap();
         #[cfg(any(feature = "precursor", feature = "renode"))]
         let pddb = xous::syscall::map_memory(
-            xous::MemoryAddress::new(xous::PDDB_LOC as usize + xous::FLASH_PHYS_BASE as usize),
+            xous::MemoryAddress::new(PDDB_A_LOC as usize + precursor_hal::board::FLASH_PHYS_BASE as usize),
             None,
             PDDB_A_LEN as usize,
             xous::MemoryFlags::R | xous::MemoryFlags::RESERVE,
+        )
+        .expect("Couldn't map the PDDB memory range");
+        #[cfg(any(feature = "board-baosec", feature = "board-baosor"))]
+        let pddb = xous::syscall::map_memory(
+            None,
+            // by requesting the offset into MMAP_VIRT_BASE, we (a) ensure the offset of the virtual
+            // pages maintain a 1:1 correspondence with the offsets in SPI flash and (b)
+            // by simply dereferencing any slices derived from virtual area we get a correct pointer
+            // that we can pass directly into the swapper to update the correct sector of memory.
+            xous::MemoryAddress::new(xous::arch::MMAP_VIRT_BASE + bao1x_hal::board::PDDB_LOC as usize),
+            bao1x_hal::board::PDDB_LEN as usize,
+            xous::MemoryFlags::R | xous::MemoryFlags::VIRT,
         )
         .expect("Couldn't map the PDDB memory range");
         #[cfg(any(feature = "precursor", feature = "renode"))]
@@ -221,8 +258,14 @@ impl PddbOs {
             PageAlignedPa::from(mbbb_phys_base.as_u32() + MBBB_PAGES as u32 * PAGE_SIZE as u32);
         log::debug!("fscb_phys_base: {:x?}", fscb_phys_base);
 
+        #[cfg(feature = "gen1")]
         let llio = llio::Llio::new(&xns);
+        #[cfg(feature = "gen1")]
         let dna = llio.soc_dna().unwrap();
+        #[cfg(feature = "gen2")]
+        let keystore = keystore::Keystore::new(&xns);
+        #[cfg(feature = "gen2")]
+        let dna = keystore.get_dna();
 
         // performance counter infrastructure, if selected
         #[cfg(feature = "perfcounter")]
@@ -238,7 +281,7 @@ impl PddbOs {
         #[cfg(feature = "perfcounter")]
         let pc_id = xous::process::id() as u32;
 
-        // native hardware
+        // native hardware target
         #[cfg(any(feature = "precursor", feature = "renode"))]
         let ret = PddbOs {
             spinor: spinor::Spinor::new(&xns).unwrap(),
@@ -264,6 +307,44 @@ impl PddbOs {
             migration_dna: dna,
             dna_mode: DnaMode::Normal,
             entropy: trngpool,
+            #[cfg(feature = "gen1")]
+            pw_cid,
+            failed_logins: 0,
+            #[cfg(all(feature = "pddbtest", feature = "autobasis"))]
+            testnames: HashSet::new(),
+            #[cfg(feature = "perfcounter")]
+            perfclient,
+            #[cfg(feature = "perfcounter")]
+            pc_id,
+            #[cfg(feature = "perfcounter")]
+            use_perf: true,
+        };
+        #[cfg(all(feature = "gen2", target_os = "xous"))]
+        let ret = PddbOs {
+            swapper: xous_swapper::Swapper::new().expect("couldn't connect to swapper"),
+            rootkeys: keystore::Keystore::new_key(&xns, DOMAIN_SEPERATOR),
+            flash_page: RefCell::new(xous_swapper::FlashPage::new()),
+            tt: ticktimer_server::Ticktimer::new().unwrap(),
+            pddb_mr: pddb,
+            pt_phys_base: PageAlignedPa::from(0 as u32),
+            key_phys_base,
+            mbbb_phys_base,
+            fscb_phys_base,
+            data_phys_base: PageAlignedPa::from(
+                fscb_phys_base.as_u32() + FSCB_PAGES as u32 * PAGE_SIZE as u32,
+            ),
+            system_basis_key: None,
+            cipher_ecb: None,
+            fspace_cache: FspaceSet::new(),
+            fspace_log_addrs: Vec::<PageAlignedPa>::new(),
+            fspace_log_next_addr: None,
+            fspace_log_len: 0,
+            dna,
+            // default to our own DNA in this case
+            migration_dna: dna,
+            dna_mode: DnaMode::Normal,
+            entropy: trngpool,
+            #[cfg(feature = "gen1")]
             pw_cid,
             failed_logins: 0,
             #[cfg(all(feature = "pddbtest", feature = "autobasis"))]
@@ -280,8 +361,11 @@ impl PddbOs {
         let ret = {
             PddbOs {
                 spinor: HostedSpinor::new(),
+                #[cfg(feature = "gen1")]
                 rootkeys: root_keys::RootKeys::new(&xns, Some(AesRootkeyType::User0))
                     .expect("FATAL: couldn't access RootKeys!"),
+                #[cfg(feature = "gen2")]
+                rootkeys: keystore::Keystore::new_key(&xns, "pddb"),
                 tt: ticktimer_server::Ticktimer::new().unwrap(),
                 pddb_mr: EmuStorage::new(),
                 pt_phys_base: PageAlignedPa::from(0 as u32),
@@ -302,6 +386,7 @@ impl PddbOs {
                 migration_dna: dna,
                 dna_mode: DnaMode::Normal,
                 entropy: trngpool,
+                #[cfg(feature = "gen1")]
                 pw_cid,
                 failed_logins: 0,
                 #[cfg(all(feature = "pddbtest", feature = "autobasis"))]
@@ -363,7 +448,12 @@ impl PddbOs {
     }
 
     pub(crate) fn is_efuse_secured(&self) -> bool {
-        self.rootkeys.is_efuse_secured().expect("couldn't query efuse security state") == Some(true)
+        #[cfg(feature = "gen1")]
+        {
+            self.rootkeys.is_efuse_secured().expect("couldn't query efuse security state") == Some(true)
+        }
+        #[cfg(feature = "gen2")]
+        true
     }
 
     pub(crate) fn nonce_gen(&self) -> Nonce {
@@ -383,8 +473,99 @@ impl PddbOs {
     pub(crate) fn timestamp_now(&self) -> u64 { self.tt.elapsed_ms() }
 
     /// checks if the root keys are initialized, which is a prerequisite to formatting and mounting
+    #[cfg(feature = "gen1")]
     pub(crate) fn rootkeys_initialized(&self) -> bool {
         self.rootkeys.is_initialized().expect("couldn't query initialization state of the rootkeys server")
+    }
+
+    /// In "gen2" targets, we pass on page-sized chunks that contain the updated data already
+    /// overlaid into the old data so any ragged edges are already taken care of here.
+    ///
+    /// `buf` is the slice of data to be patched
+    /// `offset` is the offset from the start of the PDDB region. Note that `self.pddb_mr` is already
+    /// mapped to a location which includes the VMEM offset + offset into the SPI memory, so we don't
+    /// have to re-add that in to this offset so long as we resolve the pointer to update by extracting
+    /// it out of the slice as a pointer.
+    #[cfg(all(feature = "gen2", target_os = "xous"))]
+    pub(crate) fn patch(&self, buf: &[u8], offset: usize) {
+        use bao1x_hal::board::SPINOR_ERASE_SIZE;
+
+        let mut written = 0;
+
+        // compute amount of data in the FLASH sector buffer to preserve: everything up to the offset
+        let preserve_to = offset & (SPINOR_ERASE_SIZE as usize - 1);
+        // 1. check for misaligned page starts
+        if preserve_to != 0 {
+            let replace_end = if buf.len() + preserve_to >= SPINOR_ERASE_SIZE as usize {
+                SPINOR_ERASE_SIZE as usize
+            } else {
+                buf.len() + preserve_to
+            };
+            let preserve_start = offset & !(SPINOR_ERASE_SIZE as usize - 1);
+            // safety: all data within u8 slice representation is representable
+            unsafe {
+                // read in the ROM contents for the page in question. This fully replaces self.buffer,
+                // so we don't need to zeroize it.
+                let buff_mut = &mut self.flash_page.borrow_mut().data;
+                buff_mut.copy_from_slice(
+                    &self.pddb_mr.as_slice()[preserve_start..preserve_start + SPINOR_ERASE_SIZE as usize],
+                );
+            }
+            self.flash_page.borrow_mut().data[preserve_to..replace_end]
+                .copy_from_slice(&buf[..replace_end - preserve_to]);
+            self.swapper
+                .write_page(
+                    unsafe {
+                        self.pddb_mr.as_slice::<u8>()[preserve_start..preserve_start].as_ptr() as usize
+                    },
+                    &self.flash_page.borrow(),
+                )
+                .expect("couldn't patch spinor");
+            written += replace_end - preserve_to;
+        }
+        if written == buf.len() {
+            return;
+        }
+        // 2. write remaining pages
+        let remaining_len = buf.len() - written;
+        // this is OK here because we took care of any misaligned start data in step 1.
+        let aligned_start = (offset + (SPINOR_ERASE_SIZE as usize - 1)) & !(SPINOR_ERASE_SIZE as usize - 1);
+        log::debug!(
+            "aligned_start {:x} end {:x}",
+            aligned_start,
+            (aligned_start + (remaining_len + (SPINOR_ERASE_SIZE as usize - 1))
+                & !(SPINOR_ERASE_SIZE as usize - 1))
+        );
+        for sector in (aligned_start
+            ..(aligned_start + (remaining_len + (SPINOR_ERASE_SIZE as usize - 1))
+                & !(SPINOR_ERASE_SIZE as usize - 1)))
+            .step_by(SPINOR_ERASE_SIZE as usize)
+        {
+            assert!(buf.len() >= written);
+            let remaining_chunk = buf.len() - written;
+            // safety: this allows us to access pddb_mr.as_slice() - it's safe because all u8 values are valid
+            unsafe {
+                let buff_mut = &mut self.flash_page.borrow_mut().data;
+                if remaining_chunk < SPINOR_ERASE_SIZE as usize {
+                    // this full replaces self.buffer, so we don't need to zeroize it
+                    buff_mut.copy_from_slice(
+                        &self.pddb_mr.as_slice()[sector..sector + SPINOR_ERASE_SIZE as usize],
+                    );
+                    buff_mut[..remaining_chunk].copy_from_slice(&buf[written..]);
+                    written += remaining_chunk;
+                } else {
+                    // no need to read in the buffer as it will be fully replaced
+                    buff_mut.copy_from_slice(&buf[written..(written + SPINOR_ERASE_SIZE as usize)]);
+                    written += SPINOR_ERASE_SIZE as usize;
+                }
+            }
+            self.swapper
+                .write_page(
+                    unsafe { self.pddb_mr.as_slice::<u8>()[sector..sector].as_ptr() as usize },
+                    &self.flash_page.borrow(),
+                )
+                .expect("couldn't patch spinor");
+        }
     }
 
     /// patches data at an offset starting from the data physical base address, which corresponds
@@ -397,14 +578,17 @@ impl PddbOs {
             data.len() + offset as usize <= PDDB_A_LEN - self.data_phys_base.as_usize(),
             "attempt to store past disk boundary"
         );
+        #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
         self.spinor
             .patch(
                 unsafe { self.pddb_mr.as_slice() },
-                xous::PDDB_LOC,
+                PDDB_A_LOC,
                 &data,
                 offset + self.data_phys_base.as_u32(),
             )
             .expect("couldn't write to data region in the PDDB");
+        #[cfg(all(feature = "gen2", target_os = "xous"))]
+        self.patch(&data, (offset + self.data_phys_base.as_u32()) as usize);
         //log::trace!("patch aft: {:x?}", &self.pddb_mr.as_slice::<u8>()[offset as usize +
         // self.data_phys_base.as_usize()..offset as usize + self.data_phys_base.as_usize() + 48]);
         // log::trace!("patch end: {:x?}", &self.pddb_mr.as_slice::<u8>()[offset as usize +
@@ -421,14 +605,17 @@ impl PddbOs {
             //    table, then erase the mbbb.
             if let Some(mbbb) = self.mbbb_retrieve() {
                 if let Some(erased_offset) = self.pt_find_erased_slot() {
+                    #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
                     self.spinor
                         .patch(
                             unsafe { self.pddb_mr.as_slice() },
-                            xous::PDDB_LOC,
+                            PDDB_A_LOC,
                             &mbbb,
                             self.pt_phys_base.as_u32() + erased_offset,
                         )
                         .expect("couldn't write to page table");
+                    #[cfg(all(feature = "gen2", target_os = "xous"))]
+                    self.patch(&mbbb, (self.pt_phys_base.as_u32() + erased_offset) as usize);
                 }
                 // if there *isn't* an erased slot, we still want to get rid of the MBBB structure. A lack of
                 // an erased slot would indicate we lost power after we copied the previous
@@ -459,14 +646,17 @@ impl PddbOs {
             self.patch_mbbb(&mbbb_page, offset);
             // 6. erase the original page area, thus making the MBBB the authorative location
             let blank = [0xffu8; PAGE_SIZE];
+            #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
             self.spinor
                 .patch(
                     unsafe { self.pddb_mr.as_slice() },
-                    xous::PDDB_LOC,
+                    PDDB_A_LOC,
                     &blank,
                     self.pt_phys_base.as_u32() + base_page as u32,
                 )
                 .expect("couldn't write to page table");
+            #[cfg(all(feature = "gen2", target_os = "xous"))]
+            self.patch(&blank, self.pt_phys_base.as_usize() + base_page);
         } else {
             self.patch_pagetable_raw(data, offset);
         }
@@ -478,14 +668,12 @@ impl PddbOs {
             data.len() + offset as usize <= size_of::<PageTableInFlash>(),
             "attempt to patch past page table end"
         );
+        #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
         self.spinor
-            .patch(
-                unsafe { self.pddb_mr.as_slice() },
-                xous::PDDB_LOC,
-                &data,
-                self.pt_phys_base.as_u32() + offset,
-            )
+            .patch(unsafe { self.pddb_mr.as_slice() }, PDDB_A_LOC, &data, self.pt_phys_base.as_u32() + offset)
             .expect("couldn't write to page table");
+        #[cfg(all(feature = "gen2", target_os = "xous"))]
+        self.patch(&data, self.pt_phys_base.as_usize() + offset as usize);
     }
 
     fn patch_keys(&self, data: &[u8], offset: u32) {
@@ -494,40 +682,44 @@ impl PddbOs {
             "attempt to burn key data that is outside the key region"
         );
         log::info!("patching keys area with {} bytes", data.len());
+        #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
         self.spinor
-            .patch(
-                unsafe { self.pddb_mr.as_slice() },
-                xous::PDDB_LOC,
-                data,
-                self.key_phys_base.as_u32() + offset,
-            )
+            .patch(unsafe { self.pddb_mr.as_slice() }, PDDB_A_LOC, data, self.key_phys_base.as_u32() + offset)
             .expect("couldn't burn keys");
+        #[cfg(all(feature = "gen2", target_os = "xous"))]
+        self.patch(data, self.key_phys_base.as_usize() + offset as usize);
     }
 
     fn patch_mbbb(&self, data: &[u8], offset: u32) {
         assert!(data.len() + offset as usize <= PAGE_SIZE * MBBB_PAGES, "mbbb patch would go out of bounds");
+        #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
         self.spinor
             .patch(
                 unsafe { self.pddb_mr.as_slice() },
-                xous::PDDB_LOC,
+                PDDB_A_LOC,
                 data,
                 self.mbbb_phys_base.as_u32() + offset,
             )
             .expect("couldn't burn mbbb");
+        #[cfg(all(feature = "gen2", target_os = "xous"))]
+        self.patch(&data, self.mbbb_phys_base.as_usize() + offset as usize);
     }
 
     /// raw patch is provided for 128-bit incremental updates to the FLASH. For FastSpace master record
     /// writes, see fast_space_write()
     fn patch_fscb(&self, data: &[u8], offset: u32) {
         assert!(data.len() + offset as usize <= PAGE_SIZE * FSCB_PAGES, "fscb patch would go out of bounds");
+        #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
         self.spinor
             .patch(
                 unsafe { self.pddb_mr.as_slice() },
-                xous::PDDB_LOC,
+                PDDB_A_LOC,
                 data,
                 self.fscb_phys_base.as_u32() + offset,
             )
             .expect("couldn't burn fscb");
+        #[cfg(all(feature = "gen2", target_os = "xous"))]
+        self.patch(data, self.fscb_phys_base.as_usize() + offset as usize);
     }
 
     /// Public function that "does the right thing" for patching in a page table entry based on a virtual to
@@ -771,13 +963,20 @@ impl PddbOs {
         self.cipher_ecb = None;
     }
 
+    #[cfg(feature = "gen1")]
     pub(crate) fn clear_password(&self) { self.rootkeys.clear_password(AesRootkeyType::User0); }
+
+    #[cfg(feature = "gen2")]
+    pub(crate) fn ensure_password(&mut self) -> PasswordState {
+        self.rootkeys.ensure_password();
+        self.try_login()
+    }
 
     pub(crate) fn try_login(&mut self) -> PasswordState {
         use aes::cipher::KeyInit;
         if self.system_basis_key.is_none() || self.cipher_ecb.is_none() {
             let scd = self.static_crypto_data_get();
-            if scd.version == 0xFFFF_FFFF {
+            if scd.version == 0xFFFF_FFFF || scd.version == 0x0000_0000 {
                 // system is in the blank state
                 return PasswordState::Uninit;
             }
@@ -877,6 +1076,7 @@ impl PddbOs {
     }
 
     fn syskey_ensure(&mut self) {
+        #[cfg(feature = "gen1")]
         while self.try_login() != PasswordState::Correct {
             self.clear_password(); // clear the bad password entry
             let xns = xous_names::XousNames::new().unwrap();
@@ -1976,6 +2176,7 @@ impl PddbOs {
         }
     }
 
+    #[cfg(feature = "gen1")]
     fn pw_check(&self, modals: &modals::Modals) -> Result<()> {
         let mut success = false;
         while !success {
@@ -1986,7 +2187,7 @@ impl PddbOs {
             let mut checkblock_a = [0u8; BLOCK_SIZE];
             self.rootkeys.decrypt_block(GenericArray::from_mut_slice(&mut checkblock_a));
 
-            log::info!("{}PDDB.CHECKPASS,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+            log::info!("{}PDDB.CHECKPASS,{}", BOOKEND_START, BOOKEND_END);
             #[cfg(any(feature = "precursor", feature = "renode"))] // skip this dialog in hosted mode
             modals.show_notification(t!("pddb.checkpass", locales::LANG), None).expect("notification failed");
 
@@ -1997,7 +2198,7 @@ impl PddbOs {
             if checkblock_a == checkblock_b {
                 success = true;
             } else {
-                log::info!("{}PDDB.PWFAIL,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                log::info!("{}PDDB.PWFAIL,{}", BOOKEND_START, BOOKEND_END);
                 modals
                     .show_notification(t!("pddb.checkpass_fail", locales::LANG), None)
                     .expect("notification failed");
@@ -2008,6 +2209,7 @@ impl PddbOs {
     }
 
     /// this function attempts to change the PIN. returns Ok() if changed, error if not.
+    #[cfg(feature = "gen1")]
     pub(crate) fn pddb_change_pin(&mut self, modals: &modals::Modals) -> Result<()> {
         if let Some(system_keys) = &self.system_basis_key {
             // get the new password
@@ -2043,6 +2245,7 @@ impl PddbOs {
     /// reference to the Spinor object allocated to the PDDB implementation for this operation.
     pub(crate) fn pddb_format(&mut self, fast: bool, progress: Option<&modals::Modals>) -> Result<()> {
         use aes::cipher::KeyInit;
+        #[cfg(feature = "gen1")]
         if !self.rootkeys.is_initialized().unwrap() {
             return Err(Error::new(
                 ErrorKind::Unsupported,
@@ -2050,6 +2253,7 @@ impl PddbOs {
             ));
         }
         // step 0. If we have a modal, confirm that the password entered was correct with a double-entry.
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             self.pw_check(modals)?;
         }
@@ -2057,31 +2261,32 @@ impl PddbOs {
         // step 1. Erase the entire PDDB region - leaves the state in all 1's
         if !fast {
             log::info!("Erasing the PDDB region");
+            #[cfg(feature = "gen1")]
             if let Some(modals) = progress {
                 modals
                     .start_progress(
                         t!("pddb.erase", locales::LANG),
-                        xous::PDDB_LOC,
-                        xous::PDDB_LOC + PDDB_A_LEN as u32,
-                        xous::PDDB_LOC,
+                        PDDB_A_LOC,
+                        PDDB_A_LOC + PDDB_A_LEN as u32,
+                        PDDB_A_LOC,
                     )
                     .expect("couldn't raise progress bar");
                 // retain this delay, because the next section is so compute-intensive, it may take a
                 // while for the GAM to catch up.
                 self.tt.sleep_ms(100).unwrap();
             }
-            for offset in (xous::PDDB_LOC..(xous::PDDB_LOC + PDDB_A_LEN as u32))
-                .step_by(SPINOR_BULK_ERASE_SIZE as usize)
+            for offset in
+                (PDDB_A_LOC..(PDDB_A_LOC + PDDB_A_LEN as u32)).step_by(SPINOR_BULK_ERASE_SIZE as usize)
             {
                 if (offset / SPINOR_BULK_ERASE_SIZE) % 4 == 0 {
-                    log::info!("Initial erase: {}/{}", offset - xous::PDDB_LOC, PDDB_A_LEN as u32);
+                    log::info!("Initial erase: {}/{}", offset - PDDB_A_LOC, PDDB_A_LEN as u32);
                     if let Some(modals) = progress {
                         modals.update_progress(offset as u32).expect("couldn't update progress bar");
                     }
                 }
                 // do a blank check first to see if the sector really needs erasing
                 let mut blank = true;
-                let slice_start = (offset - xous::PDDB_LOC) as usize / size_of::<u32>();
+                let slice_start = (offset - PDDB_A_LOC) as usize / size_of::<u32>();
                 for word in unsafe {
                     self.pddb_mr.as_slice::<u32>()
                         [slice_start..slice_start + SPINOR_BULK_ERASE_SIZE as usize / size_of::<u32>()]
@@ -2093,13 +2298,22 @@ impl PddbOs {
                     }
                 }
                 if !blank {
+                    #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
                     self.spinor.bulk_erase(offset, SPINOR_BULK_ERASE_SIZE).expect("couldn't erase memory");
+                    #[cfg(all(feature = "gen2", target_os = "xous"))]
+                    {
+                        self.swapper
+                            .block_erase(
+                                offset as usize + MMAP_VIRT_BASE as usize,
+                                SPINOR_BULK_ERASE_SIZE as usize,
+                            )
+                            .expect("couldn't erase memory");
+                    }
                 }
             }
+            #[cfg(feature = "gen1")]
             if let Some(modals) = progress {
-                modals
-                    .update_progress(xous::PDDB_LOC + PDDB_A_LEN as u32)
-                    .expect("couldn't update progress bar");
+                modals.update_progress(PDDB_A_LOC + PDDB_A_LEN as u32).expect("couldn't update progress bar");
                 modals.finish_progress().expect("couldn't dismiss progress bar");
                 #[cfg(feature = "ux-swap-delay")]
                 self.tt.sleep_ms(100).unwrap();
@@ -2107,6 +2321,7 @@ impl PddbOs {
         }
 
         // step 2. fill in the page table with junk, which marks it as cryptographically empty
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals
                 .start_progress(t!("pddb.initpt", locales::LANG), 0, size_of::<PageTableInFlash>() as u32, 0)
@@ -2122,6 +2337,7 @@ impl PddbOs {
                 }
             }
         }
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals
                 .update_progress(size_of::<PageTableInFlash>() as u32)
@@ -2139,6 +2355,7 @@ impl PddbOs {
             }
             self.patch_pagetable_raw(&temp, remainder_start as u32);
         }
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.finish_progress().expect("couldn't dismiss progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2150,6 +2367,7 @@ impl PddbOs {
         //if !self.rootkeys.ensure_aes_password() {
         //    return Err(Error::new(ErrorKind::PermissionDenied, "unlock password was incorrect"));
         //}
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals
                 .start_progress(t!("pddb.key", locales::LANG), 0, 100, 0)
@@ -2176,6 +2394,7 @@ impl PddbOs {
         self.system_basis_key = Some(BasisKeys { pt: system_basis_key_pt, data: system_basis_key }); // this causes system_basis_key to be owned by self and go out of scope
         let mut crypto_keys = StaticCryptoData::default();
         crypto_keys.version = SCD_VERSION; // should already be set by `default()` but let's be sure.
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.update_progress(50).expect("couldn't update progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2195,6 +2414,7 @@ impl PddbOs {
         self.entropy.borrow_mut().get_slice(&mut crypto_keys.salt_base);
         // commit keys
         self.patch_keys(crypto_keys.deref(), 0);
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.update_progress(100).expect("couldn't update progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2216,6 +2436,7 @@ impl PddbOs {
         // step 5. fscb handling
         // pick a set of random pages from the free pool and assign it to the fscb
         // pass the generator an empty cache - this causes it to treat the entire disk as free space
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals
                 .start_progress(t!("pddb.fastspace", locales::LANG), 0, 100, 0)
@@ -2227,6 +2448,7 @@ impl PddbOs {
         for (&src, dst) in free_pool.iter().zip(fast_space.free_pool.iter_mut()) {
             *dst = src;
         }
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.update_progress(50).expect("couldn't update progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2248,6 +2470,7 @@ impl PddbOs {
         // step 5. salt the free space with random numbers. this can take a while, we might need a "progress
         // report" of some kind... this is coded using "direct disk" offsets...under the assumption
         // that we only ever really want to do this here, and not re-use this routine elsewhere.
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals
                 .start_progress(
@@ -2287,17 +2510,21 @@ impl PddbOs {
                 }
             }
             self.entropy.borrow_mut().get_slice(&mut temp);
-            if (offset / PAGE_SIZE) % 256 == 0 {
+            if (offset / PAGE_SIZE) % 32 == 0 {
                 // ~one update per megabyte
                 log::info!("Cryptographic 'erase': {}/{}", offset, PDDB_A_LEN);
                 if let Some(modals) = progress {
                     modals.update_progress(offset as u32).expect("couldn't update progress bar");
                 }
             }
+            #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
             self.spinor
-                .patch(unsafe { self.pddb_mr.as_slice() }, xous::PDDB_LOC, &temp, offset as u32)
+                .patch(unsafe { self.pddb_mr.as_slice() }, PDDB_A_LOC, &temp, offset as u32)
                 .expect("couldn't fill in disk with random datax");
+            #[cfg(all(feature = "gen2", target_os = "xous"))]
+            self.patch(&temp, offset);
         }
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.update_progress(PDDB_A_LEN as u32).expect("couldn't update progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2308,6 +2535,7 @@ impl PddbOs {
         }
 
         // step 6. create the system basis root structure
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals
                 .start_progress(t!("pddb.structure", locales::LANG), 0, 100, 0)
@@ -2325,6 +2553,7 @@ impl PddbOs {
 
         // step 7. Create a hashmap for our reverse PTE, allocate sectors, and add it to the Pddb's cache
         self.fast_space_read(); // we reconstitute our fspace map even though it was just generated, partially as a sanity check that everything is ok
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.update_progress(33).expect("couldn't update progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2361,6 +2590,7 @@ impl PddbOs {
         let syskey = self.system_basis_key.take().unwrap(); // take the key out
         self.data_encrypt_and_patch_page_with_commit(&syskey.data, &aad, &mut block, &pp);
         self.system_basis_key = Some(syskey); // put the key back
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.update_progress(66).expect("couldn't update progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2373,6 +2603,7 @@ impl PddbOs {
             // mark the entry as clean, as it has been sync'd to disk
             phys.set_clean(true);
         }
+        #[cfg(feature = "gen1")]
         if let Some(modals) = progress {
             modals.update_progress(100).expect("couldn't update progress bar");
             #[cfg(feature = "ux-swap-delay")]
@@ -2463,14 +2694,17 @@ impl PddbOs {
         // clean up any MBBB, as it will mess up our algorithm
         if let Some(mbbb) = self.mbbb_retrieve() {
             if let Some(erased_offset) = self.pt_find_erased_slot() {
+                #[cfg(any(feature = "gen1", not(all(feature = "gen2", target_os = "xous"))))]
                 self.spinor
                     .patch(
                         unsafe { self.pddb_mr.as_slice() },
-                        xous::PDDB_LOC,
+                        PDDB_A_LOC,
                         &mbbb,
                         self.pt_phys_base.as_u32() + erased_offset,
                     )
                     .expect("couldn't write to page table");
+                #[cfg(all(feature = "gen2", target_os = "xous"))]
+                self.patch(&mbbb, self.pt_phys_base.as_usize() + erased_offset as usize);
             }
             self.mbbb_erase();
         }
@@ -2478,15 +2712,18 @@ impl PddbOs {
         // 0. acquire all the keys
         if let Some(all_keys) = self.pddb_get_all_keys(&cache) {
             // build a modals for rekey progress
+            #[cfg(feature = "gen1")]
             let xns = xous_names::XousNames::new().unwrap();
+            #[cfg(feature = "gen1")]
             let modals = modals::Modals::new(&xns).unwrap();
 
+            #[cfg(feature = "gen1")]
             modals.start_progress(t!("pddb.rekey.keys", locales::LANG), 0, all_keys.len() as u32, 0).ok();
             // we need a map of page numbers to encryption keys. The keys are referenced by their basis name.
             let mut pagemap = HashMap::<PhysAddr, &str>::new();
             // transform the returned Vec into a HashMap that maps basis names into pre-keyed ciphers.
             let mut keymap = HashMap::<&str, MigrationCiphers>::new();
-            for (index, (basis_keys, name)) in all_keys.iter().enumerate() {
+            for (_index, (basis_keys, name)) in all_keys.iter().enumerate() {
                 if let Some(map) = self.pt_scan_key(&basis_keys.pt, &basis_keys.data, &name) {
                     for pp in map.values() {
                         log::info!("page {} -> basis {}", pp.page_number(), name);
@@ -2503,14 +2740,18 @@ impl PddbOs {
                 let aad_local = self.data_aad(&name);
                 self.dna_mode = DnaMode::Migration;
                 let aad_incoming = self.data_aad(&name);
-                keymap.insert(&name, MigrationCiphers {
-                    pt_ecb,
-                    data_gcm_siv,
-                    aad_incoming,
-                    aad_local,
-                    data_key: basis_keys.data.into(),
-                });
-                modals.update_progress(index as u32 + 1).ok();
+                keymap.insert(
+                    &name,
+                    MigrationCiphers {
+                        pt_ecb,
+                        data_gcm_siv,
+                        aad_incoming,
+                        aad_local,
+                        data_key: basis_keys.data.into(),
+                    },
+                );
+                #[cfg(feature = "gen1")]
+                modals.update_progress(_index as u32 + 1).ok();
             }
 
             // check that we have no pages in the FSCB that aren't already mapped in the
@@ -2528,6 +2769,7 @@ impl PddbOs {
                     }
                 }
             }
+            #[cfg(feature = "gen1")]
             modals.finish_progress().ok();
             if !clean {
                 log::warn!(
@@ -2548,6 +2790,7 @@ impl PddbOs {
             let pagetable: &[u8] = unsafe { &self.pddb_mr.as_slice()[..pddb_data_pages * size_of::<Pte>()] };
             log::info!("Derived page table of len 0x{:x}", pagetable.len());
             let entries_per_page = PAGE_SIZE / size_of::<Pte>();
+            #[cfg(feature = "gen1")]
             modals
                 .start_progress(
                     t!("pddb.rekey.running", locales::LANG),
@@ -2657,8 +2900,10 @@ impl PddbOs {
                 self.patch_pagetable_raw(&new_pt_page[..chunk_len], chunk_start_address as u32);
                 // this only updates once per page of PTEs, so, every 256 pages that get re-encrypted in the
                 // worst case.
+                #[cfg(feature = "gen1")]
                 modals.update_progress(chunk_start_address as u32).ok();
             }
+            #[cfg(feature = "gen1")]
             modals.finish_progress().ok();
 
             self.dna_mode = DnaMode::Normal; // we're done with the legacy DNA!
@@ -2672,6 +2917,7 @@ impl PddbOs {
             };
             if do_fscb {
                 log::info!("regenerating fast space...");
+                #[cfg(feature = "gen1")]
                 modals.dynamic_notification(Some(t!("pddb.rekey.fastspace", locales::LANG)), None).ok();
                 // convert our used page map into the structure needed by fast_space_generate()
                 let mut page_heap = BinaryHeap::new();
@@ -2695,6 +2941,7 @@ impl PddbOs {
                 self.fast_space_write(&fast_space);
                 // this will ensure the data cache is fully in sync
                 self.fast_space_read();
+                #[cfg(feature = "gen1")]
                 modals.dynamic_notification_close().ok();
                 log::info!("fast space generation done.");
             }
@@ -2704,6 +2951,21 @@ impl PddbOs {
         }
     }
 
+    #[cfg(not(all(feature = "pddbtest", feature = "autobasis")))]
+    #[cfg(feature = "gen2")]
+    /// This is a bit unsafe in that it simply returns the list of all the known keys and doesn't
+    /// prompt the user to enter any hidden bases. However, for gen2-targets, we're simplifying
+    /// the basis logic and assuming that the UI is all handled outside of the PDDB.
+    pub(crate) fn pddb_get_all_keys(&self, cache: &Vec<BasisCacheEntry>) -> Option<Vec<(BasisKeys, String)>> {
+        // populate the "known" entries
+        let mut ret = Vec::<(BasisKeys, String)>::new();
+        for entry in cache {
+            ret.push((BasisKeys { pt: entry.pt_key.into(), data: entry.key.into() }, entry.name.to_string()));
+        }
+        log::info!("{} basis are open, with the following names:", cache.len());
+        Some(ret)
+    }
+
     /// UX function that informs the user of the currently open Basis, and prompts the user to enter passwords
     /// for other basis that may not currently be open. This function is also responsible for validating
     /// that the password is correct by doing a quick scan for "any" PTEs that happen to decrypt to something
@@ -2711,6 +2973,7 @@ impl PddbOs {
     /// a Vec of keys & names, not a BasisCacheEntry -- so it means that the Basis still are "closed"
     /// at the conclusion of the sweep, but their page use can be accounted for.
     #[cfg(not(all(feature = "pddbtest", feature = "autobasis")))]
+    #[cfg(feature = "gen1")]
     pub(crate) fn pddb_get_all_keys(&self, cache: &Vec<BasisCacheEntry>) -> Option<Vec<(BasisKeys, String)>> {
         #[cfg(feature = "ux-swap-delay")]
         const SWAP_DELAY_MS: usize = 300;
@@ -2773,13 +3036,30 @@ impl PddbOs {
             match modals.alert_builder(t!("pddb.freespace.name", locales::LANG)).field(None, None).build() {
                 Ok(bname) => {
                     let name = bname.first().as_str().to_string();
-                    let request =
-                        BasisRequestPassword { db_name: String::from(name.to_string()), plaintext_pw: None };
-                    let mut buf = Buffer::into_buf(request).unwrap();
-                    buf.lend_mut(self.pw_cid, PwManagerOpcode::RequestPassword.to_u32().unwrap()).unwrap();
-                    let retpass = buf.to_original::<BasisRequestPassword, _>().unwrap();
+                    #[cfg(feature = "gen1")]
+                    let retpass = {
+                        let request = BasisRequestPassword {
+                            db_name: String::from(name.to_string()),
+                            plaintext_pw: None,
+                        };
+                        let mut buf = Buffer::into_buf(request).unwrap();
+                        buf.lend_mut(self.pw_cid, PwManagerOpcode::RequestPassword.to_u32().unwrap())
+                            .unwrap();
+                        &buf.to_original::<BasisRequestPassword, _>().unwrap().plaintext_pw.unwrap()
+                    };
+                    #[cfg(feature = "gen2")]
+                    let retpass = match modals
+                        .alert_builder(
+                            format!("{}'{}'", t!("pddb.password_for", locales::LANG), &name).as_str(),
+                        )
+                        .field(None, None)
+                        .build()
+                    {
+                        Ok(text) => &text.content()[0].content,
+                        _ => panic!("failure retrieving password"),
+                    };
                     // 2. validate the name/password combo
-                    let basis_key = self.basis_derive_key(&name, retpass.plaintext_pw.unwrap().as_str());
+                    let basis_key = self.basis_derive_key(&name, retpass);
                     // validate the password by finding the root block of the basis. We rely entirely
                     // upon the AEAD with key commit to ensure the password is correct.
                     let maybe_entry = if let Some(basis_map) =
@@ -2825,17 +3105,21 @@ impl PddbOs {
             self.tt.sleep_ms(SWAP_DELAY_MS).unwrap();
         }
         // done!
-        if self.yes_no_approval(&modals, match self.dna_mode {
-            DnaMode::Normal => t!("pddb.freespace.finished", locales::LANG),
-            DnaMode::Migration => t!("pddb.rekey.finished", locales::LANG),
-            DnaMode::Churn => t!("pddb.churn.finished", locales::LANG),
-        }) {
+        if self.yes_no_approval(
+            &modals,
+            match self.dna_mode {
+                DnaMode::Normal => t!("pddb.freespace.finished", locales::LANG),
+                DnaMode::Migration => t!("pddb.rekey.finished", locales::LANG),
+                DnaMode::Churn => t!("pddb.churn.finished", locales::LANG),
+            },
+        ) {
             Some(ret)
         } else {
             None
         }
     }
 
+    #[cfg(feature = "gen1")]
     fn yes_no_approval(&self, modals: &modals::Modals, request: &str) -> bool {
         modals
             .add_list(vec![t!("pddb.yes", locales::LANG), t!("pddb.no", locales::LANG)])
@@ -2931,20 +3215,23 @@ impl PddbOs {
         BasisKeys { pt: okm_pt, data: okm_data }
     }
 
-    pub(crate) fn reset_dont_ask_init(&self) { self.rootkeys.do_reset_dont_ask_init(); }
+    pub(crate) fn reset_dont_ask_init(&self) {
+        #[cfg(feature = "gen1")]
+        self.rootkeys.do_reset_dont_ask_init();
+    }
 
-    pub(crate) fn checksums(&self, modals: Option<&Modals>) -> root_keys::api::Checksums {
-        let mut checksums = root_keys::api::Checksums::default();
+    pub(crate) fn checksums(&self, modals: Option<&Modals>) -> Checksums {
+        let mut checksums = Checksums::default();
         let pddb = unsafe { self.pddb_mr.as_slice() };
         if let Some(m) = modals {
             m.start_progress(t!("pddb.checksums", locales::LANG), 0, checksums.checksums.len() as u32, 0)
                 .ok();
         }
         for (index, region) in
-            pddb.chunks(root_keys::api::CHECKSUM_BLOCKLEN_PAGE as usize * PAGE_SIZE).enumerate()
+            pddb.chunks(keystore_api::CHECKSUM_BLOCKLEN_PAGE as usize * PAGE_SIZE).enumerate()
         {
             assert!(
-                region.len() == root_keys::api::CHECKSUM_BLOCKLEN_PAGE as usize * PAGE_SIZE,
+                region.len() == keystore_api::CHECKSUM_BLOCKLEN_PAGE as usize * PAGE_SIZE,
                 "CHECKSUM_BLOCKLEN_PAGE is not an even divisor of the PDDB size"
             );
             let mut hasher = Sha512_256Hw::new();
@@ -3024,7 +3311,7 @@ impl PddbOs {
     pub(crate) fn pddb_get_all_keys<'a>(
         &'a self,
         cache: &'a Vec<BasisCacheEntry>,
-        _op: GetKeyOp,
+        // _op: GetKeyOp,
     ) -> Option<Vec<(BasisKeys, String)>> {
         // populate the "known" entries
         let mut ret = Vec::<(BasisKeys, String)>::new();
@@ -3177,7 +3464,7 @@ impl PddbOs {
                     self.spinor
                         .patch(
                             self.pddb_mr.as_slice(),
-                            xous::PDDB_LOC,
+                            PDDB_A_LOC,
                             &page,
                             self.pt_phys_base.as_u32() + (page_index * PAGE_SIZE) as u32,
                         )

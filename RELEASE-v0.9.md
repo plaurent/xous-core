@@ -359,7 +359,7 @@ perform the Xous firmware upgrade. This requires running manual update commands,
   - Shut down I2C block after this read happens by disabling it
   - Harden the RTC handler such that if junk corrupts the RTC it doesn't loop forever being confused about the junk data.
 - More multi-platform support work
-  - Preliminary Cramium SoC and FPGA targets incorporated
+  - Preliminary bao1x SoC and FPGA targets incorporated
   - atsama5d27 target support via PRs from Foundation Devices (thank you!!). Xous is now booting on the ATSAMA5D27-SOM1-EK1 dev board!
 - Fix edge case in phase 1 loader (thanks to @southpawflow for reporting it and providing the test case files)
 - Implementations removed from crates.io (API crates still published) -- nobody is using the implementation crates it seems, and they are very hard to maintain.
@@ -401,7 +401,7 @@ perform the Xous firmware upgrade. This requires running manual update commands,
 - Issue #341 closed (support open wifi networks) - requires EC update.
 - Rust 1.71.0 support - @xobs discovered that Rust 1.71.0 now shifts the address around of hardware management structures such that when we bind them to interrupt handlers, the final address of the interrupt handler is different from the address we see inside the `new()` function. It's actually allowed to do this. @xobs has created the "deferred-init + Box" pattern to harden against this. Deferred-init refers to binding the address of the hardware structure to the interrupt handler *after* `new()` has returned. This ensures that at least all the optimization that may happen inside `new()` are finalized. Additionally, wrapping the result of `new()` inside `Box()` ensures that the resulting structure is put on the heap. Because `Box` also implements `Pin`, the compiler won't muck with the address any further and should prevent future incompatibilities with Rust. The only place this pattern could not be applied is in the USB stack, because the USB crate we use expects to have an un-Box'd hardware management structure. However, deferred-init alone seems to be good enough, at least for now, to allow this to work.
 - Fix (hopefully for real this time?) a bug in the "flush cache" instruction for Vex that affected specifically virtual memory configurations like ours. This will require a firmware update.
-- More cramium SoC target integration and libraries; support multi-SVD targets in `utralib`
+- More bao1x SoC target integration and libraries; support multi-SVD targets in `utralib`
 - Add menu option in `vault` to type usernames (in addition to passwords)
 - Fix minor issue in precursorupdater where `--config` argument would not quit and run an update instead
 - Fix issue in `ProcessStartup` where `repr(C)` was missing, thanks to @vihaanjim for finding that subtle bug!
@@ -479,7 +479,7 @@ perform the Xous firmware upgrade. This requires running manual update commands,
 - Fix panic reporting in userspace panics. There was an API incompatibility between `std` and the panic handler where we instantiated the panic handler as a "well known service" but actually it needed to be registered with xous-names.
 - Added "device RAM allocation". A region of memory requested using the `map_memory` API with a physical address of `None` and a flag of `xous::MemoryFlags::DEV` will be allocated as contiguous physical pages of memory. It returns `OutOfMemory` if a contiguous block cannot be found; it is up to the userspace to de-allocate or swap out memory to create a large enough block. This API is useful for creating regions of RAM to be passed on to e.g. DMA devices or hardware coprocessors.
 - cleaned up swap API; removed elements that are no longer needed (e.g. SID/CID for userspace calls from kernel)
-- Cramium target:
+- bao1x target:
   - USB core able to enumerate, communicate to Linux devices. Windows compat still WIP.
   - Mailbox protocol to other devices has been tested, working.
   - TRNG has been tuned, partially validated.
@@ -506,7 +506,22 @@ perform the Xous firmware upgrade. This requires running manual update commands,
   - Number of pages to allocate could be automated inside the `xous-ipc` crate, but this will be delegated to a future time with a new API.
   - Most applications were forward-ported, except for `app-loader` which has already bit-rotted for other reasons and may be deprecated because we can use "swap" space to effectively do app loading (to be made available in future hardware revs)
   - Serialization is a bit easier now with the new `rkyv`, we don't have to track a `pos` explicitly; all of the archival metadata is now stuck at the end of the archive, so all you need to know is the final length of the serialized record and you're done.
-
+- Refactor `blitstr2` to be in its own `libs` crate, allowing it to be re-used across multiple configurations
+- Clean up the board vs soc abstraction. There are still places that don't adhere to this distinction, but:
+  - A `soc` flag specifies dependencies that are generic to a system-on-chip (SoC). For example, the locations of registers, or the extents of memory regions contained in the `soc`.
+  - A `board` flag specifies dependencies that are specific to a board. For example, the resolution of displays, pin mappings to peripherals, and sizes of external memory. Typically, a board assumes a `soc`, so both a `board-*` and `*-soc` set of flags are required to fully specify a build.
+  - Precursor (the first target for Xous) did not hold to this abstraction and conflated the two, so it is a special case in the build system.
+  - "Hosted" mode emulations are considered to be a `board` target; the `soc` is assumed to be the host (linux, windows, etc.)
+- Since all builds require a `board` specifier, documentation now requires a `doc-deps` flag to be passed. This effectively specifies a set of dummy board dependencies so that the documentation can build. Here is the recommended command line for building docs: `cargo doc --no-deps --feature doc-deps`
+- Move graphics api to `ux-api` crate. This enables multi-platform support for the existing graphics libraries.
+  - graphics-server is deprecated as a dependency. Clients should now use `ux-api::minigfx` for drawing primitive dependencies.
+  - This change now hides the GAM abstraction in most cases. The GAM is used to implement windowing; for lightweight platforms that don't have the screen real estate for windows, the `canvas`/`Gid` abstractions still exist but are ignored, and applications can draw directly to the screen.
+  - `baosec` target in particular supports no windowing as the screen is 128x128: the UI is purely modal, where every user interaction occupies the entire screen.
+  - Modify the core message loop to use reply_and_receive_next() API
+- Improve message passing time by ~15% in tight scalar message benchmark
+  - `activate_process_thread` now takes a `lazy_arg` which is evaluated after the thread is activated. When `lazy_arg` is set, it can save a context switch, as it allows pre-switch context setup to be deferred until the final context switch to activate the target process.
+- Vexii SoC target support. This is primarily for testing the Vexii core for future implementations.
+- Baremetal targets. As the name implies, these are baremetal targets, free of Xous OS. The primary purpose of baremetal targets are to streamline low-level driver development. However, they can also be useful as templates for very small embedded projects that don't require all the features of Xous.
 
 ## Roadmap
 - Lots of testing and bug fixes

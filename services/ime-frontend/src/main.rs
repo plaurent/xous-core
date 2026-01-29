@@ -6,7 +6,6 @@ use core::fmt::Write;
 
 use emoji::*;
 use gam::api::SetCanvasBoundsRequest;
-use graphics_server::{DrawStyle, Gid, Line, PixelColor, Point, Rectangle, TextBounds, TextView};
 use ime_plugin_api::{ApiToken, PredictionApi, PredictionPlugin, PredictionTriggers};
 use ime_plugin_api::{ImefCallback, ImefDescriptor, ImefOpcode};
 use locales::t;
@@ -14,6 +13,8 @@ use log::{error, info};
 use num_traits::{FromPrimitive, ToPrimitive};
 #[cfg(feature = "tts")]
 use tts_frontend::*;
+use ux_api::minigfx::*;
+use ux_api::service::api::*;
 use xous::{CID, msg_scalar_unpack};
 use xous_ipc::Buffer;
 
@@ -142,22 +143,26 @@ impl InputTracker {
             self.gam
                 .draw_rectangle(
                     pc,
-                    Rectangle::new_with_style(Point::new(0, 0), pc_bounds, DrawStyle {
-                        fill_color: Some(PixelColor::Light),
-                        stroke_color: None,
-                        stroke_width: 0,
-                    }),
+                    Rectangle::new_with_style(
+                        Point::new(0, 0),
+                        pc_bounds,
+                        DrawStyle {
+                            fill_color: Some(PixelColor::Light),
+                            stroke_color: None,
+                            stroke_width: 0,
+                        },
+                    ),
                 )
                 .expect("can't clear prediction area");
             // add the border line on top
             self.gam
                 .draw_line(
                     pc,
-                    Line::new_with_style(Point::new(0, 0), Point::new(pc_bounds.x, 0), DrawStyle {
-                        fill_color: None,
-                        stroke_color: Some(PixelColor::Dark),
-                        stroke_width: 1,
-                    }),
+                    Line::new_with_style(
+                        Point::new(0, 0),
+                        Point::new(pc_bounds.x, 0),
+                        DrawStyle { fill_color: None, stroke_color: Some(PixelColor::Dark), stroke_width: 1 },
+                    ),
                 )
                 .expect("can't draw prediction top border");
         }
@@ -167,11 +172,15 @@ impl InputTracker {
             self.gam
                 .draw_rectangle(
                     ic,
-                    Rectangle::new_with_style(Point::new(0, 0), ic_bounds, DrawStyle {
-                        fill_color: Some(PixelColor::Light),
-                        stroke_color: None,
-                        stroke_width: 0,
-                    }),
+                    Rectangle::new_with_style(
+                        Point::new(0, 0),
+                        ic_bounds,
+                        DrawStyle {
+                            fill_color: Some(PixelColor::Light),
+                            stroke_color: None,
+                            stroke_width: 0,
+                        },
+                    ),
                 )
                 .expect("can't clear input area");
 
@@ -179,11 +188,11 @@ impl InputTracker {
             self.gam
                 .draw_line(
                     ic,
-                    Line::new_with_style(Point::new(0, 0), Point::new(ic_bounds.x, 0), DrawStyle {
-                        fill_color: None,
-                        stroke_color: Some(PixelColor::Dark),
-                        stroke_width: 1,
-                    }),
+                    Line::new_with_style(
+                        Point::new(0, 0),
+                        Point::new(ic_bounds.x, 0),
+                        DrawStyle { fill_color: None, stroke_color: Some(PixelColor::Dark), stroke_width: 1 },
+                    ),
                 )
                 .expect("can't draw input top line border");
         }
@@ -636,7 +645,7 @@ impl InputTracker {
                         31 // a default value to grow in case we don't have a valid last height
                     };
                     let mut req = SetCanvasBoundsRequest {
-                        requested: Point::new(0, ic_bounds.y + delta as i16),
+                        requested: Point::new(0, ic_bounds.y + delta as isize),
                         granted: None,
                         token_type: gam::TokenType::Gam,
                         token: self.gam_token.unwrap(),
@@ -676,11 +685,11 @@ impl InputTracker {
             }
             let pc_bounds: Point =
                 self.gam.get_canvas_bounds(pc).expect("Couldn't get prediction canvas bounds");
-            let pc_clip: Rectangle = Rectangle::new_with_style(Point::new(0, 1), pc_bounds, DrawStyle {
-                fill_color: Some(PixelColor::Light),
-                stroke_color: None,
-                stroke_width: 0,
-            });
+            let pc_clip: Rectangle = Rectangle::new_with_style(
+                Point::new(0, 1),
+                pc_bounds,
+                DrawStyle { fill_color: Some(PixelColor::Light), stroke_color: None, stroke_width: 0 },
+            );
             if debug1 {
                 info!("got pc_bound {:?}", pc_bounds);
             }
@@ -738,7 +747,7 @@ impl InputTracker {
                     info!("valid_predictions: {}", valid_predictions);
                 }
                 // OK, let's start initially with just a naive, split-by-N layout of the prediction area
-                let approx_width = pc_bounds.x / valid_predictions as i16;
+                let approx_width = pc_bounds.x / valid_predictions as isize;
 
                 let mut i = 0;
                 for p in self.pred_options.iter() {

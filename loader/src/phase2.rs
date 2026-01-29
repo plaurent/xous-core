@@ -1,63 +1,20 @@
 #[cfg(feature = "swap")]
+use xous::arch::{SWAP_CFG_VADDR, SWAP_COUNT_VADDR, SWAP_PT_VADDR};
+
+#[cfg(feature = "swap")]
 use crate::swap::*;
-use crate::*;
+use crate::{env::EnvVariables, *};
 
 /// Phase 2 bootloader
 ///
 /// Set up all the page tables, allocating new root page tables for SATPs and corresponding
 /// sub-pages starting from the base of previously copied process data.
-pub fn phase_2(cfg: &mut BootConfig, fs_prehash: &[u8; 64]) {
+pub fn phase_2(cfg: &mut BootConfig, env_variables: EnvVariables) {
     let args = cfg.args;
 
     // This is the offset in RAM where programs are loaded from.
     let mut process_offset = cfg.sram_start as usize + cfg.sram_size - cfg.init_size;
     println!("\n\nPhase2: Processess start out @ {:08x}", process_offset);
-
-    // Construct an environment block. This will be used by processes
-    // to access environment variables and system parameters. This
-    // is hardcoded for now, and can be expanded later.
-    #[rustfmt::skip]
-    let mut env = [
-        0x41, 0x70, 0x70, 0x50, // 'AppP' indicating application parameters
-        0x08, 0x00, 0x00, 0x00, // Size of AppP tag contents
-        0xb2, 0x00, 0x00, 0x00, // Size of entire AppP block including all tags
-        0x02, 0x00, 0x00, 0x00, // Number of tags present
-        0x45, 0x6e, 0x76, 0x42, // 'EnvB' indicating an environment block
-        0x9a, 0x00, 0x00, 0x00, // Number of bytes that follows for the environment block
-        0x01, 0x00, // Number of environment variables
-        0x14, 0x00, // Length of name of first variable
-        // Name of first variable 'ROOT_FILESYSTEM_HASH':
-        0x52, 0x4f, 0x4f, 0x54, 0x5f, 0x46, 0x49, 0x4c, 0x45, 0x53, 0x59, 0x53, 0x54, 0x45, 0x4d,
-        0x5f, 0x48, 0x41, 0x53, 0x48,
-        // Length of the contents of the first variable
-        0x80, 0x00,
-        // Root filesystem hash contents begin here:
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-    ];
-    // Convert the fs_prehash into a hex ascii string, suitable for environment variables
-    // The initial loader environment is hard-coded, so we use a hard-coded offset for the string
-    // destination. It was a deliberate decision to not include a generic environment variable
-    // handler in the loader because we want to keep the loader compact and with a small attack
-    // surface; a generic environment handling routine would add significant size without much
-    // benefit.
-    //
-    // Note that the main purpose for environment variables is for test & debug tooling, where
-    // single programs are run in hosted or emulated environments with arguments passed for fast
-    // debugging. The sole purpose for the environment variable in the loader's context is to
-    // pass this computed hash onto the userspace environments.
-    const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-    for (i, &byte) in fs_prehash.iter().enumerate() {
-        env[env.len() - 128 + i * 2] = HEX_DIGITS[(byte >> 4) as usize];
-        env[env.len() - 128 + i * 2 + 1] = HEX_DIGITS[(byte & 0xF) as usize];
-    }
 
     // Go through all Init processes and the kernel, setting up their
     // page tables and mapping memory to them.
@@ -79,7 +36,28 @@ pub fn phase_2(cfg: &mut BootConfig, fs_prehash: &[u8; 64]) {
     #[cfg(feature = "atsama5d27")]
     let mut kernel_irq_sp = 0;
 
+    #[cfg(feature = "bao1x")]
+    let mut trng = bao1x_hal::sce::trng::Trng::new(utralib::generated::HW_TRNG_BASE as usize);
+    #[cfg(feature = "bao1x")]
+    trng.setup_raw_generation(32); // this is safe to call multiple times to affirm the TRNG state
+
     for tag in args.iter() {
+        let mut env_header = crate::env::EnvHeader::default();
+        #[allow(unused_mut)]
+        let mut pid_env = env_variables.clone();
+
+        #[cfg(feature = "bao1x")]
+        {
+            let mut seed = [0u8; 32];
+            for chunk in seed.chunks_mut(4) {
+                chunk.copy_from_slice(&trng.get_u32().unwrap().to_ne_bytes());
+            }
+            let seed_hex = hex::encode(&seed);
+            pid_env.add_var("SEED", &seed_hex);
+        }
+
+        let env = env_header.to_bytes(&pid_env);
+
         if tag.name == u32::from_le_bytes(*b"IniE") {
             let inie = MiniElf::new(&tag);
             println!("\n\nCopying IniE program into memory");
@@ -199,6 +177,8 @@ pub fn phase_2(cfg: &mut BootConfig, fs_prehash: &[u8; 64]) {
     }
     #[cfg(feature = "swap")]
     {
+        use xous::arch::SWAP_STACK_TOP_VADDR;
+
         // map the swap page table into PID space 2
         let tt_address = cfg.processes[SWAPPER_PID as usize - 1].satp << 12;
         let root = unsafe { &mut *(tt_address as *mut PageTable) };
@@ -299,6 +279,18 @@ pub fn phase_2(cfg: &mut BootConfig, fs_prehash: &[u8; 64]) {
             }
         }
 
+        // allocate swap private stack
+        for i in 0..2 {
+            let stack_page = cfg.alloc() as usize;
+            cfg.map_page(
+                root,
+                stack_page,
+                SWAP_STACK_TOP_VADDR - PAGE_SIZE * (i + 1),
+                FLG_R | FLG_W | FLG_U | FLG_VALID,
+                SWAPPER_PID,
+            );
+        }
+
         // map any hardware-specific pages into the userspace swapper
         crate::platform::userspace_maps(cfg);
     }
@@ -321,6 +313,24 @@ pub fn phase_2(cfg: &mut BootConfig, fs_prehash: &[u8; 64]) {
             println!();
         }
     }
+    #[cfg(feature = "early-printk")]
+    {
+        let tt_address = cfg.processes[1 as usize - 1].satp << 12;
+        let root = unsafe { &mut *(tt_address as *mut crate::PageTable) };
+
+        // map UART into kernel space for early debug in kernel (before platform init can be called)
+        // use map_page_32 because we don't track this in the RPT.
+        cfg.map_page_32(
+            root,
+            utralib::HW_UART_BASE,
+            0xffcf0000, // canonical debug UART location according to the Xous memory map
+            FLG_R | FLG_W | FLG_VALID | FLG_A | FLG_D,
+            1, // Kernel is PID 1
+        );
+    }
+    #[cfg(all(feature = "debug-print", not(feature = "verilator-only")))]
+    // print the kernel's page table mappings as a sanity check on the loader
+    debug::print_pagetable(cfg.processes[0].satp);
 
     // Mark pages used by suspend/resume, otherwise they will be handed out to userspace.
     // However, when not doing suspend/resume, it's safe to hand this out because it's always zeroized
@@ -392,7 +402,10 @@ impl ProgramDescription {
         println!("Mapping PID {} into offset {:08x}", pid, load_offset);
         let pid_idx = (pid - 1) as usize;
         let is_kernel = pid == 1;
+        #[cfg(not(feature = "vexii-test"))]
         let flag_defaults = FLG_R | FLG_W | FLG_VALID | if is_kernel { 0 } else { FLG_U };
+        #[cfg(feature = "vexii-test")]
+        let flag_defaults = FLG_R | FLG_W | FLG_VALID | FLG_A | if is_kernel { 0 } else { FLG_U };
         let stack_addr = if is_kernel { KERNEL_STACK_TOP } else { USER_STACK_TOP } - 16;
         if is_kernel {
             assert!(self.text_offset as usize == KERNEL_LOAD_OFFSET);
@@ -420,11 +433,20 @@ impl ProgramDescription {
         if SDBG {
             println!("Kernel root PT address: {:x}", satp_address);
         }
+        #[cfg(not(feature = "vexii-test"))]
         allocator.map_page(
             satp,
             satp_address,
             PAGE_TABLE_ROOT_OFFSET,
             FLG_R | FLG_W | FLG_VALID,
+            pid as XousPid,
+        );
+        #[cfg(feature = "vexii-test")]
+        allocator.map_page(
+            satp,
+            satp_address,
+            PAGE_TABLE_ROOT_OFFSET,
+            FLG_R | FLG_W | FLG_A | FLG_VALID,
             pid as XousPid,
         );
         #[cfg(feature = "swap")]
@@ -442,11 +464,20 @@ impl ProgramDescription {
                 // Pre-allocate the first stack offset, since it
                 // will definitely be used
                 let sp_page = allocator.alloc() as usize;
+                #[cfg(not(feature = "vexii-test"))]
                 allocator.map_page(
                     satp,
                     sp_page,
                     (stack_addr - PAGE_SIZE * i) & !(PAGE_SIZE - 1),
                     flag_defaults,
+                    pid as XousPid,
+                );
+                #[cfg(feature = "vexii-test")]
+                allocator.map_page(
+                    satp,
+                    sp_page,
+                    (stack_addr - PAGE_SIZE * i) & !(PAGE_SIZE - 1),
+                    flag_defaults | FLG_D,
                     pid as XousPid,
                 );
             } else {
@@ -463,11 +494,20 @@ impl ProgramDescription {
             // If it's the kernel, also allocate an exception page
             if is_kernel {
                 let sp_page = allocator.alloc() as usize;
+                #[cfg(not(feature = "vexii-test"))]
                 allocator.map_page(
                     satp,
                     sp_page,
                     (EXCEPTION_STACK_TOP - 16 - PAGE_SIZE * i) & !(PAGE_SIZE - 1),
                     flag_defaults,
+                    pid as XousPid,
+                );
+                #[cfg(feature = "vexii-test")]
+                allocator.map_page(
+                    satp,
+                    sp_page,
+                    (EXCEPTION_STACK_TOP - 16 - PAGE_SIZE * i) & !(PAGE_SIZE - 1),
+                    flag_defaults | FLG_D,
                     pid as XousPid,
                 );
             }
@@ -523,12 +563,6 @@ impl ProgramDescription {
         }
 
         // Allocate pages for .bss, if necessary
-
-        // Our "earlyprintk" equivalent
-        if cfg!(feature = "earlyprintk") && is_kernel {
-            allocator.map_page(satp, 0xF000_2000, 0xffcf_0000, FLG_R | FLG_W | FLG_VALID, pid as XousPid);
-        }
-
         let process = &mut allocator.processes[pid_idx];
         process.entrypoint = self.entrypoint as usize;
         process.sp = stack_addr;

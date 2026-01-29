@@ -10,21 +10,16 @@ use chrono::Local;
 
 pub(crate) fn generate_version(add_timestamp: bool) {
     let output = if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(["/C", "git describe --tags --long"])
-            .output()
-            .expect("failed to execute process")
+        Command::new("cmd").args(["/C", "git describe --long"]).output().expect("failed to execute process")
     } else {
-        Command::new("sh")
-            .arg("-c")
-            .arg("git describe --tags --long")
-            .output()
-            .expect("failed to execute process")
+        Command::new("sh").arg("-c").arg("git describe --long").output().expect("failed to execute process")
     };
     let gitver = output.stdout;
     let semver = String::from_utf8_lossy(&gitver);
 
     let version_file = "services/xous-ticktimer/src/version.rs";
+    let boot0_version_file = "bao1x-boot/boot0/src/version.rs";
+    let boot1_version_file = "bao1x-boot/boot1/src/version.rs";
 
     // Read the existing file to see if it needs to be updated.
     let mut existing_data = Vec::new();
@@ -43,15 +38,17 @@ pub(crate) fn generate_version(add_timestamp: bool) {
         )
         .expect("couldn't add our timestamp");
     } else {
-        write!(new_data, "#[allow(dead_code)]\npub const TIMESTAMP: &'static str = \"unavailable\";\n")
+        write!(new_data, "#[allow(dead_code)]\npub const TIMESTAMP: &'static str = \"omitted\";\n")
             .expect("couldn't add our timestamp");
     }
+    let mut semver_code = Vec::new();
     writeln!(
-        new_data,
+        semver_code,
         "pub const SEMVER: &'static str = \"{}\";",
         semver.strip_suffix("\r\n").or(semver.strip_suffix('\n')).unwrap_or(&semver)
     )
     .expect("couldn't add our semver");
+    new_data.extend_from_slice(&semver_code);
 
     if existing_data != new_data {
         let mut vfile = OpenOptions::new()
@@ -62,6 +59,22 @@ pub(crate) fn generate_version(add_timestamp: bool) {
             .open(version_file)
             .expect("Can't open our version file for writing");
         vfile.write_all(&new_data).expect("couldn't write new timestamp to version.rs");
+        let mut vfile = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(boot0_version_file)
+            .expect("Can't open our version file for writing");
+        vfile.write_all(&semver_code).expect("couldn't write semver to version.rs");
+        let mut vfile = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(boot1_version_file)
+            .expect("Can't open our version file for writing");
+        vfile.write_all(&semver_code).expect("couldn't write semver to version.rs");
     }
 }
 

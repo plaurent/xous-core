@@ -5,6 +5,9 @@ use gdbstub::stub::{GdbStubBuilder, GdbStubError, MultiThreadStopReason};
 use gdbstub::target::Target;
 
 use crate::io::SerialRead;
+#[cfg(feature = "bao1x")]
+use crate::platform::bao1x::gdbuart::GdbUart;
+#[cfg(not(feature = "bao1x"))]
 use crate::platform::precursor::gdbuart::GdbUart;
 
 mod breakpoints;
@@ -29,6 +32,9 @@ pub struct XousTarget {
 
 pub struct XousDebugState<'a> {
     pub target: XousTarget,
+    #[cfg(feature = "bao1x")]
+    pub server: GdbStubStateMachine<'a, XousTarget, crate::platform::bao1x::gdbuart::GdbUart>,
+    #[cfg(not(feature = "bao1x"))]
     pub server: GdbStubStateMachine<'a, XousTarget, crate::platform::precursor::gdbuart::GdbUart>,
 }
 
@@ -258,10 +264,13 @@ pub fn report_stop(_pid: xous_kernel::PID, tid: xous_kernel::TID, _pc: usize) {
         return;
     };
 
-    let Ok(new_gdb) = inner.report_stop(&mut target, MultiThreadStopReason::SignalWithThread {
-        signal: Signal::EXC_BREAKPOINT,
-        tid: Tid::new(tid).unwrap(),
-    }) else {
+    let Ok(new_gdb) = inner.report_stop(
+        &mut target,
+        MultiThreadStopReason::SignalWithThread {
+            signal: Signal::EXC_BREAKPOINT,
+            tid: Tid::new(tid).unwrap(),
+        },
+    ) else {
         println!("Unable to report stop");
         return;
     };

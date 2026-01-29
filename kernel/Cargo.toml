@@ -11,16 +11,16 @@ resolver = "2"
 [dependencies]
 bitflags = "1.2.1"
 stats_alloc = { version = "0.1.8", optional = true }
-xous-kernel = { package = "xous", version = "0.9.64", features = [
+xous-kernel = { package = "xous", version = "0.9.69", features = [
     "forget-memory-messages",
 ] }
-utralib = { version = "0.1.25", optional = true, default-features = false }
+utralib = { version = "0.1.26", optional = true, default-features = false }
 rand_chacha = { version = "0.3.1", optional = true, default-features = false }
-cramium-hal = { path = "../libs/cramium-hal", optional = true, default-features = false }
+bao1x-hal = { path = "../libs/bao1x-hal", optional = true, default-features = false }
+bao1x-api = { path = "../libs/bao1x-api", optional = true }
 loader = { path = "../loader", optional = true, features = ["swap"] }
-
 [target.'cfg(any(windows,unix))'.dev-dependencies]
-xous-kernel = { package = "xous", version = "0.9.64", features = [
+xous-kernel = { package = "xous", version = "0.9.69", features = [
     "forget-memory-messages",
     "processes-as-threads",
 ] }
@@ -37,19 +37,20 @@ armv7 = { git = "https://github.com/Foundation-Devices/armv7.git", branch = "upd
 ] }
 # FIXME: bring atsama5d27 target up to date so utralib dependency does not conflict
 # atsama5d27 = { git = "https://github.com/Foundation-Devices/atsama5d27.git", branch = "master" }
-xous-kernel = { package = "xous", version = "0.9.64", features = ["v2p"] }
+xous-kernel = { package = "xous", version = "0.9.69", features = ["v2p"] }
 critical-section = "1.1.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(baremetal)'] }
 
 [features]
-cramium-soc = ["utralib/cramium-soc", "cramium-hal", "rand_chacha", "raw-trng"]
+vexii-test = []                                                    # integration test for vexii, not a production configuration
+bao1x = ["utralib/bao1x", "rand_chacha", "raw-trng"]
 verilator-only = []
-cramium-fpga = ["utralib/cramium-fpga", "rand_chacha"]
-board-baosec = ["cramium-hal/board-baosec"]
-board-baosor = ["cramium-hal/board-baosor"]
-board-dabao = ["cramium-hal/board-dabao"]
+board-baosec = ["bao1x-hal/kernel-baosec", "memmap-flash", "swap"]
+board-baosor = ["bao1x-hal/kernel-baosor"]
+board-dabao = ["bao1x-hal/kernel-dabao"]
+hosted-baosec = []
 
 atsama5d27 = ["utralib/atsama5d27"]
 precursor = ["utralib/precursor"]
@@ -57,23 +58,27 @@ hosted = ["utralib/hosted"]
 renode = ["utralib/renode"]
 
 debug-print = []
-gdb-stub = ["gdbstub", "gdbstub_arch"]
+gdb-stub = ["gdbstub", "gdbstub_arch", "bao1x-api"]
 print-panics = []
-dump-kernel-pages = []                     # include kernel pages in panic dumps
+dump-kernel-pages = []                              # include kernel pages in panic dumps
 report-memory = ["stats_alloc"]
 wrap-print = []
-big-heap = []                              # Cause heaps to start at 12 MM instead of 512 kB
+big-heap = []                                       # Cause heaps to start at 12 MM instead of 512 kB
 v2p = ["xous-kernel/v2p"]
 swap = ["xous-kernel/swap", "loader/swap"]
+memmap-flash = []
 debug-swap = []
 debug-swap-verbose = []
 raw-trng = ["xous-kernel/raw-trng"]
+# this is somewhat unsafe because it introduces more attack surface for the kernel by allowing the
+# userspace to hand it a random page from the caller's virtual memory space, and populate it with debug information
+debug-proc = []
 
 # patches for simulation targets ONLY. Applying these flags will result in totally broken security.
 hwsim = []
 
 # default = ["print-panics", "debug-print", "wrap-print"]
-default = ["print-panics"]
+default = ["debug-proc", "print-panics"]
 
 [target.'cfg(any(windows, unix))'.dependencies]
 crossbeam-channel = "0.5"

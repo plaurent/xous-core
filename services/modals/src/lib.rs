@@ -2,7 +2,7 @@
 
 pub mod api;
 use api::*;
-#[cfg(feature = "ditherpunk")]
+#[cfg(any(feature = "ditherpunk", feature = "modal-testing"))]
 pub mod tests;
 
 use core::cell::Cell;
@@ -11,9 +11,18 @@ use std::cmp::max;
 #[cfg(feature = "ditherpunk")]
 use std::convert::TryInto;
 
+#[cfg(feature = "hosted-baosec")]
+use bao1x_emu::trng::Trng;
+#[cfg(feature = "bao1x")]
+use bao1x_hal_service::trng::Trng;
 use bit_field::BitField;
+#[cfg(not(any(feature = "hosted-baosec", feature = "board-baosec")))]
 use gam::*;
 use num_traits::*;
+#[cfg(all(not(feature = "bao1x"), not(feature = "doc-deps"), not(feature = "hosted-baosec")))]
+use trng::Trng;
+#[cfg(any(feature = "hosted-baosec", feature = "board-baosec"))]
+use ux_api::widgets::*;
 use xous::{CID, Message, send_message};
 use xous_ipc::Buffer;
 
@@ -180,16 +189,16 @@ impl Modals {
         REFCOUNT.fetch_add(1, Ordering::Relaxed);
         let conn =
             xns.request_connection_blocking(api::SERVER_NAME_MODALS).expect("Can't connect to Modals server");
-        #[cfg(feature = "cramium-soc")]
-        let trng = cram_hal_service::trng::Trng::new(&xns).unwrap();
-        #[cfg(not(feature = "cramium-soc"))]
-        let trng = trng::Trng::new(&xns).unwrap();
+        #[cfg(not(feature = "doc-deps"))]
+        let trng = Trng::new(&xns).unwrap();
+        #[allow(unused_mut)]
         let mut token = [0u32; 4];
+        #[cfg(not(feature = "doc-deps"))]
         trng.fill_buf(&mut token).unwrap();
         Ok(Modals { conn, token, have_lock: Cell::new(false) })
     }
 
-    pub fn alert_builder(&self, prompt: &str) -> AlertModalBuilder {
+    pub fn alert_builder(&self, prompt: &str) -> AlertModalBuilder<'_> {
         AlertModalBuilder {
             prompt: String::from(prompt),
             validators: vec![],
@@ -586,6 +595,13 @@ impl Modals {
         Ok(())
     }
 
+    pub fn add_stateful_list(&self, items: Vec<(bool, &str)>) -> Result<(), xous::Error> {
+        for (_, &(state, text)) in items.iter().enumerate() {
+            self.add_stateful_list_item(state, text).or(Err(xous::Error::InternalError))?;
+        }
+        Ok(())
+    }
+
     /// Add individual items to a list to be used by get_radiobutton or get_checkbox.
     /// - Does not display on its own, the above mentioned methods prompt display of the list.
     ///
@@ -601,7 +617,15 @@ impl Modals {
     /// ```
     pub fn add_list_item(&self, item: &str) -> Result<(), xous::Error> {
         self.lock();
-        let itemname = ManagedListItem { token: self.token, item: ItemName::new(item) };
+        let itemname = ManagedListItem { token: self.token, item: ItemName::new(item), state: false };
+        let buf = Buffer::into_buf(itemname).or(Err(xous::Error::InternalError))?;
+        buf.lend(self.conn, Opcode::AddModalItem.to_u32().unwrap()).or(Err(xous::Error::InternalError))?;
+        Ok(())
+    }
+
+    pub fn add_stateful_list_item(&self, state: bool, item: &str) -> Result<(), xous::Error> {
+        self.lock();
+        let itemname = ManagedListItem { token: self.token, item: ItemName::new(item), state };
         let buf = Buffer::into_buf(itemname).or(Err(xous::Error::InternalError))?;
         buf.lend(self.conn, Opcode::AddModalItem.to_u32().unwrap()).or(Err(xous::Error::InternalError))?;
         Ok(())
@@ -730,10 +754,8 @@ impl Modals {
             .or(Err(xous::Error::InternalError))?;
         let selected_items = buf.to_original::<CheckBoxPayload, _>().unwrap();
         let mut ret = Vec::<String>::new();
-        for maybe_item in selected_items.payload() {
-            if let Some(item) = maybe_item {
-                ret.push(String::from(item.as_str()));
-            }
+        for item in selected_items.payload() {
+            ret.push(String::from(item.as_str()));
         }
         self.unlock();
         Ok(ret)
@@ -906,6 +928,18 @@ impl Modals {
     /// - needed for use with `dynamic_notification_blocking_listener`
     /// - see `dynamic_notification_blocking_listener` for a code example.
     pub fn token(&self) -> [u32; 4] { self.token }
+
+    #[cfg(feature = "no-gam")]
+    pub fn release_focus(&self) {
+        send_message(self.conn, Message::new_scalar(Opcode::ReleaseFocus.to_usize().unwrap(), 0, 0, 0, 0))
+            .unwrap();
+    }
+
+    #[cfg(feature = "no-gam")]
+    pub fn acquire_focus(&self) {
+        send_message(self.conn, Message::new_scalar(Opcode::AcquireFocus.to_usize().unwrap(), 0, 0, 0, 0))
+            .unwrap();
+    }
 }
 
 use core::sync::atomic::{AtomicU32, Ordering};

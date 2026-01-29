@@ -10,39 +10,43 @@ homepage = "https://betrusted.io/"
 
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
-xous-api-names = "0.9.65"
-log-server = { package = "xous-api-log", version = "0.1.63" }
-xous = { version = "0.9.64", features = ["swap"] }
-xous-ipc = "0.10.4"
+xous-api-names = "0.9.70"
+log-server = { package = "xous-api-log", version = "0.1.68" }
+xous = { version = "0.9.69", features = ["swap"] }
+xous-ipc = "0.10.9"
 num-derive = { version = "0.4.2", default-features = false }
 num-traits = { version = "0.2.14", default-features = false }
 log = "0.4.14"
-loader = { path = "../../loader", features = ["swap"] }
+loader = { path = "../../loader", features = ["swap"], optional = true }
 aes-gcm-siv = { version = "0.11.1", default-features = false, features = [
     "aes",
 ] }
-cramium-hal = { path = "../../libs/cramium-hal", optional = true, default-features = false }
+aes = { path = "../aes", default-features = false, optional = true, features = [
+    "chaffing",
+] }
+bao1x-hal = { path = "../../libs/bao1x-hal", optional = true, default-features = false }
+precursor-hal = { path = "../../libs/precursor-hal", optional = true, default-features = false }
+bao1x-api = { path = "../../libs/bao1x-api", optional = true, default-features = false }
 
-utralib = { version = "0.1.25", optional = true, default-features = false }
+utralib = { version = "0.1.26", optional = true, default-features = false }
 
 [target.'cfg(any(windows,unix))'.dependencies]
 
 [features]
-cramium-soc = ["utralib/cramium-soc", "cramium-hal", "loader/cramium-soc"]
-cramium-fpga = ["utralib/cramium-fpga"]
-board-baosec = ["cramium-hal/board-baosec"]
-board-baosor = ["cramium-hal/board-baosor"]
-board-dabao = ["cramium-hal/board-dabao"]
+bao1x = ["utralib/bao1x", "loader/bao1x", "bao1x-api/std", "aes/bao1x"]
+board-baosec = ["bao1x-hal/board-baosec", "bao1x"]
+board-baosor = ["bao1x-hal/board-baosor", "bao1x"]
+board-dabao = ["bao1x-hal/board-dabao", "bao1x"]
 
-precursor = ["utralib/precursor"]
+precursor = ["utralib/precursor", "precursor-hal"]
 hosted = ["utralib/hosted"]
-renode = ["utralib/renode"]
+renode = ["utralib/renode", "precursor-hal"]
 swap-userspace-testing = []
 oom-doom = []
 
-# mutually exclusive feature with other crates that use the app UART
-# requires "userspace-debug" to be passed to the loader for this to work.
-debug-print-swapper = []
-
 debug-verbose = []
+
+# mutually exclusive feature with other crates that use the app UART
+# *** requires "userspace-swap-debug" to be passed to the loader for this to work. ***
+debug-print-swapper = []
 default = []

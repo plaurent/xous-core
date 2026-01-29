@@ -7,11 +7,11 @@ description = "Xous USB device drivers"
 
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
-xous = "0.9.64"
-xous-ipc = "0.10.4"
-log-server = { package = "xous-api-log", version = "0.1.63" }
-ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.63" }
-xous-names = { package = "xous-api-names", version = "0.9.65" }
+xous = "0.9.69"
+xous-ipc = "0.10.9"
+log-server = { package = "xous-api-log", version = "0.1.68" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.69" }
+xous-names = { package = "xous-api-names", version = "0.9.70" }
 log = "0.4.14"
 llio = { path = "../llio" }
 num-derive = { version = "0.4.2", default-features = false }
@@ -20,24 +20,25 @@ rkyv = { version = "0.8.8", default-features = false, features = [
     "std",
     "alloc",
 ] }
-susres = { package = "xous-api-susres", version = "0.9.63" }
+susres = { path = "../../api/xous-api-susres", package = "xous-api-susres" }
 modals = { path = "../modals", optional = true }
 keyboard = { path = "../keyboard", features = ["inject-api"], optional = true }
 bitfield = "0.13.2"
 vcell = "0.1.3"
-xous-semver = "0.1.2"
-utralib = { version = "0.1.25", optional = true, default-features = false }
+xous-semver = "0.1.5"
+utralib = { version = "0.1.26", optional = true, default-features = false }
 trng = { path = "../trng", optional = true }
+precursor-hal = { path = "../../libs/precursor-hal" }
 
 xous-usb-hid = { git = "https://github.com/betrusted-io/xous-usb-hid.git", branch = "main" }
 embedded-time = "0.12.1"                                                                     # required by the keyboard interface
 packed_struct = { version = "0.10", default-features = false }                               # used by the xous-usb-hid crate
 num_enum = { version = "0.5", default-features = false }                                     # used by the xous-usb-hid crate
 
-cramium-hal = { path = "../../libs/cramium-hal", features = [
+bao1x-hal = { path = "../../libs/bao1x-hal", features = [
     "std",
 ], optional = true }
-cram-hal-service = { path = "../cram-hal-service", optional = true }
+bao1x-hal-service = { path = "../bao1x-hal-service", optional = true }
 
 
 # Mass storage support
@@ -71,5 +72,5 @@ mjolnir = [
 ] # the big hammer for debugging Spinal USB issues. A raw memory dump of config and descriptor space. Use with care.
 pinger = []
 
-# cramium targets must specify no default features; this is necessary for cargo doc to work.
+# bao1x targets must specify no default features; this is necessary for cargo doc to work.
 default = ["trng"]

@@ -1,5 +1,6 @@
 use core::mem::size_of;
 
+use aes_gcm_siv::aead::Error;
 use aes_gcm_siv::{AeadInPlace, Aes256GcmSiv, KeyInit, Nonce, Tag};
 use utralib::generated::*;
 
@@ -24,7 +25,7 @@ pub struct SwapHal {
 }
 
 impl SwapHal {
-    pub fn new(cfg: &BootConfig) -> Option<SwapHal> {
+    pub fn new(cfg: &BootConfig, _perclk_freq: u32) -> Option<SwapHal> {
         if let Some(swap) = cfg.swap {
             // safety: the swap source header is guaranteed to be aligned and initialized in memory
             // by the image creator.
@@ -106,7 +107,7 @@ impl SwapHal {
     pub fn get_swap_key(&self) -> &[u8] { &self.ram_swap_key }
 
     /// `offset` is the offset from the beginning of the encrypted region (not full disk region)
-    pub fn decrypt_src_page_at(&mut self, offset: usize) -> &[u8] {
+    pub fn decrypt_src_page_at(&mut self, offset: usize) -> Result<&[u8], Error> {
         assert!((offset & 0xFFF) == 0, "offset is not page-aligned");
         self.buf_addr = offset;
         // println!("data area: {:x?}", &self.src_data_area[..4]);
@@ -127,8 +128,11 @@ impl SwapHal {
             &mut self.buf.data,
             tag.into(),
         ) {
-            Ok(_) => &self.buf.data,
-            Err(e) => panic!("Decryption error in swap: {:?}", e),
+            Ok(_) => Ok(&self.buf.data),
+            Err(e) => {
+                println!("Decryption error from swap image: {:?}", e);
+                Err(e)
+            }
         }
     }
 
@@ -220,7 +224,7 @@ pub fn userspace_maps(cfg: &mut BootConfig) {
         cfg.map_page_32(
             root,
             addr,
-            SWAP_HAL_VADDR + PAGE_SIZE * i,
+            xous::arch::SWAP_HAL_VADDR + PAGE_SIZE * i,
             FLG_R | FLG_W | FLG_U | FLG_VALID,
             SWAPPER_PID,
         );
@@ -230,7 +234,7 @@ pub fn userspace_maps(cfg: &mut BootConfig) {
     cfg.map_page_32(
         root,
         utra::app_uart::HW_APP_UART_BASE,
-        SWAP_APP_UART_VADDR,
+        xous::arch::SWAP_APP_UART_VADDR,
         FLG_R | FLG_W | FLG_U | FLG_VALID,
         SWAPPER_PID,
     )

@@ -363,16 +363,87 @@ extern crate bitfield;
 /// ```
 // historical note: 389 hours, 11 mins elapsed since the start of the PDDB coding, and the first attempt at a
 // hardware test -- as evidenced by the uptime of the hardware validation unit.
+
+/*
+  Gen2 porting notes:
+
+  Todo list:
+  -[x] Rewrite pddb to use 'keystore' server instead of rootkeys/modals/ux integrations.
+  -[x] Fill in 'keystore' server for hosted mode emulation
+  -[x] Make a simple PDDB test in the baosec console app
+  -[x] Fix the bugs in hosted mode
+  -[ ] Rewrite xous-swapper/swap layer to understand virtual pages mapped to SPI flash (see notes below)
+  -[ ] Fix the bugs in real hardware
+
+    Xous-swapper refactor notes:
+
+    SPINOR shares the same interface as the swap SRAM, and therefore, the Spinor interface
+    has to live inside xous-swapper.
+
+    Xous also needs to be extended to implement Virtual Addresses that are not backed by
+    physical addresses, but are on-demand allocated by copying SPINOR contents into pages that
+    are allocated in SRAM. The general idea is something like this:
+    -[x] A new flag is added that can be passed to xous::MapMemory(). This flag is the `Swapped` flag,
+    and it indicates to the kernel that the physical address should be `null` and marked as `swapped`
+    for the mapping in its initial page table map in the given process.
+    -[x] A "special" range of virtual addresses needs to be carved out which is where the memory-mapped
+    FLASH memory would go to. Thus, a process would gain access to FLASH by simply calling MapMemory
+    with the FLASH memory VA range as the virtual address, `None` as the PA, and the Swapped flag
+    as one of the args in Memory Arguments
+    -[/] When the virtual address is referenced, it will page fault; the page fault handler will pass
+    this to Xous-Swapper in the userspace, which will then add a check for the virtual address.
+    If the virtual address is in the magic range for SPINOR, the contents are fetched using the
+    SPINOR interface based on the linear mapping of the lower bits of the address onto the SPINOR
+    memory space.
+    -[ ] Whenever a write happens inside Xous-Swapper to a location in FLASH, the page table entry for
+    the mapped FLASH location needs to be marked as invalid and returned to the free pool. This
+    uses the swap system to keep the read-view of FLASH in sync with hte write-view. This also
+    means that Xous-Swapper's SPINOR map has to keep a scoreboard of what pages are mapped to
+    what processes, so that we can search for the mapping and clear it whenever a write comes in.
+    -[ ] Development of this can probably happen separately from the emu-layer version. The basic thing
+    would be to drill down into the kernel with the kernel and a simple test server that just
+    tries to map the SPINOR and read some contents out, and perhaps update a sector. This will
+    exercise the path in isolation and allow us to test this routine as a separate primitive
+    from the PDDB.
+
+    - Development takes an incremental strategy:
+    1. Write the code that maps the proposed space with the proposed flags; need to implement
+    (a) "swap" flag which indicates the page is allocated in VM but not physically; and
+    (b) also make sure that the "dirty" flag is implemented correctly as it will actually
+    take on meaning for flushing pages to SPINOR
+    2. implement the kernel hooks to catch it, and test that
+    3. Attempt a read on the space, show the page fault, and hand-off to the swapper
+    4. implement the swapper hardware read interface
+    5. test reading to a range of data
+    6. implement the swapper *write* interface (with "patching" of unaligned writes)
+    7. add SwapOp to sync an in-memory page to FLASH
+    8. implement flush-on-release semantics for in-memory flash pages
+    9. test writing to a ranges of data (aligned, unaligned)
+    10. redo the 10 instances of spinor.patch() in pddb/backend/hw.rs to use straight-up
+    page writes as the method for writing. If we always sync after write, we can skip 11.
+    11. add swap flush call to the sync() method in PDDB
+
+    The merit of sync after write is we reduce the chance of inconsistent device state
+    on power loss. The downside is we end up writing a lot more? on the other hand,
+    writes aren't *that* common in this implementation, we may update a key record with
+    a timestamp every time it's accessed. Anyways, keep it flexible, I think this is
+    something we can tune later.
+*/
 extern crate bitflags;
 
 mod api;
 use api::*;
 mod backend;
 use backend::*;
+#[cfg(feature = "gen1")]
 mod ux;
 use rkyv::with::Identity;
+#[cfg(feature = "gen1")]
 use ux::*;
+#[cfg(feature = "gen1")]
 mod menu;
+use keystore_api::PasswordState;
+#[cfg(feature = "gen1")]
 use menu::*;
 
 mod libstd;
@@ -385,7 +456,6 @@ use tests::*;
 
 #[cfg(feature = "pddb-flamegraph")]
 mod profiling;
-
 use core::cell::RefCell;
 use core::fmt::Write;
 use core::mem::size_of;
@@ -399,8 +469,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+#[cfg(feature = "gen2")]
+use bao1x_hal::board::*;
 use locales::t;
 use num_traits::*;
+#[cfg(feature = "gen1")]
+use precursor_hal::board::*;
 use rkyv::{
     Archive, Place, Serialize,
     api::low::LowSerializer,
@@ -410,6 +484,11 @@ use rkyv::{
 };
 use xous::{Message, msg_blocking_scalar_unpack, send_message};
 use xous_ipc::Buffer;
+
+#[cfg(feature = "gen2")]
+pub const PDDB_A_LEN: usize = PDDB_LEN as usize;
+#[cfg(feature = "gen2")]
+pub const PDDB_A_LOC: u32 = PDDB_LOC as u32;
 
 #[cfg(feature = "perfcounter")]
 const FILE_ID_SERVICES_PDDB_SRC_MAIN: u32 = 0;
@@ -421,19 +500,6 @@ pub(crate) struct BasisRequestPassword {
     db_name: String,
     plaintext_pw: Option<String>,
 }
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PasswordState {
-    /// Mounted successfully.
-    Correct,
-    /// User-initiated aborted. The main purpose for this path is to facilitate
-    /// developers who want shellchat access but don't want to mount the PDDB.
-    Incorrect(u64),
-    /// Abort initiated by system policy due to too many failed attempts
-    ForcedAbort(u64),
-    /// Failure because the PDDB hasn't been initialized yet (can't mount because nothing to mount)
-    Uninit,
-}
-
 #[derive(Debug)]
 struct TokenRecord {
     pub dict: String,
@@ -504,19 +570,27 @@ fn wrapped_main() -> ! {
     let entropy = Rc::new(RefCell::new(TrngPool::new()));
 
     // for less-secured user prompts (everything but password entry)
+    #[cfg(feature = "gen1")]
     let modals = modals::Modals::new(&xns).expect("can't connect to Modals server");
 
     // our very own password modal. Password modals are precious and privately owned, to avoid
     // other processes from crafting them.
+    #[cfg(feature = "gen1")]
     let pw_sid = xous::create_server().expect("couldn't create a server for the password UX handler");
+    #[cfg(feature = "gen1")]
     let pw_cid = xous::connect(pw_sid).expect("couldn't connect to the password UX handler");
+    #[cfg(feature = "gen1")]
     let pw_handle = thread::spawn({
         // this comment keeps rustfmt from flattening this block
         move || password_ux_manager(xous::connect(pddb_sid).unwrap(), pw_sid)
     });
 
     // OS-specific PDDB driver
+    #[cfg(feature = "gen1")]
     let mut pddb_os = PddbOs::new(Rc::clone(&entropy), pw_cid);
+    #[cfg(feature = "gen2")]
+    // pw_cid is a dummy field in gen2
+    let mut pddb_os = PddbOs::new(Rc::clone(&entropy), 0);
     // storage for the basis cache
     let mut basis_cache = BasisCache::new();
     // storage for the token lookup: given an ApiToken, return a dict/key/basis set. Basis can be None or
@@ -557,6 +631,7 @@ fn wrapped_main() -> ! {
 
     // our menu handler
     let my_cid = xous::connect(pddb_sid).unwrap();
+    #[cfg(feature = "gen1")]
     let _ = thread::spawn({
         let my_cid = my_cid.clone();
         move || {
@@ -623,16 +698,19 @@ fn wrapped_main() -> ! {
 
     // the PDDB resets the hardware RTC to a new random starting point every time it is reformatted
     // it is the only server capable of doing this.
+    #[cfg(feature = "gen1")]
     let time_resetter = xns.request_connection_blocking(crate::TIME_SERVER_PDDB).unwrap();
 
     // track processes that want a notification of a mount event
     let mut mount_notifications = Vec::<xous::MessageSender>::new();
+    #[cfg(any(target_os = "xous", feature = "gen1"))]
     let mut attempt_notifications = Vec::<xous::MessageSender>::new();
 
     // track the basis monitor requester.
     let mut basis_monitor_notifications = Vec::<xous::MessageEnvelope>::new();
 
     // track heap usage
+    #[allow(unused_mut)]
     let mut initial_heap: usize = 0;
     let mut latest_heap: usize = 0;
     let mut latest_cache: usize = 0;
@@ -664,6 +742,7 @@ fn wrapped_main() -> ! {
     let mut scratch = [MaybeUninit::<u8>::uninit(); 256];
 
     // register a suspend/resume listener
+    #[cfg(feature = "gen1")]
     let mut susres =
         susres::Susres::new(Some(susres::SuspendOrder::Early), &xns, Opcode::SuspendResume as u32, my_cid)
             .expect("couldn't create suspend/resume object");
@@ -672,6 +751,7 @@ fn wrapped_main() -> ! {
         let op: Opcode = FromPrimitive::from_usize(msg.body.id() & 0xffff).unwrap_or(Opcode::InvalidOpcode);
         log::debug!("{:x?}", op);
         match op {
+            #[cfg(feature = "gen1")]
             Opcode::SuspendResume => xous::msg_scalar_unpack!(msg, token, _, _, _, {
                 basis_cache.suspend(&mut pddb_os);
                 susres.suspend_until_resume(token).expect("couldn't execute suspend/resume");
@@ -714,6 +794,73 @@ fn wrapped_main() -> ! {
             //      retries.
             // If we need more nuance out of this routine, consider creating a custom public enum type to help
             // marshall this.
+            #[cfg(feature = "gen2")]
+            Opcode::TryMount => {
+                xous::msg_blocking_scalar_unpack!(msg, _, _, _, _, {
+                    fn try_mount(
+                        pddb_os: &mut PddbOs,
+                        basis_cache: &mut BasisCache,
+                        basis_monitor_notifications: &mut Vec<xous::MessageEnvelope>,
+                    ) -> bool {
+                        if let Some(sys_basis) = pddb_os.pddb_mount() {
+                            log::info!("PDDB mount operation finished successfully");
+                            basis_cache.basis_add(sys_basis);
+                            if basis_monitor_notifications.len() > 0 {
+                                notify_basis_change(basis_monitor_notifications, basis_cache.basis_list());
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    match pddb_os.ensure_password() {
+                        PasswordState::Correct => {
+                            // The behavior in gen2 is mount-or-format: no user approval
+                            // is requested in case of format. This is silghtly dangerous in case
+                            // of data corruption but I think this is the "right" user experience
+                            if !try_mount(&mut pddb_os, &mut basis_cache, &mut basis_monitor_notifications) {
+                                log::warn!("PDDB not formatted - formatting the PDDB!");
+                                pddb_os.pddb_format(false, None).expect("couldn't format PDDB");
+                                if !try_mount(
+                                    &mut pddb_os,
+                                    &mut basis_cache,
+                                    &mut basis_monitor_notifications,
+                                ) {
+                                    panic!("Couldn't format & mount PDDB");
+                                }
+                            }
+                        }
+                        PasswordState::Uninit => {
+                            log::warn!("PDDB not formatted - formatting the PDDB!");
+                            pddb_os.pddb_format(false, None).expect("couldn't format PDDB");
+                            if !try_mount(&mut pddb_os, &mut basis_cache, &mut basis_monitor_notifications) {
+                                panic!("Couldn't format & mount PDDB");
+                            }
+                        }
+                        PasswordState::ForcedAbort(_failcount) => {
+                            unreachable!();
+                        }
+                        PasswordState::Incorrect(_failcount) => {
+                            log::warn!("PDDB formatted, but keys rotated. Formatting PDDB!");
+                            pddb_os.pddb_format(false, None).expect("couldn't format PDDB");
+                            if !try_mount(&mut pddb_os, &mut basis_cache, &mut basis_monitor_notifications) {
+                                panic!("Couldn't format & mount PDDB");
+                            }
+                        }
+                    }
+                    // the above operation should either succeed or panic, so we are always "success" here
+                    log::info!("{}PDDB.MOUNTED,{}", BOOKEND_START, BOOKEND_END);
+                    xous::return_scalar2(msg.sender, 0, 0).expect("couldn't return scalar");
+                    #[cfg(target_os = "xous")]
+                    for requester in attempt_notifications.drain(..) {
+                        xous::return_scalar2(requester, 0, 0).expect("couldn't return scalar");
+                    }
+                    for requester in mount_notifications.drain(..) {
+                        xous::return_scalar2(requester, 0, 0).expect("couldn't return scalar");
+                    }
+                })
+            }
+            #[cfg(feature = "gen1")]
             Opcode::TryMount => xous::msg_blocking_scalar_unpack!(msg, _, _, _, _, {
                 let llio = llio::Llio::new(&xns);
                 while !llio.is_ec_ready() {
@@ -727,7 +874,7 @@ fn wrapped_main() -> ! {
                 } else {
                     if !pddb_os.rootkeys_initialized() {
                         // can't mount if we have no root keys
-                        log::info!("{}PDDB.SKIPMOUNT,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                        log::info!("{}PDDB.SKIPMOUNT,{}", BOOKEND_START, BOOKEND_END);
                         // allow the main menu to be used in this case
                         let gam = gam::Gam::new(&xns).unwrap();
                         gam.allow_mainmenu().expect("couldn't allow main menu activation");
@@ -752,7 +899,7 @@ fn wrapped_main() -> ! {
                                         mount_notifications.len() == 0,
                                         "apparently I don't understand what drain() does"
                                     );
-                                    log::info!("{}PDDB.MOUNTED,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                                    log::info!("{}PDDB.MOUNTED,{}", BOOKEND_START, BOOKEND_END);
                                     xous::return_scalar2(msg.sender, 0, 0).expect("couldn't return scalar");
                                 } else {
                                     xous::return_scalar2(msg.sender, 1, 0).expect("couldn't return scalar");
@@ -775,7 +922,7 @@ fn wrapped_main() -> ! {
                                         mount_notifications.len() == 0,
                                         "apparently I don't understand what drain() does"
                                     );
-                                    log::info!("{}PDDB.MOUNTED,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                                    log::info!("{}PDDB.MOUNTED,{}", BOOKEND_START, BOOKEND_END);
                                     xous::return_scalar2(msg.sender, 0, 0).expect("couldn't return scalar");
                                     is_mounted.store(true, Ordering::SeqCst);
                                 } else {
@@ -925,19 +1072,26 @@ fn wrapped_main() -> ! {
                 let mut mgmt = buffer.to_original::<PddbBasisRequest, _>().unwrap();
                 match mgmt.code {
                     PddbRequestCode::Create => {
-                        let request =
-                            BasisRequestPassword { db_name: mgmt.name.to_string(), plaintext_pw: None };
-                        let mut buf = Buffer::into_buf(request).unwrap();
-                        buf.lend_mut(pw_cid, PwManagerOpcode::RequestPassword.to_u32().unwrap()).unwrap();
-                        let ret = buf.to_original::<BasisRequestPassword, _>().unwrap();
-                        if let Some(pw) = ret.plaintext_pw {
+                        #[cfg(feature = "gen1")]
+                        let ret = {
+                            let request =
+                                BasisRequestPassword { db_name: mgmt.name.to_string(), plaintext_pw: None };
+                            let mut buf = Buffer::into_buf(request).unwrap();
+                            buf.lend_mut(pw_cid, PwManagerOpcode::RequestPassword.to_u32().unwrap()).unwrap();
+                            buf.to_original::<BasisRequestPassword, _>().unwrap().plaintext_pw
+                        };
+                        #[cfg(feature = "gen2")]
+                        let pw_str = hex::encode(mgmt.basis_key.expect("No key provided"));
+                        #[cfg(feature = "gen2")]
+                        let ret = Some(&pw_str);
+                        if let Some(pw) = ret {
                             match basis_cache.basis_create(&mut pddb_os, mgmt.name.as_str(), pw.as_str()) {
                                 Ok(_) => {
                                     log::info!(
                                         "{}PDDB.CREATEOK,{},{}",
-                                        xous::BOOKEND_START,
+                                        BOOKEND_START,
                                         mgmt.name.as_str(),
-                                        xous::BOOKEND_END
+                                        BOOKEND_END
                                     );
                                     mgmt.code = PddbRequestCode::NoErr
                                 }
@@ -966,12 +1120,22 @@ fn wrapped_main() -> ! {
                     PddbRequestCode::Open => {
                         let mut finished = false;
                         while !finished {
-                            let request =
-                                BasisRequestPassword { db_name: mgmt.name.to_string(), plaintext_pw: None };
-                            let mut buf = Buffer::into_buf(request).unwrap();
-                            buf.lend_mut(pw_cid, PwManagerOpcode::RequestPassword.to_u32().unwrap()).unwrap();
-                            let ret = buf.to_original::<BasisRequestPassword, _>().unwrap();
-                            if let Some(pw) = ret.plaintext_pw {
+                            #[cfg(feature = "gen1")]
+                            let ret = {
+                                let request = BasisRequestPassword {
+                                    db_name: mgmt.name.to_string(),
+                                    plaintext_pw: None,
+                                };
+                                let mut buf = Buffer::into_buf(request).unwrap();
+                                buf.lend_mut(pw_cid, PwManagerOpcode::RequestPassword.to_u32().unwrap())
+                                    .unwrap();
+                                buf.to_original::<BasisRequestPassword, _>().unwrap().plaintext_pw
+                            };
+                            #[cfg(feature = "gen2")]
+                            let pw_str = hex::encode(mgmt.basis_key.expect("No key provided"));
+                            #[cfg(feature = "gen2")]
+                            let ret = Some(&pw_str);
+                            if let Some(pw) = ret {
                                 if let Some(basis) = basis_cache.basis_unlock(
                                     &mut pddb_os,
                                     mgmt.name.as_str(),
@@ -982,6 +1146,7 @@ fn wrapped_main() -> ! {
                                         basis_cache
                                             .basis_unmount(&mut pddb_os, &basis.name)
                                             .expect("couldn't unmount previously mounted basis of same name");
+                                        #[cfg(feature = "gen1")]
                                         modals
                                             .show_notification(
                                                 t!("pddb.unmount_previous", locales::LANG),
@@ -993,9 +1158,9 @@ fn wrapped_main() -> ! {
                                     finished = true;
                                     log::info!(
                                         "{}PDDB.UNLOCKOK,{},{}",
-                                        xous::BOOKEND_START,
+                                        BOOKEND_START,
                                         mgmt.name.as_str(),
-                                        xous::BOOKEND_END
+                                        BOOKEND_END
                                     );
                                     if basis_monitor_notifications.len() > 0 {
                                         notify_basis_change(
@@ -1007,31 +1172,39 @@ fn wrapped_main() -> ! {
                                 } else {
                                     log::info!(
                                         "{}PDDB.BADPASS,{},{}",
-                                        xous::BOOKEND_START,
+                                        BOOKEND_START,
                                         mgmt.name.as_str(),
-                                        xous::BOOKEND_END
+                                        BOOKEND_END
                                     );
-                                    modals
-                                        .add_list_item(t!("pddb.yes", locales::LANG))
-                                        .expect("couldn't build radio item list");
-                                    modals
-                                        .add_list_item(t!("pddb.no", locales::LANG))
-                                        .expect("couldn't build radio item list");
-                                    match modals.get_radiobutton(t!("pddb.badpass", locales::LANG)) {
-                                        Ok(response) => {
-                                            if response.as_str() == t!("pddb.yes", locales::LANG) {
-                                                finished = false;
-                                                // this will cause just another go-around
-                                            } else if response.as_str() == t!("pddb.no", locales::LANG) {
-                                                finished = true;
-                                                mgmt.code = PddbRequestCode::AccessDenied; // this will cause a return of AccessDenied
-                                            } else {
-                                                panic!("Got unexpected return from radiobutton");
+                                    #[cfg(feature = "gen1")]
+                                    {
+                                        modals
+                                            .add_list_item(t!("pddb.yes", locales::LANG))
+                                            .expect("couldn't build radio item list");
+                                        modals
+                                            .add_list_item(t!("pddb.no", locales::LANG))
+                                            .expect("couldn't build radio item list");
+                                        match modals.get_radiobutton(t!("pddb.badpass", locales::LANG)) {
+                                            Ok(response) => {
+                                                if response.as_str() == t!("pddb.yes", locales::LANG) {
+                                                    finished = false;
+                                                    // this will cause just another go-around
+                                                } else if response.as_str() == t!("pddb.no", locales::LANG) {
+                                                    finished = true;
+                                                    mgmt.code = PddbRequestCode::AccessDenied; // this will cause a return of AccessDenied
+                                                } else {
+                                                    panic!("Got unexpected return from radiobutton");
+                                                }
                                             }
+                                            _ => panic!("get_radiobutton failed"),
                                         }
-                                        _ => panic!("get_radiobutton failed"),
+                                        xous::yield_slice(); // allow a redraw to happen before repeating the request
                                     }
-                                    xous::yield_slice(); // allow a redraw to happen before repeating the request
+                                    #[cfg(feature = "gen2")]
+                                    {
+                                        mgmt.code = PddbRequestCode::AccessDenied; // this will cause a return of AccessDenied
+                                        finished = true;
+                                    }
                                 }
                             } else {
                                 finished = true;
@@ -1861,6 +2034,7 @@ fn wrapped_main() -> ! {
                             ) {
                                 Ok(attr) => attr,
                                 Err(e) => {
+                                    #[cfg(feature = "gen1")]
                                     modals
                                         .show_notification(
                                             &format!(
@@ -1877,6 +2051,14 @@ fn wrapped_main() -> ! {
                                             None,
                                         )
                                         .ok();
+                                    #[cfg(feature = "gen2")]
+                                    log::error!(
+                                        "Error: key not found during bulk read:\n{:?}\n{:?}:{}:{}",
+                                        e,
+                                        if state.is_basis_specified { Some(&state.basis) } else { None },
+                                        &state.dict,
+                                        &key_name,
+                                    );
                                     continue;
                                 }
                             };
@@ -2142,6 +2324,7 @@ fn wrapped_main() -> ! {
                 };
             }),
 
+            #[cfg(feature = "gen1")]
             Opcode::MenuListBasis => {
                 let bases = basis_cache.basis_list();
                 let mut note = String::from(t!("pddb.menu.listbasis_response", locales::LANG));
@@ -2151,6 +2334,7 @@ fn wrapped_main() -> ! {
                 }
                 modals.show_notification(&note, None).expect("couldn't show basis list");
             }
+            #[cfg(feature = "gen1")]
             Opcode::MenuChangePin => {
                 if basis_cache.basis_count() == 0 {
                     modals
@@ -2298,11 +2482,15 @@ fn wrapped_main() -> ! {
             Opcode::ComputeBackupHashes => {
                 let mut buffer =
                     unsafe { Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap()) };
+                #[cfg(feature = "gen1")]
                 let result = pddb_os.checksums(Some(&modals));
+                #[cfg(feature = "gen2")]
+                let result = pddb_os.checksums(None);
                 buffer.replace(result).unwrap();
             }
             Opcode::Quit => {
                 log::warn!("quitting the PDDB server");
+                #[cfg(feature = "gen1")]
                 send_message(
                     pw_cid,
                     Message::new_blocking_scalar(PwManagerOpcode::Quit.to_usize().unwrap(), 0, 0, 0, 0),
@@ -2318,10 +2506,15 @@ fn wrapped_main() -> ! {
             Opcode::InvalidOpcode => {
                 log::error!("couldn't convert opcode: {:?}", msg);
             }
+            #[cfg(feature = "gen2")]
+            Opcode::MenuListBasis | Opcode::MenuChangePin => {
+                unimplemented!("Not available in gen2 targets")
+            }
         }
     }
     // clean up our program
     log::trace!("main loop exit, destroying servers");
+    #[cfg(feature = "gen1")]
     pw_handle.join().expect("password ux manager thread did not join as expected");
     xns.unregister_server(pddb_sid).unwrap();
     xous::destroy_server(pddb_sid).unwrap();
@@ -2329,6 +2522,7 @@ fn wrapped_main() -> ! {
     xous::terminate_process(0)
 }
 
+#[cfg(feature = "gen1")]
 fn ensure_password(modals: &modals::Modals, pddb_os: &mut PddbOs, _pw_cid: xous::CID) -> PasswordState {
     log::info!("Requesting login password");
     loop {
@@ -2336,7 +2530,7 @@ fn ensure_password(modals: &modals::Modals, pddb_os: &mut PddbOs, _pw_cid: xous:
             PasswordState::Correct => return PasswordState::Correct,
             PasswordState::Incorrect(failcount) => {
                 pddb_os.clear_password(); // clear the bad password entry
-                log::info!("{}PDDB.BADPW,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                log::info!("{}PDDB.BADPW,{}", BOOKEND_START, BOOKEND_END);
                 if failcount % 3 == 0 {
                     // every three failures kick the failure back up the stack
                     return PasswordState::ForcedAbort(failcount);
@@ -2388,6 +2582,8 @@ fn ensure_password(modals: &modals::Modals, pddb_os: &mut PddbOs, _pw_cid: xous:
         }
     }
 }
+#[allow(unused_variables)]
+#[cfg(feature = "gen1")]
 fn try_mount_or_format(
     modals: &modals::Modals,
     pddb_os: &mut PddbOs,
@@ -2412,13 +2608,19 @@ fn try_mount_or_format(
     }
     // correct password but no mount -> offer to format; uninit -> offer to format
     if pw_state == PasswordState::Correct || pw_state == PasswordState::Uninit {
-        #[cfg(any(feature = "precursor", feature = "renode", feature = "test-rekey"))]
+        #[cfg(any(
+            feature = "precursor",
+            feature = "renode",
+            feature = "test-rekey",
+            feature = "board-baosec",
+            feature = "board-baosor"
+        ))]
         {
             log::debug!("PDDB did not mount; requesting format");
             modals.add_list_item(t!("pddb.okay", locales::LANG)).expect("couldn't build radio item list");
             modals.add_list_item(t!("pddb.cancel", locales::LANG)).expect("couldn't build radio item list");
             let do_format: bool;
-            log::info!("{}PDDB.REQFMT,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+            log::info!("{}PDDB.REQFMT,{}", BOOKEND_START, BOOKEND_END);
             match modals.get_radiobutton(t!("pddb.requestformat", locales::LANG)) {
                 Ok(response) => {
                     if response.as_str() == t!("pddb.okay", locales::LANG) {
@@ -2464,6 +2666,7 @@ fn try_mount_or_format(
                 // hygiene we want to restart our RTC counter from a random duration between
                 // epoch and 10 years to give some deniability about how long the device has
                 // been in use.
+                #[cfg(feature = "gen1")]
                 let _ = xous::send_message(
                     time_resetter,
                     xous::Message::new_blocking_scalar(
@@ -2493,9 +2696,16 @@ fn try_mount_or_format(
                 false
             }
         }
-        #[cfg(not(any(feature = "precursor", feature = "renode", feature = "test-rekey")))]
+        #[cfg(not(any(
+            feature = "precursor",
+            feature = "renode",
+            feature = "test-rekey",
+            feature = "board-baosec",
+            feature = "board-baosor"
+        )))]
         {
             pddb_os.pddb_format(false, Some(&modals)).expect("couldn't format PDDB");
+            #[cfg(feature = "gen1")]
             let _ = xous::send_message(
                 time_resetter,
                 xous::Message::new_blocking_scalar(

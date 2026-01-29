@@ -1,9 +1,10 @@
 use core::fmt::Write;
 
+use blitstr2::GlyphStyle;
 use gam::UxRegistration;
-use graphics_server::api::GlyphStyle;
-use graphics_server::{DrawStyle, Gid, PixelColor, Point, Rectangle, TextBounds, TextView};
 use locales::t;
+use ux_api::minigfx::*;
+use ux_api::service::api::*;
 use xous::MessageEnvelope;
 
 use super::*;
@@ -35,7 +36,7 @@ pub(crate) struct Mtxcli {
     margin: Point,        // margin to edge of canvas
     bubble_margin: Point, // margin of text in bubbles
     bubble_radius: u16,
-    bubble_space: i16, // spacing between text bubbles
+    bubble_space: isize, // spacing between text bubbles
 
     // command environment
     env: CmdEnv,
@@ -148,11 +149,11 @@ impl Mtxcli {
         self.gam
             .draw_rectangle(
                 self.content,
-                Rectangle::new_with_style(Point::new(0, 0), self.screensize, DrawStyle {
-                    fill_color: Some(PixelColor::Light),
-                    stroke_color: None,
-                    stroke_width: 0,
-                }),
+                Rectangle::new_with_style(
+                    Point::new(0, 0),
+                    self.screensize,
+                    DrawStyle { fill_color: Some(PixelColor::Light), stroke_color: None, stroke_width: 0 },
+                ),
             )
             .expect("can't clear content area");
     }

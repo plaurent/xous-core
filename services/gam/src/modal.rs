@@ -22,10 +22,11 @@ mod bip39entry;
 use core::fmt::Write;
 
 pub use bip39entry::*;
+pub use blitstr2::GlyphStyle;
 use enum_dispatch::enum_dispatch;
-pub use graphics_server::api::GlyphStyle;
-use graphics_server::api::*;
 use num_traits::*;
+use ux_api::minigfx::*;
+use ux_api::service::api::*;
 use xous_ipc::Buffer;
 
 use crate::Gam;
@@ -49,8 +50,10 @@ pub enum ActionType {
 
 #[enum_dispatch]
 pub trait ActionApi {
-    fn height(&self, glyph_height: i16, margin: i16, _modal: &Modal) -> i16 { glyph_height + margin * 2 }
-    fn redraw(&self, _at_height: i16, _modal: &Modal) { unimplemented!() }
+    fn height(&self, glyph_height: isize, margin: isize, _modal: &Modal) -> isize {
+        glyph_height + margin * 2
+    }
+    fn redraw(&self, _at_height: isize, _modal: &Modal) { unimplemented!() }
     fn close(&mut self) {}
     fn is_password(&self) -> bool { false }
     /// navigation is one of '∴' | '←' | '→' | '↑' | '↓'
@@ -150,46 +153,29 @@ impl RadioButtonPayload {
     pub fn clear(&mut self) { self.0.0.clear(); }
 }
 #[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct CheckBoxPayload(pub [Option<ItemName>; MAX_ITEMS]); // returns a list of potential items that could be selected
+pub struct CheckBoxPayload(Vec<ItemName>); // returns a list of potential items that could be selected
 impl CheckBoxPayload {
-    pub fn new() -> Self { CheckBoxPayload([const { None }; MAX_ITEMS]) }
+    pub fn new() -> Self { CheckBoxPayload(Vec::new()) }
 
-    pub fn payload(self) -> [Option<ItemName>; MAX_ITEMS] { self.0 }
+    pub fn payload(self) -> Vec<ItemName> { self.0 }
 
-    pub fn contains(&self, name: &str) -> bool {
-        for maybe_item in self.0.iter() {
-            if let Some(item) = maybe_item {
-                if item.as_str() == name {
-                    return true;
-                }
-            }
-        }
-        false
-    }
+    pub fn contains(&self, name: &str) -> bool { self.0.iter().any(|item| item.0 == name) }
 
     pub fn add(&mut self, name: &str) -> bool {
         if self.contains(name) {
             return true;
         }
-        for maybe_item in self.0.iter_mut() {
-            if maybe_item.is_none() {
-                *maybe_item = Some(ItemName::new(name));
-                return true;
-            }
-        }
-        false
+        self.0.push(ItemName::new(name));
+        true
     }
 
     pub fn remove(&mut self, name: &str) -> bool {
-        for maybe_item in self.0.iter_mut() {
-            if let Some(item) = maybe_item {
-                if item.as_str() == name {
-                    *maybe_item = None;
-                    return true;
-                }
-            }
+        if let Some(pos) = self.0.iter().position(|item| item.0 == name) {
+            self.0.remove(pos);
+            true
+        } else {
+            false
         }
-        false
     }
 }
 
@@ -213,10 +199,10 @@ pub struct Modal<'a> {
     //pub index: usize, // currently selected item
     pub canvas: Gid,
     pub authtoken: [u32; 4],
-    pub margin: i16,
-    pub line_height: i16,
-    pub canvas_width: i16,
-    pub maximal_height: i16,
+    pub margin: isize,
+    pub line_height: isize,
+    pub canvas_width: isize,
+    pub maximal_height: isize,
     pub inverted: bool,
     pub style: GlyphStyle,
     pub helper_data: Option<Buffer<'a>>,
@@ -224,9 +210,9 @@ pub struct Modal<'a> {
 
     // optimize draw time
     top_dirty: bool,
-    top_memoized_height: Option<i16>,
+    top_memoized_height: Option<isize>,
     bot_dirty: bool,
-    bot_memoized_height: Option<i16>,
+    bot_memoized_height: Option<isize>,
 }
 
 fn recompute_canvas(modal: &mut Modal, top_text: Option<&str>, bot_text: Option<&str>, style: GlyphStyle) {
@@ -343,7 +329,7 @@ impl<'a> Modal<'a> {
         top_text: Option<&str>,
         bot_text: Option<&str>,
         style: GlyphStyle,
-        margin: i16,
+        margin: isize,
     ) -> Modal<'a> {
         let xns = xous_names::XousNames::new().unwrap();
         let sid = xous::create_server().expect("can't create private modal message server");
@@ -370,9 +356,9 @@ impl<'a> Modal<'a> {
             gam.request_content_canvas(authtoken.unwrap()).expect("couldn't get my content canvas from GAM");
         let line_height = if locales::LANG == "zh" {
             // zh has no "small" style
-            gam.glyph_height_hint(GlyphStyle::Regular).expect("couldn't get glyph height hint") as i16
+            gam.glyph_height_hint(GlyphStyle::Regular).expect("couldn't get glyph height hint") as isize
         } else {
-            gam.glyph_height_hint(style).expect("couldn't get glyph height hint") as i16
+            gam.glyph_height_hint(style).expect("couldn't get glyph height hint") as isize
         };
         let canvas_bounds = gam.get_canvas_bounds(canvas).expect("couldn't get starting canvas bounds");
 
@@ -465,7 +451,7 @@ impl<'a> Modal<'a> {
     }
 
     pub fn redraw(&mut self) {
-        const BORDER_WIDTH: i16 = 3;
+        const BORDER_WIDTH: isize = 3;
         log::debug!("modal redraw");
         let canvas_size = self.gam.get_canvas_bounds(self.canvas).unwrap();
         let do_redraw = self.top_dirty || self.bot_dirty || self.inverted;

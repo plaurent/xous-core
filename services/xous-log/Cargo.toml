@@ -10,14 +10,14 @@ homepage = "https://betrusted.io/xous-book/"
 
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
-xous-api-log = { package = "xous-api-log", version = "0.1.63" }
-xous = "0.9.64"
-xous-ipc = "0.10.4"
+xous-api-log = { package = "xous-api-log", version = "0.1.68" }
+xous = "0.9.69"
+xous-ipc = "0.10.9"
 log = "0.4.14"
 num-derive = { version = "0.4.2", default-features = false }
 num-traits = { version = "0.2.14", default-features = false }
 
-utralib = { version = "0.1.25", optional = true, default-features = false }
+utralib = { version = "0.1.26", optional = true, default-features = false }
 
 # for USB serial logging
 rkyv = { version = "0.8.8", default-features = false, features = [
@@ -25,7 +25,7 @@ rkyv = { version = "0.8.8", default-features = false, features = [
     "alloc",
 ], optional = true }
 
-cramium-hal = { path = "../../libs/cramium-hal", optional = true, default-features = false, features = [
+bao1x-hal = { path = "../../libs/bao1x-hal", optional = true, default-features = false, features = [
     "std",
 ] }
 
@@ -39,11 +39,14 @@ cramium-hal = { path = "../../libs/cramium-hal", optional = true, default-featur
 # ] } # v2p feature is used when lcd-console feature is turned on
 
 [features]
-cramium-soc = ["utralib/cramium-soc", "cramium-hal"]
-cramium-fpga = ["utralib/cramium-fpga"]
-board-baosec = ["cramium-hal/board-baosec"]
-board-baosor = ["cramium-hal/board-baosor"]
-board-dabao = ["cramium-hal/board-dabao"]
+bao1x = ["utralib/bao1x", "bao1x-hal"]
+board-baosec = ["bao1x-hal/board-baosec"]
+board-baosor = ["bao1x-hal/board-baosor"]
+board-dabao = ["bao1x-hal/board-dabao"]
+hosted-baosec = []
+hwsim = []
+# when activated, disables the console so the kernel GDB stub can claim it.
+gdb-stub = []
 
 precursor = ["utralib/precursor"]
 hosted = ["utralib/hosted"]

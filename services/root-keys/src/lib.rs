@@ -1,8 +1,7 @@
 #![cfg_attr(all(target_os = "none", not(test)), no_std)]
 //! Detailed docs are parked under Structs/RootKeys down below
 
-pub mod api;
-use api::*;
+use keystore_api::*;
 
 pub mod key2bits;
 
@@ -35,8 +34,9 @@ pub struct RootKeys {
 impl RootKeys {
     pub fn new(xns: &xous_names::XousNames, key_index: Option<AesRootkeyType>) -> Result<Self, xous::Error> {
         REFCOUNT.fetch_add(1, Ordering::Relaxed);
-        let conn =
-            xns.request_connection_blocking(api::SERVER_NAME_KEYS).expect("Can't connect to Keys server");
+        let conn = xns
+            .request_connection_blocking(rootkeys_api::SERVER_NAME_KEYS)
+            .expect("Can't connect to Keys server");
         let index = if let Some(ki) = key_index { ki } else { AesRootkeyType::NoneSpecified };
         Ok(RootKeys { conn, key_index: index })
     }
@@ -382,7 +382,7 @@ impl RootKeys {
     }
 
     pub fn wrap_key(&self, input: &[u8]) -> Result<Vec<u8>, KeywrapError> {
-        if input.len() > api::MAX_WRAP_DATA {
+        if input.len() > MAX_WRAP_DATA {
             // of course, the underlying crypto can handle a much larger piece of data,
             // but the intention of this API is to wrap crypto keys -- not bulk data. So for simplicity
             // we're going to limit the size of wrapped data to 2kiB (typically it's envisioned you're
@@ -420,7 +420,7 @@ impl RootKeys {
     }
 
     pub fn unwrap_key(&self, wrapped: &[u8], expected_len: usize) -> Result<Vec<u8>, KeywrapError> {
-        if wrapped.len() > api::MAX_WRAP_DATA + 8 {
+        if wrapped.len() > MAX_WRAP_DATA + 8 {
             return Err(KeywrapError::InvalidDataSize);
         }
         if !self.ensure_aes_password() {
@@ -658,10 +658,13 @@ mod tests {
 
         crate::bcrypt::bcrypt(5, &salt, pw, &mut output);
 
-        assert_eq!(output, [
-            22, 80, 102, 192, 193, 204, 118, 167, 41, 102, 241, 75, 103, 49, 4, 245, 194, 145, 85, 104, 179,
-            60, 88, 53
-        ]);
+        assert_eq!(
+            output,
+            [
+                22, 80, 102, 192, 193, 204, 118, 167, 41, 102, 241, 75, 103, 49, 4, 245, 194, 145, 85, 104,
+                179, 60, 88, 53
+            ]
+        );
     }
 
     #[test]
@@ -670,10 +673,13 @@ mod tests {
         let mut output: [u8; 24] = [0; 24];
         let pw = "this is a test of a very long password that is exactly 72 characters lon";
         crate::bcrypt::bcrypt(10, &salt, pw, &mut output);
-        assert_eq!(output, [
-            46, 39, 41, 217, 39, 103, 62, 189, 120, 3, 248, 84, 175, 40, 134, 190, 76, 43, 232, 147, 129,
-            237, 116, 61
-        ]);
+        assert_eq!(
+            output,
+            [
+                46, 39, 41, 217, 39, 103, 62, 189, 120, 3, 248, 84, 175, 40, 134, 190, 76, 43, 232, 147, 129,
+                237, 116, 61
+            ]
+        );
     }
 
     #[test]
@@ -682,9 +688,12 @@ mod tests {
         let mut output: [u8; 24] = [0; 24];
         let pw = "this is a test of a very long password that is exactly 72 characters long, but this one is even longer";
         crate::bcrypt::bcrypt(10, &salt, pw, &mut output);
-        assert_eq!(output, [
-            46, 39, 41, 217, 39, 103, 62, 189, 120, 3, 248, 84, 175, 40, 134, 190, 76, 43, 232, 147, 129,
-            237, 116, 61
-        ]);
+        assert_eq!(
+            output,
+            [
+                46, 39, 41, 217, 39, 103, 62, 189, 120, 3, 248, 84, 175, 40, 134, 190, 76, 43, 232, 147, 129,
+                237, 116, 61
+            ]
+        );
     }
 }

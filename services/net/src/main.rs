@@ -54,6 +54,7 @@ const PING_IDENT: u16 = 0x22b;
 /// so the poll interval should be OK to be set quite high.
 const NET_DEFAULT_POLL_MS: u64 = 900;
 
+#[allow(dead_code)]
 #[derive(num_derive::FromPrimitive, num_derive::ToPrimitive, Debug)]
 enum WaitOp {
     WaitMs,
@@ -1098,9 +1099,9 @@ fn main() -> ! {
                                     log::info!("Network config acquired: {:?}", config);
                                     log::info!(
                                         "{}NET.OK,{:?},{}",
-                                        xous::BOOKEND_START,
+                                        precursor_hal::board::BOOKEND_START,
                                         std::net::IpAddr::from(config.addr),
-                                        xous::BOOKEND_END
+                                        precursor_hal::board::BOOKEND_END
                                     );
                                     net_config = Some(config);
                                     // update a static variable that tracks this, useful for e.g. UDP bind

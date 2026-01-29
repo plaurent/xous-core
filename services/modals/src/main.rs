@@ -29,14 +29,25 @@
 /// a `TextResponseValid` message which pumps the work queue.
 mod api;
 use api::*;
+#[cfg(feature = "hosted-baosec")]
+use bao1x_emu::trng::Trng;
+#[cfg(feature = "bao1x")]
+use bao1x_hal_service::trng::Trng;
+use blitstr2::GlyphStyle;
 #[cfg(feature = "ditherpunk")]
 use gam::Bitmap;
+#[cfg(not(any(feature = "hosted-baosec", feature = "board-baosec")))]
 use gam::modal::*;
 use locales::t;
+#[cfg(all(not(feature = "bao1x"), not(feature = "doc-deps"), not(feature = "hosted-baosec")))]
+use trng::Trng;
 #[cfg(feature = "tts")]
 use tts_frontend::TtsFrontend;
+#[cfg(any(feature = "hosted-baosec", feature = "board-baosec"))]
+use ux_api::widgets::*;
 use xous::{Message, msg_blocking_scalar_unpack, msg_scalar_unpack, send_message};
 use xous_ipc::Buffer;
+
 #[cfg(feature = "tts")]
 const TICK_INTERVAL: u64 = 2500;
 
@@ -62,7 +73,10 @@ enum RendererState {
     RunImage(ManagedImage),
 }
 
+#[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
 const DEFAULT_STYLE: GlyphStyle = gam::SYSTEM_STYLE;
+#[cfg(any(feature = "hosted-baosec", feature = "bao1x"))]
+const DEFAULT_STYLE: GlyphStyle = ux_api::SYSTEM_STYLE;
 
 fn main() -> ! {
     #[cfg(not(feature = "ditherpunk"))]
@@ -103,7 +117,7 @@ fn wrapped_main() -> ! {
     text_action.action_conn = renderer_cid;
     text_action.action_opcode = Opcode::TextEntryReturn.to_u32().unwrap();
 
-    let mut fixed_items = Vec::<ItemName>::new();
+    let mut fixed_items = Vec::<(bool, ItemName)>::new();
     let mut progress_action = Slider::new(
         renderer_cid,
         Opcode::SliderReturn.to_u32().unwrap(),
@@ -118,6 +132,7 @@ fn wrapped_main() -> ! {
     let mut last_percentage = 0;
     let mut start_work: u32 = 0;
     let mut end_work: u32 = 100;
+    #[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
     let mut renderer_modal = Modal::new(
         gam::SHARED_MODAL_NAME,
         ActionType::TextEntry(text_action.clone()),
@@ -126,6 +141,21 @@ fn wrapped_main() -> ! {
         DEFAULT_STYLE,
         8,
     );
+    #[cfg(any(feature = "hosted-baosec", feature = "bao1x"))]
+    let mut renderer_modal = Modal::new(
+        "dummy",
+        ActionType::TextEntry(text_action.clone()),
+        Some("Placeholder"),
+        None,
+        DEFAULT_STYLE,
+        8,
+    );
+    #[cfg(any(feature = "hosted-baosec", feature = "bao1x"))]
+    {
+        let kbd = bao1x_api::keyboard::Keyboard::new(&xns).unwrap();
+        kbd.register_listener(api::SERVER_NAME_MODALS, Opcode::ModalKeypress.to_u32().unwrap() as usize);
+    }
+    #[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
     renderer_modal.spawn_helper(
         modals_sid,
         renderer_modal.sid,
@@ -138,10 +168,7 @@ fn wrapped_main() -> ! {
     let mut list_selected = 0u32;
 
     let mut token_lock: Option<[u32; 4]> = None;
-    #[cfg(feature = "cramium-soc")]
-    let trng = cram_hal_service::trng::Trng::new(&xns).unwrap();
-    #[cfg(not(feature = "cramium-soc"))]
-    let trng = trng::Trng::new(&xns).unwrap();
+    let trng = Trng::new(&xns).unwrap();
     // this is a random number that serves as a "default" that cannot be guessed
     let default_nonce =
         [trng.get_u32().unwrap(), trng.get_u32().unwrap(), trng.get_u32().unwrap(), trng.get_u32().unwrap()];
@@ -149,6 +176,8 @@ fn wrapped_main() -> ! {
 
     let mut dynamic_notification_listener: Option<xous::MessageSender> = None;
     let mut dynamic_notification_active: bool = false;
+    #[cfg(feature = "no-gam")]
+    let mut has_focus = false;
 
     loop {
         let mut msg = xous::receive_message(modals_sid).unwrap();
@@ -357,7 +386,7 @@ fn wrapped_main() -> ! {
                     );
                     continue;
                 }
-                fixed_items.push(manageditem.item);
+                fixed_items.push((manageditem.state, manageditem.item));
             }
             Some(Opcode::GetModalIndex) => {
                 xous::return_scalar(msg.sender, list_selected as usize)
@@ -474,10 +503,8 @@ fn wrapped_main() -> ! {
                         log::debug!("should be active!");
                     }
                     RendererState::RunNotification(config) => {
-                        let mut notification = gam::modal::Notification::new(
-                            renderer_cid,
-                            Opcode::NotificationReturn.to_u32().unwrap(),
-                        );
+                        let mut notification =
+                            Notification::new(renderer_cid, Opcode::NotificationReturn.to_u32().unwrap());
                         let text = config.message.as_str();
                         let tmp: String;
                         let qrtext = match &config.qrtext {
@@ -493,7 +520,7 @@ fn wrapped_main() -> ! {
                         renderer_modal.modify(
                             Some(ActionType::Notification(notification)),
                             Some(text),
-                            false,
+                            text.len() == 0,
                             None,
                             true,
                             Some(DEFAULT_STYLE),
@@ -501,16 +528,20 @@ fn wrapped_main() -> ! {
                         renderer_modal.activate();
                     }
                     RendererState::RunBip39(config) => {
-                        let notification = gam::modal::Notification::new(
-                            renderer_cid,
-                            Opcode::NotificationReturn.to_u32().unwrap(),
-                        );
+                        let notification =
+                            Notification::new(renderer_cid, Opcode::NotificationReturn.to_u32().unwrap());
                         let mut text = String::new();
                         if let Some(c) = &config.caption {
                             text.push_str(c.as_str());
                             text.push_str("\n\n");
                         }
 
+                        #[cfg(any(feature = "hosted-baosec", feature = "bao1x"))]
+                        let phrase = ux_api::widgets::bytes_to_bip39(
+                            &config.bip39_data[..config.bip39_len as usize].to_vec(),
+                        )
+                        .unwrap_or(vec![t!("bip39.invalid_bytes", locales::LANG).to_string()]);
+                        #[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
                         let phrase = renderer_modal
                             .gam
                             .bytes_to_bip39(&config.bip39_data[..config.bip39_len as usize].to_vec())
@@ -536,11 +567,8 @@ fn wrapped_main() -> ! {
                         renderer_modal.activate();
                     }
                     RendererState::RunBip39Input(config) => {
-                        let b39input = gam::modal::Bip39Entry::new(
-                            false,
-                            renderer_cid,
-                            Opcode::Bip39Return.to_u32().unwrap(),
-                        );
+                        let b39input =
+                            Bip39Entry::new(false, renderer_cid, Opcode::Bip39Return.to_u32().unwrap());
                         let mut text = String::new();
                         if let Some(c) = &config.caption {
                             text.push_str(c.as_str());
@@ -603,13 +631,11 @@ fn wrapped_main() -> ! {
                         renderer_modal.activate();
                     }
                     RendererState::RunRadio(config) => {
-                        let mut radiobuttons = gam::modal::RadioButtons::new(
-                            renderer_cid,
-                            Opcode::RadioReturn.to_u32().unwrap(),
-                        );
+                        let mut radiobuttons =
+                            RadioButtons::new(renderer_cid, Opcode::RadioReturn.to_u32().unwrap());
                         list_hash.clear();
                         list_selected = 0u32;
-                        for item in fixed_items.iter() {
+                        for (_, item) in fixed_items.iter() {
                             radiobuttons.add_item(item.clone());
                             list_hash.insert(item.as_str().to_string(), list_hash.len());
                         }
@@ -630,14 +656,16 @@ fn wrapped_main() -> ! {
                         renderer_modal.activate();
                     }
                     RendererState::RunCheckBox(config) => {
-                        let mut checkbox = gam::modal::CheckBoxes::new(
-                            renderer_cid,
-                            Opcode::CheckBoxReturn.to_u32().unwrap(),
-                        );
+                        let mut checkbox =
+                            CheckBoxes::new(renderer_cid, Opcode::CheckBoxReturn.to_u32().unwrap());
                         list_hash.clear();
                         list_selected = 0u32;
-                        for item in fixed_items.iter() {
-                            checkbox.add_item(item.clone());
+                        for (checked, item) in fixed_items.iter() {
+                            if *checked {
+                                checkbox.add_checked_item(item.clone());
+                            } else {
+                                checkbox.add_item(item.clone());
+                            }
                             list_hash.insert(item.as_str().to_string(), list_hash.len());
                         }
                         fixed_items.clear();
@@ -675,7 +703,7 @@ fn wrapped_main() -> ! {
                             tts.tts_simple(text.as_str()).unwrap();
                             bot_text.push_str(text.as_str());
                         }
-                        let mut gutter = gam::modal::Notification::new(
+                        let mut gutter = Notification::new(
                             renderer_cid,
                             Opcode::HandleDynamicNotificationKeyhit.to_u32().unwrap(),
                         );
@@ -699,7 +727,10 @@ fn wrapped_main() -> ! {
                 }
             }
             Some(Opcode::FinishProgress) => msg_scalar_unpack!(msg, caller, _, _, _, {
+                #[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
                 renderer_modal.gam.relinquish_focus().unwrap();
+                #[cfg(any(feature = "hosted-baosec", feature = "bao1x"))]
+                renderer_modal.gfx.release_modal().unwrap();
                 op = RendererState::None;
                 // unblock the caller, which was forwarded on as the first argument
                 xous::return_scalar(xous::sender::Sender::from_usize(caller), 0).ok();
@@ -733,6 +764,7 @@ fn wrapped_main() -> ! {
                         config.text.is_none(),
                         None,
                     );
+                    #[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
                     log::debug!("UPDATE_DYN gid: {:?}", renderer_modal.canvas);
                     renderer_modal.redraw();
                     xous::yield_slice();
@@ -749,7 +781,10 @@ fn wrapped_main() -> ! {
                 }
             },
             Some(Opcode::DoCloseDynamicNotification) => {
+                #[cfg(not(any(feature = "hosted-baosec", feature = "bao1x")))]
                 renderer_modal.gam.relinquish_focus().unwrap();
+                #[cfg(any(feature = "hosted-baosec", feature = "bao1x"))]
+                renderer_modal.gfx.release_modal().unwrap();
                 dynamic_notification_active = false;
                 op = RendererState::None;
                 if let Some(sender) = dynamic_notification_listener.take() {
@@ -792,7 +827,7 @@ fn wrapped_main() -> ! {
                     renderer_modal.set_growable(false); // reset the growable state, it's assumed to be default false
                     log::trace!("validating text entry modal");
                     let buf = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
-                    let text = buf.to_original::<gam::modal::TextEntryPayloads, _>().unwrap();
+                    let text = buf.to_original::<TextEntryPayloads, _>().unwrap();
                     if let Some(mut origin) = dr.take() {
                         let mut response = unsafe {
                             Buffer::from_memory_message_mut(origin.body.memory_message_mut().unwrap())
@@ -849,7 +884,7 @@ fn wrapped_main() -> ! {
             Some(Opcode::Bip39Return) => match op {
                 RendererState::RunBip39Input(_config) => {
                     let buf = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
-                    let b39 = buf.to_original::<gam::modal::Bip39EntryPayload, _>().unwrap();
+                    let b39 = buf.to_original::<Bip39EntryPayload, _>().unwrap();
                     if let Some(mut origin) = dr.take() {
                         let mut response = unsafe {
                             Buffer::from_memory_message_mut(origin.body.memory_message_mut().unwrap())
@@ -950,18 +985,15 @@ fn wrapped_main() -> ! {
                         };
                         response.replace(item.clone()).unwrap();
                         op = RendererState::None;
-                        for (_, check_item) in item.payload().iter().enumerate() {
-                            match check_item {
-                                Some(item) => match list_hash.get(item.as_str()) {
-                                    Some(index) => {
-                                        match index {
-                                            0..=31 => drop(list_selected.set_bit(*index, true)),
-                                            _ => log::warn!("invalid bitfield index"),
-                                        };
-                                    }
-                                    None => log::warn!("failed to set list_selected index"),
-                                },
-                                None => {}
+                        for (_, item) in item.payload().iter().enumerate() {
+                            match list_hash.get(item.as_str()) {
+                                Some(index) => {
+                                    match index {
+                                        0..=31 => drop(list_selected.set_bit(*index, true)),
+                                        _ => log::warn!("invalid bitfield index"),
+                                    };
+                                }
+                                None => log::warn!("failed to set list_selected index"),
                             }
                         }
                     } else {
@@ -992,13 +1024,25 @@ fn wrapped_main() -> ! {
                     core::char::from_u32(k3 as u32).unwrap_or('\u{0000}'),
                     core::char::from_u32(k4 as u32).unwrap_or('\u{0000}'),
                 ];
+                #[cfg(feature = "no-gam")]
+                if has_focus {
+                    renderer_modal.key_event(keys);
+                }
+                #[cfg(not(feature = "no-gam"))]
                 renderer_modal.key_event(keys);
             }),
             Some(Opcode::ModalDrop) => {
                 // this guy should never quit, it's a core OS service
                 panic!("Password modal for PDDB quit unexpectedly");
             }
-
+            #[cfg(feature = "no-gam")]
+            Some(Opcode::AcquireFocus) => msg_scalar_unpack!(msg, _, _, _, _, {
+                has_focus = true;
+            }),
+            #[cfg(feature = "no-gam")]
+            Some(Opcode::ReleaseFocus) => msg_scalar_unpack!(msg, _, _, _, _, {
+                has_focus = false;
+            }),
             Some(Opcode::Quit) => {
                 log::warn!("Shared modal UX handler exiting.");
                 break;

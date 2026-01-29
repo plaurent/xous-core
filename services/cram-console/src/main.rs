@@ -17,13 +17,13 @@ use std::sync::{
 };
 use std::thread;
 
+use bao1x_hal_service::keyboard;
 use cmds::*;
-use cram_hal_service::keyboard;
 use graphics_server::Gid;
-use graphics_server::api::GlyphStyle;
-use graphics_server::*;
 use locales::t;
 use num_traits::*;
+use ux_api::minigfx::GlyphStyle;
+use ux_api::minigfx::*;
 use xous::{CID, Message, msg_scalar_unpack, send_message};
 
 const SERVER_NAME_STATUS_GID: &str = "_Status bar GID receiver_";

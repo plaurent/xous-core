@@ -3,33 +3,13 @@
 
 use core::fmt;
 
-use riscv::register::satp;
+use ::riscv::register::satp;
 #[cfg(feature = "gdb-stub")]
-use riscv::register::sstatus;
-use xous_kernel::{MemoryFlags, PID};
+use ::riscv::register::sstatus;
+use xous_kernel::{MemoryFlags, PID, arch::*};
 
 use crate::arch::process::InitialProcess;
 use crate::mem::MemoryManager;
-
-// pub const DEFAULT_STACK_TOP: usize = 0x8000_0000;
-pub const DEFAULT_HEAP_BASE: usize = 0x2000_0000;
-pub const DEFAULT_MESSAGE_BASE: usize = 0x4000_0000;
-pub const DEFAULT_BASE: usize = 0x6000_0000;
-
-pub const USER_AREA_END: usize = 0xff00_0000;
-pub const EXCEPTION_STACK_TOP: usize = 0xffff_0000;
-pub const PAGE_SIZE: usize = 4096;
-pub const PAGE_TABLE_OFFSET: usize = 0xff40_0000;
-pub const PAGE_TABLE_ROOT_OFFSET: usize = 0xff80_0000;
-pub const THREAD_CONTEXT_AREA: usize = 0xff80_1000;
-
-pub const FLG_VALID: usize = 0x1;
-pub const FLG_R: usize = 0x2;
-pub const FLG_W: usize = 0x4;
-// pub const FLG_X: usize = 0x8;
-pub const FLG_U: usize = 0x10;
-pub const FLG_A: usize = 0x40;
-pub const FLG_D: usize = 0x80;
 
 extern "C" {
     pub fn flush_mmu();
@@ -76,14 +56,38 @@ impl core::fmt::Debug for MemoryMapping {
 
 fn translate_flags(req_flags: MemoryFlags) -> MMUFlags {
     let mut flags = MMUFlags::NONE;
+
+    // TODO for vex-ii:
+    // Vexii implement A-flag. In this case, we should not just be setting every
+    // readable page to "A", we should add a handler in the IRQ handler that sets "A"
+    // when the page is actually read.
+    #[cfg(not(feature = "vexii-test"))]
     if req_flags & xous_kernel::MemoryFlags::R == xous_kernel::MemoryFlags::R {
         flags |= MMUFlags::R;
     }
+    #[cfg(feature = "vexii-test")]
+    if req_flags & xous_kernel::MemoryFlags::R == xous_kernel::MemoryFlags::R {
+        flags |= MMUFlags::R | MMUFlags::A;
+    }
+
+    // TODO for vex-ii:
+    // Vexii implement D-flag. In this case, we should not just be setting every
+    // writeable page to "D", we should add a handler in the IRQ handler that sets "D"
+    // when the page is actually writte.
+    #[cfg(not(feature = "vexii-test"))]
     if req_flags & xous_kernel::MemoryFlags::W == xous_kernel::MemoryFlags::W {
         flags |= MMUFlags::W;
     }
+    #[cfg(feature = "vexii-test")]
+    if req_flags & xous_kernel::MemoryFlags::W == xous_kernel::MemoryFlags::W {
+        flags |= MMUFlags::W | MMUFlags::D;
+    }
+
     if req_flags & xous_kernel::MemoryFlags::X == xous_kernel::MemoryFlags::X {
         flags |= MMUFlags::X;
+    }
+    if req_flags & xous_kernel::MemoryFlags::P == xous_kernel::MemoryFlags::P {
+        flags |= MMUFlags::P;
     }
     flags
 }
@@ -99,6 +103,9 @@ fn untranslate_flags(req_flags: usize) -> MemoryFlags {
     }
     if req_flags & MMUFlags::X == MMUFlags::X {
         flags |= xous_kernel::MemoryFlags::X;
+    }
+    if req_flags & MMUFlags::P == MMUFlags::P {
+        flags |= xous_kernel::MemoryFlags::P;
     }
     flags
 }
@@ -251,12 +258,13 @@ impl MemoryMapping {
     /// As such, this will only have an observable effect once code returns
     /// to userspace.
     pub fn activate(self) -> Result<(), xous_kernel::Error> {
-        unsafe { flush_mmu() };
+        // unsafe { flush_mmu() }; // redundant - adds 9% time to context switch benchmark when present!
         satp::write(self.satp);
         unsafe { flush_mmu() };
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn phys_to_virt(&self, phys: usize) -> Result<Option<u32>, xous_kernel::Error> {
         let mut found = None;
         let l1_pt = unsafe { &mut (*(PAGE_TABLE_ROOT_OFFSET as *mut RootPageTable)) };
@@ -541,7 +549,7 @@ pub fn peek_memory<T>(addr: *mut T) -> Result<T, xous_kernel::Error> {
     Ok(val)
 }
 
-#[cfg(feature = "gdb-stub")]
+#[cfg(all(feature = "gdb-stub", not(feature = "bao1x")))]
 pub fn poke_memory<T>(addr: *mut T, val: T) -> Result<(), xous_kernel::Error> {
     let virt = addr as usize;
     let vpn1 = (virt >> 22) & ((1 << 10) - 1);
@@ -587,6 +595,101 @@ pub fn poke_memory<T>(addr: *mut T, val: T) -> Result<(), xous_kernel::Error> {
 
     // Perform the write
     unsafe { addr.write_volatile(val) };
+
+    // Remove supervisor access to user mode
+    unsafe { sstatus::clear_sum() };
+
+    // Remove the WRITE bit if it wasn't previously set
+    if !was_writable {
+        l0_pt.entries[vpn0] &= !MMUFlags::W.bits();
+        unsafe { flush_mmu() };
+    }
+
+    Ok(())
+}
+
+#[cfg(all(feature = "gdb-stub", feature = "bao1x"))]
+/// This routine looks like it *works* insofar as it really maps a RRAM page into RAM and patches it,
+/// but things like single stepping still don't work.
+pub fn poke_memory<T: core::fmt::Debug>(addr: *mut T, val: T) -> Result<(), xous_kernel::Error> {
+    let virt = addr as usize;
+    let vpn1 = (virt >> 22) & ((1 << 10) - 1);
+    let vpn0 = (virt >> 12) & ((1 << 10) - 1);
+    let vpo = virt & ((1 << 12) - 1);
+
+    assert!(vpn1 < 1024);
+    assert!(vpn0 < 1024);
+    assert!(vpo < 4096);
+
+    // The root (l1) pagetable is defined to be mapped into our virtual
+    // address space at this address.
+    let l1_pt = unsafe { &mut (*(PAGE_TABLE_ROOT_OFFSET as *mut RootPageTable)) };
+    let l1_pt = &mut l1_pt.entries;
+
+    // Subsequent pagetables are defined as being mapped starting at
+    // PAGE_TABLE_OFFSET
+    let l0pt_virt = PAGE_TABLE_OFFSET + vpn1 * PAGE_SIZE;
+    let l0_pt = &mut unsafe { &mut (*(l0pt_virt as *mut LeafPageTable)) };
+
+    // If the level 1 pagetable doesn't exist, then this address isn't valid.
+    if l1_pt[vpn1] & MMUFlags::VALID.bits() == 0 {
+        return Err(xous_kernel::Error::BadAddress);
+    }
+
+    // Ensure the entry has been mapped.
+    if l0_pt.entries[vpn0] & MMUFlags::VALID.bits() == 0 {
+        return Err(xous_kernel::Error::BadAddress);
+    }
+
+    // Ensure we're allowed to read it.
+    let was_writable = l0_pt.entries[vpn0] & MMUFlags::W.bits() != 0;
+
+    if l0_pt.entries[vpn0] & MMUFlags::P.bits != 0 {
+        return Err(xous_kernel::Error::StorageError); // can't access because it's swapped out
+    }
+
+    // check the physical location: if it's in RRAM, we're going to have to patch this into RAM
+    let pa = virt_to_phys(virt)?;
+    if pa >= utralib::HW_RERAM_MEM + bao1x_api::offsets::RRAM_STORAGE_LEN && pa < utralib::HW_SRAM_MEM {
+        // don't allow debug access to the keystore
+        return Err(xous_kernel::Error::BadAddress);
+    }
+
+    // Enable supervisor access to user mode
+    unsafe { sstatus::set_sum() };
+
+    if pa >= utralib::HW_RERAM_MEM && pa < utralib::HW_RERAM_MEM + bao1x_api::offsets::RRAM_STORAGE_LEN {
+        // this also forces the writeable bit
+        let v_backing =
+            MemoryManager::with_mut(|mm| mm.map_zeroed_page(crate::arch::process::current_pid(), true))?;
+        let p_backing = virt_to_phys(v_backing as usize)?;
+        let v_slice = unsafe { core::slice::from_raw_parts_mut(v_backing, PAGE_SIZE / size_of::<usize>()) };
+        let s_page = addr as usize & !4095;
+        let src_slice =
+            unsafe { core::slice::from_raw_parts(s_page as *mut usize, PAGE_SIZE / size_of::<usize>()) };
+        v_slice.copy_from_slice(src_slice);
+        // println!("copied from {:x}: {:x?}", s_page, &v_slice[..16]);
+
+        // v_slice now has a copy of src_slice. Unmap src_slice and replace with v_slice.
+        // currently, we just leak memory until we run out if we're doing this trick to map pages into memory.
+        let flags = l0_pt.entries[vpn0] & 0x3FF;
+        let ppn1 = (p_backing >> 22) & ((1 << 12) - 1);
+        let ppn0 = (p_backing >> 12) & ((1 << 10) - 1);
+        l0_pt.entries[vpn0] = (ppn1 << 20) | (ppn0 << 10) | flags | MMUFlags::W.bits();
+
+        // at this point, the page table now points to the physical memory.
+        // println!("flushing mmu {:x?} <- {:x?} {} {:x}", addr, val, size_of::<T>(), flags);
+        bao1x_hal::cache_flush();
+        unsafe { flush_mmu() };
+    } else if !was_writable {
+        // Add the WRITE bit, which allows us to patch things like
+        // program code.
+        l0_pt.entries[vpn0] |= MMUFlags::W.bits();
+        unsafe { flush_mmu() };
+    }
+    // Perform the write
+    unsafe { addr.write_volatile(val) };
+    bao1x_hal::cache_flush();
 
     // Remove supervisor access to user mode
     unsafe { sstatus::clear_sum() };
@@ -664,7 +767,8 @@ pub fn map_page_inner(
 
     // Ensure the entry hasn't already been mapped.
     if unsafe { l0_pt.add(vpn0).read_volatile() } & 1 != 0 {
-        panic!("Page {:08x} already allocated!", virt);
+        klog!("Page {:08x} already allocated!", virt);
+        return Err(xous_kernel::Error::MemoryInUse);
     }
     unsafe {
         l0_pt.add(vpn0).write_volatile(
@@ -1196,7 +1300,7 @@ pub fn evict_page_inner(target_pid: PID, vaddr: usize) -> Result<usize, xous_ker
             // return us to the swapper PID -- this call can only originate in the swapper
             #[cfg(feature = "debug-swap")]
             {
-                crate::arch::mem::MemoryMapping::current().print_map();
+                // crate::arch::mem::MemoryMapping::current().print_map();
                 println!(
                     "evict_page_inner() failed sanity check. PTE: {:x?} paddr: {:x} vaddr in PID{}: {:x}",
                     target_pte,

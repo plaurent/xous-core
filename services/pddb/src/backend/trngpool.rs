@@ -3,11 +3,18 @@ use core::mem::size_of;
 use std::convert::TryInto;
 
 use aes_gcm_siv::Nonce;
+#[cfg(feature = "hosted-baosec")]
+use bao1x_emu::trng::Trng;
+#[cfg(all(feature = "bao1x-hal", not(feature = "hosted-baosec")))]
+use bao1x_hal_service::trng::Trng;
+#[cfg(not(feature = "gen2"))]
 use rand_core::RngCore;
+#[cfg(all(not(feature = "bao1x-hal"), not(feature = "hosted-baosec")))]
+use trng::Trng;
 
 /// Crate-shared resource for TRNGs.
 pub(crate) struct TrngPool {
-    trng: RefCell<trng::Trng>,
+    trng: RefCell<Trng>,
     /// The PDDB eats a lot of entropy. Keep a local pool of entropy, so we're not wasting a lot of
     /// overhead passing messages to the TRNG hardware server.
     e_cache: RefCell<Vec<u8>>,
@@ -15,16 +22,24 @@ pub(crate) struct TrngPool {
 impl TrngPool {
     pub fn new() -> Self {
         let xns = xous_names::XousNames::new().unwrap();
-        let mut trng = trng::Trng::new(&xns).unwrap();
+        let mut trng = Trng::new(&xns).unwrap();
         let mut cache: [u8; 8192] = [0; 8192];
+        #[cfg(not(feature = "gen2"))]
         trng.fill_bytes(&mut cache);
+        // speed up gen2 ops with seeded fill
+        #[cfg(feature = "gen2")]
+        trng.fill_seeded_bytes(&mut cache);
         TrngPool { trng: RefCell::new(trng), e_cache: RefCell::new(cache.to_vec()) }
     }
 
     pub(crate) fn ensure_entropy(&self, amount: usize) {
         if self.e_cache.borrow().len() < amount {
             let mut cache: [u8; 8192] = [0; 8192];
+            #[cfg(not(feature = "gen2"))]
             self.trng.borrow_mut().fill_bytes(&mut cache);
+            // speed up gen2 ops with seeded fill
+            #[cfg(feature = "gen2")]
+            self.trng.borrow_mut().fill_seeded_bytes(&mut cache);
             self.e_cache.borrow_mut().extend_from_slice(&cache);
         }
     }

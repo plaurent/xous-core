@@ -10,12 +10,12 @@ homepage = "https://betrusted.io/xous-book/"
 
 # Dependency versions enforced by Cargo.lock.
 [dependencies]
-xous-api-ticktimer = "0.9.63"
-xous = "0.9.64"
-xous-ipc = "0.10.4"
-xous-names = { package = "xous-api-names", version = "0.9.65" }
-log-server = { package = "xous-api-log", version = "0.1.63" }
-susres = { package = "xous-api-susres", version = "0.9.63" }
+xous-api-ticktimer = "0.9.69"
+xous = "0.9.69"
+xous-ipc = "0.10.9"
+xous-names = { package = "xous-api-names", version = "0.9.70" }
+log-server = { package = "xous-api-log", version = "0.1.68" }
+susres = { path = "../../api/xous-api-susres", package = "xous-api-susres" }
 log = "0.4.14"
 rkyv = { version = "0.8.8", default-features = false, features = [
     "std",
@@ -23,8 +23,11 @@ rkyv = { version = "0.8.8", default-features = false, features = [
 ] }
 num-derive = { version = "0.4.2", default-features = false }
 num-traits = { version = "0.2.14", default-features = false }
-xous-semver = "0.1.2"
-utralib = { version = "0.1.25", optional = true, default-features = false }
+xous-semver = "0.1.5"
+utralib = { version = "0.1.26", optional = true, default-features = false }
+loader = { path = "../../loader", optional = true }
+bao1x-api = { path = "../../libs/bao1x-api", optional = true }
+rand_chacha = { version = "0.3.1", optional = true }
 
 # TODO: fix this
 #[target.'cfg(target_arch = "arm")'.dependencies]
@@ -39,8 +42,16 @@ precursor = ["utralib/precursor", "susres/precursor", "watchdog"]
 hosted = ["utralib/hosted", "susres/hosted", "watchdog"]
 renode = ["utralib/renode", "susres/renode", "watchdog"]
 
-cramium-soc = ["utralib/cramium-soc", "utralib/std"]
-cramium-fpga = ["utralib/cramium-fpga"]
+board-dabao = []
+board-baosec = []
+bao1x = [
+    "utralib/bao1x",
+    "utralib/std",
+    "bao1x-api",
+    "rand_chacha",
+    "susres/bao1x",
+]
+hosted-baosec = []
 
 susres = []
 debug-print = []
@@ -49,7 +60,3 @@ timestamp = []
 default = []     # watchdog option is now moved into individual platform configs
 # default = []
 # default = ["debug-print"]
-
-# Note to self: if implementing "susres" for cramium targets,
-# it's currently a "susres" feature flag in the implementation crate,
-# but 'feature = "cramium-fpga"' clauses in main.rs!

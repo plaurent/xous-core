@@ -19,15 +19,17 @@ use std::sync::{Arc, Mutex};
 #[cfg_attr(not(target_os = "xous"), allow(unused_imports))]
 use std::thread;
 
+use blitstr2::GlyphStyle;
 use chrono::prelude::*;
 use com::api::*;
 use crossbeam::channel::{Receiver, Sender, at, select, unbounded};
 use gam::{GamObjectList, GamObjectType};
-use graphics_server::api::GlyphStyle;
-use graphics_server::*;
+use keystore_api::*;
 use locales::t;
 use num_traits::*;
-use root_keys::api::{BackupKeyboardLayout, BackupOp};
+use precursor_hal::board::*;
+use ux_api::minigfx::*;
+use ux_api::service::api::*;
 use xous::{CID, Message, msg_scalar_unpack, send_message};
 
 use crate::preferences::{PrefsMenuUpdateOp, percentage_to_db};
@@ -288,8 +290,8 @@ fn wrapped_main() -> ! {
     // layout: 336 px wide
     // 0                   150 150 200
     // Feb 05 15:00 (00:06:23) xxxx     3.72V/-100mA/99%
-    const CPU_BAR_WIDTH: i16 = 46;
-    const CPU_BAR_OFFSET: i16 = 8;
+    const CPU_BAR_WIDTH: isize = 46;
+    const CPU_BAR_OFFSET: isize = 8;
     let time_rect = Rectangle::new_with_style(
         Point::new(0, 0),
         Point::new(screensize.x / 2 - CPU_BAR_WIDTH / 2 - 1 + CPU_BAR_OFFSET, screensize.y / 2 - 1),
@@ -654,7 +656,7 @@ fn wrapped_main() -> ! {
         .expect("couldn't exit the gutter server");
     gutter.join().expect("status boot gutter server did not exit gracefully");
     // allocate some storage for backup checksums
-    let checksums: Arc<Mutex<Option<root_keys::api::Checksums>>> = Arc::new(Mutex::new(None));
+    let checksums: Arc<Mutex<Option<Checksums>>> = Arc::new(Mutex::new(None));
 
     // --------------------------- graphical loop timing
     let mut stats_phase: usize = 0;
@@ -1104,7 +1106,7 @@ fn wrapped_main() -> ! {
                 }
                 gam.post_textview(&mut battstats_tv).expect("|status: can't draw battery stats");
                 if let Some(bounds) = battstats_tv.bounds_computed {
-                    if bounds.height() as i16 > screensize.y / 2 + 1 {
+                    if bounds.height() as isize > screensize.y / 2 + 1 {
                         // the clipping rectangle limits the bounds to the overall height of the status area,
                         // so the overlap between status and secnotes must be managed
                         // within this server
@@ -1132,10 +1134,10 @@ fn wrapped_main() -> ! {
                     let (latest_activity, period) =
                         llio.activity_instantaneous().expect("couldn't get CPU activity");
                     let activity_to_width = if period == 0 {
-                        cpuload_rect.width() as i16 - 4
+                        cpuload_rect.width() as isize - 4
                     } else {
                         (((latest_activity as u64) * 1000u64 * (cpuload_rect.width() as u64 - 4))
-                            / (period as u64 * 1000u64)) as i16
+                            / (period as u64 * 1000u64)) as isize
                     };
                     draw_list
                         .push(GamObjectType::Rect(Rectangle::new_coords_with_style(
@@ -1143,7 +1145,7 @@ fn wrapped_main() -> ! {
                             cpuload_rect.tl().y + 2,
                             cpuload_rect.tl().x
                                 + 2
-                                + (activity_to_width).min(cpuload_rect.width() as i16 - 4),
+                                + (activity_to_width).min(cpuload_rect.width() as isize - 4),
                             cpuload_rect.br().y - 2,
                             DrawStyle::new(PixelColor::Dark, PixelColor::Dark, 0),
                         )))
@@ -1267,7 +1269,7 @@ fn wrapped_main() -> ! {
                     .expect("|status: can't write string");
                     gam.post_textview(&mut uptime_tv).expect("|status: can't draw uptime");
                     if let Some(bounds) = uptime_tv.bounds_computed {
-                        if bounds.height() as i16 > screensize.y / 2 + 1 {
+                        if bounds.height() as isize > screensize.y / 2 + 1 {
                             // the clipping rectangle limits the bounds to the overall height of the status
                             // area, so the overlap between status and secnotes
                             // must be managed within this server
@@ -1447,7 +1449,7 @@ fn wrapped_main() -> ! {
             }
             #[cfg(feature = "efuse")]
             Some(StatusOpcode::BurnBackupKey) => {
-                log::info!("{}BURNKEY.TYPE,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                log::info!("{}BURNKEY.TYPE,{}", BOOKEND_START, BOOKEND_END);
                 thread::spawn({
                     let keys = keys.clone();
                     move || {
@@ -1466,14 +1468,14 @@ fn wrapped_main() -> ! {
                             Ok(response) => {
                                 if response.as_str() == t!("burnkey.bbram", locales::LANG) {
                                     // do BBRAM flow
-                                    log::info!("{}BBRAM.CONFIRM,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                                    log::info!("{}BBRAM.CONFIRM,{}", BOOKEND_START, BOOKEND_END);
                                     // punts to a script-driven flow on the pi
                                     modals.show_notification(
                                         t!("burnkey.bbram_exec", locales::LANG),
                                         Some("https://github.com/betrusted-io/betrusted-wiki/wiki/FAQ:-FPGA-AES-Encryption-Key-(eFuse-BBRAM)"),
                                     ).ok();
                                 } else if response.as_str() == t!("burnkey.efuse", locales::LANG) {
-                                    log::info!("{}EFUSE.CONFIRM,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                                    log::info!("{}EFUSE.CONFIRM,{}", BOOKEND_START, BOOKEND_END);
                                     // do eFuse flow
                                     modals
                                         .add_list_item(t!("rootkeys.gwup.yes", locales::LANG))
@@ -1513,7 +1515,7 @@ fn wrapped_main() -> ! {
                         modals
                             .add_list_item(t!("rootkeys.gwup.no", locales::LANG))
                             .expect("couldn't build radio item list");
-                        log::info!("{}BACKUP.CONFIRM,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                        log::info!("{}BACKUP.CONFIRM,{}", BOOKEND_START, BOOKEND_END);
                         match modals.get_radiobutton(t!("backup.confirm", locales::LANG)) {
                             Ok(response) => {
                                 if response.as_str() == t!("rootkeys.gwup.yes", locales::LANG) {
@@ -1572,7 +1574,7 @@ fn wrapped_main() -> ! {
                             pddb.pddb_halt();
 
                             // now trigger phase 2 of the backup
-                            log::info!("{}BACKUP.PHASE2,{}", xous::BOOKEND_START, xous::BOOKEND_END);
+                            log::info!("{}BACKUP.PHASE2,{}", BOOKEND_START, BOOKEND_END);
                             send_message(
                                 cb_cid,
                                 Message::new_scalar(
@@ -1589,7 +1591,7 @@ fn wrapped_main() -> ! {
                 });
             }
             Some(StatusOpcode::PrepareBackupPhase2) => {
-                let mut metadata = root_keys::api::BackupHeader::default();
+                let mut metadata = keystore_api::rootkeys_api::BackupHeader::default();
                 // note: default() should set the language correctly by default since it's a systemwide
                 // constant
                 metadata.timestamp = localtime.get_local_time_ms().unwrap_or(0);
@@ -1788,12 +1790,12 @@ fn compute_bars(wifi_bars: &mut [PixelColor; 5], rssi: u8) -> bool {
 /// The smallest bar will be exactly `(x, y)` in size.
 fn bars(
     g: &gam::Gam,
-    canvas: graphics_server::Gid,
+    canvas: ux_api::service::api::Gid,
     levels: &[PixelColor; 5],
     top_left: Point,
-    (x, y): (i16, i16),
-    growth: i16,
-    bars_spacing: i16,
+    (x, y): (isize, isize),
+    growth: isize,
+    bars_spacing: isize,
 ) {
     let mut dl = gam::GamObjectList::new(canvas);
 
@@ -1806,7 +1808,7 @@ fn bars(
             0 => gam::Rectangle::new_coords_with_style(
                 top_left.x,
                 top_left.y,
-                bottom_right.x as i16,
+                bottom_right.x as isize,
                 bottom_right.y,
                 color,
             ),
@@ -1817,9 +1819,9 @@ fn bars(
                 };
 
                 gam::Rectangle::new_coords_with_style(
-                    last.x1() as i16 + bars_spacing,
-                    last.y0() as i16 - growth,
-                    last.x1() as i16 + growth + bars_spacing,
+                    last.x1() as isize + bars_spacing,
+                    last.y0() as isize - growth,
+                    last.x1() as isize + growth + bars_spacing,
                     bottom_right.y,
                     color,
                 )

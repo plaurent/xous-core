@@ -7,7 +7,7 @@ use utils::*;
 mod builder;
 use builder::*;
 mod verifier;
-use std::env;
+use std::{env, fs, path::Path, path::PathBuf};
 
 use verifier::*;
 
@@ -47,6 +47,9 @@ pub(crate) const TARGET_TRIPLE_RISCV32_KERNEL: &str = "riscv32imac-unknown-none-
 pub(crate) const TARGET_TRIPLE_ARM: &str = "armv7a-unknown-xous-elf";
 pub(crate) const TARGET_TRIPLE_ARM_KERNEL: &str = "armv7a-unknown-none-elf";
 
+/// Size of the "statics" region used to initialize baremetal targets
+const STATICS_LEN: usize = 0x100;
+
 // because I have nowhere else to note this. The commit that contains the rkyv-enum derive
 // refactor to work around warnings thrown by Rust 1.64.0 is: f815ed85b58b671178fbf53b4cea34186fc406eb
 // We could undo this if it turns out to be a compiler regression.
@@ -70,40 +73,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ]
     .to_vec();
     // minimal set of packages to do bare-iron graphical I/O
-    let gfx_base_pkgs = [&base_pkgs[..], &[
-        "graphics-server", // raw (unprotected) frame buffer primitives
-        "early_settings",  // required by keyboard
-        "keyboard",        // required by graphics-server
-        "spinor",          // required by keyboard - to save key mapping
-        "llio",            // required by spinor
-    ]]
+    let gfx_base_pkgs = [
+        &base_pkgs[..],
+        &[
+            "graphics-server", // raw (unprotected) frame buffer primitives
+            "early_settings",  // required by keyboard
+            "keyboard",        // required by graphics-server
+            "spinor",          // required by keyboard - to save key mapping
+            "llio",            // required by spinor
+        ],
+    ]
     .concat();
     // packages in the user image - most of the services at this layer have cross-dependencies
-    let user_pkgs = [&gfx_base_pkgs[..], &[
-        // net services
-        "com",
-        "net",
-        "dns",
-        // UX abstractions
-        "gam",
-        "ime-frontend",
-        "ime-plugin-shell",
-        "codec",
-        "modals",
-        // security
-        "root-keys",
-        "trng",
-        "sha2",
-        // "engine-25519",
-        "jtag",
-        // GUI front end
-        "status",
-        "shellchat",
-        // filesystem
-        "pddb",
-        // usb services
-        "usb-device-xous",
-    ]]
+    let user_pkgs = [
+        &gfx_base_pkgs[..],
+        &[
+            // net services
+            "com",
+            "net",
+            "dns",
+            // UX abstractions
+            "gam",
+            "ime-frontend",
+            "ime-plugin-shell",
+            "codec",
+            "modals",
+            // security
+            "root-keys",
+            "trng",
+            "sha2",
+            // "engine-25519",
+            "jtag",
+            // GUI front end
+            "status",
+            "shellchat",
+            // filesystem
+            "pddb",
+            // usb services
+            "usb-device-xous",
+        ],
+    ]
     .concat();
     // for fast testing of compilation targets of the PDDB to real hardware
     let pddb_dev_pkgs = [&base_pkgs[..], &["pddb", "sha2"]].concat();
@@ -144,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(o) => o,
             Err(e) => {
                 return Err(format!(
-                    "Error: offset should be hex number without 0x prefix {}: {:?}",
+                    "Error: size should be hex number without 0x prefix {}: {:?}",
                     swap_parts[1], e
                 )
                 .into());
@@ -160,6 +169,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.add_services(&extra_services);
     // extract features, and especially track language features
     let features = get_flag("--feature")?;
+
+    setup_curve25519_backend(&features);
+
     let mut language_set = false;
     for feature in features {
         builder.add_feature(&feature);
@@ -176,6 +188,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for feature in loader_features {
         builder.add_loader_feature(&feature);
     }
+    let detached_app_features = get_flag("--app-feature")?;
+    for feature in detached_app_features {
+        builder.add_detached_app_feature(&feature);
+    }
 
     if !language_set {
         // the default language is english
@@ -184,6 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdb_stub = env::args().filter(|x| x == "--gdb-stub").count() != 0;
     if gdb_stub {
         builder.add_kernel_feature("gdb-stub");
+        builder.add_feature("gdb-stub");
     }
     if env::args().filter(|x| x == "--debug-loader").count() != 0 {
         builder.add_loader_feature("debug-print");
@@ -194,62 +211,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if env::args().filter(|x| x == "--change-target").count() != 0 {
         builder.set_change_target_flag();
     }
-
-    // manage an ugly patch we have to do to selectively configure AES for only cramium-soc targets
-    match builder::search_in_file("services/aes/Cargo.toml", "default = []") {
-        Ok(false) => {
-            builder::search_and_replace_in_file(
-                "services/aes/Cargo.toml",
-                "default = [\"cramium-soc\"]",
-                "default = []",
-            )
-            .expect("couldn't patch AES");
-
-            // revert these just in case - but don't throw an error if the strings aren't found
-            builder::search_and_replace_in_file(
-                "Cargo.toml",
-                "# [patch.crates-io.curve25519-dalek]",
-                "[patch.crates-io.curve25519-dalek]",
-            )
-            .ok();
-            builder::search_and_replace_in_file(
-                "Cargo.toml",
-                "# git = \"https://github.com/betrusted-io/curve25519-dalek.git\"",
-                "git = \"https://github.com/betrusted-io/curve25519-dalek.git\"",
-            )
-            .ok();
-            builder::search_and_replace_in_file(
-                "Cargo.toml",
-                "# branch = \"main\" # c25519",
-                "branch = \"main\" # c25519",
-            )
-            .ok();
-            builder::search_and_replace_in_file(
-                "services/root-keys/Cargo.toml",
-                "# features = [\"auto-release\", \"warn-fallback\"]",
-                "features = [\"auto-release\", \"warn-fallback\"]",
-            )
-            .ok();
-            builder::search_and_replace_in_file(
-                "services/shellchat/Cargo.toml",
-                "# features = [\"auto-release\", \"warn-fallback\"]",
-                "features = [\"auto-release\", \"warn-fallback\"]",
-            )
-            .ok();
-
-            match builder::search_in_file("services/aes/Cargo.toml", "default = []") {
-                Ok(false) => {
-                    return Err(
-                        "Couldn't revert services/aes/Cargo.toml -- is the file writeable or corrupted?"
-                            .into(),
-                    );
-                }
-                _ => (),
-            }
-        }
-        _ => {}
-    }
-    let mut broken_aes_cleanup = false;
 
     // ---- now process the verb plus position dependent arguments ----
     let mut args = env::args();
@@ -308,7 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 builder.set_swap(0x4020_0000, 4 * 1024 * 1024);
             }
             builder.target_renode();
-            // builder.target_cramium_soc();
+            // builder.target_bao1x_soc();
             builder.add_loader_feature("debug-print");
             builder.add_loader_feature("swap");
             builder.add_kernel_feature("swap");
@@ -336,8 +297,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "modals",
                 "ime-plugin-shell",
                 "ime-frontend",
-                // "test-swapper",
-                "cram-console",
+                "test-swapper",
+                // "bao1x-console",
             ]
             .to_vec();
             for service in swap_pkgs {
@@ -357,6 +318,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .add_feature("tls")
                 // .add_feature("test-rekey")
                 .add_apps(&get_cratespecs());
+        }
+        Some("baosec-emu") => {
+            let bao_pkgs = [
+                "xous-ticktimer",
+                "keystore",
+                "xous-log",
+                "xous-names",
+                "usb-bao1x",
+                "bao1x-emu",
+                "bao-console",
+                "modals",
+                "pddb",
+                "bao-video",
+                "vault2",
+            ];
+            builder.add_feature("pddbtest");
+            builder
+                // hosted-baosec feature added below
+                .target_hosted_baosec()
+                .add_services(&bao_pkgs)
+                .add_apps(&get_cratespecs());
+
+            // safe because xtask is single-threaded - the build to setup the emulation run is strictly
+            // single-threaded the read of the variable will be multi-threaded, but it will be set
+            // by that point in time.
+            unsafe {
+                std::env::set_var("UUID", "1234567812345678123456781234567812345678123456781234567812345678");
+            }
+            // builder.add_feature("modal-testing");
         }
         Some("pddb-ci") => {
             builder
@@ -394,6 +384,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("hosted-ci") => {
             builder.target_hosted().add_services(&user_pkgs).hosted_build_only().add_apps(&get_cratespecs());
+        }
+        Some("hosted-bao1x-ci") => {
+            let bao_pkgs = [
+                "xous-ticktimer",
+                "keystore",
+                "xous-log",
+                "xous-names",
+                "bao1x-emu",
+                "bao-console",
+                "modals",
+                "pddb",
+                "bao-video",
+                "vault2",
+            ];
+            builder
+                .target_hosted_baosec()
+                .add_services(&bao_pkgs)
+                .hosted_build_only()
+                .add_apps(&get_cratespecs());
         }
 
         // ------ Precursor hardware image configs ------
@@ -515,106 +524,267 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             builder.target_precursor_no_image(PRECURSOR_SOC_VERSION).add_services(&gfx_base_pkgs);
         }
 
-        // ------ Cramium hardware image configs ------
-        Some("cramium-sim") | Some("cramium-soc") => {
+        // ------ bao1x hardware image configs ------
+        Some("bao1x-sim") | Some("bao1x") => {
             match task.as_deref() {
-                Some("cramium-soc") => {
+                Some("bao1x") => {
                     let board = "board-dabao";
                     // select the board
                     builder.add_feature(board);
                     builder.add_loader_feature(board);
                     builder.add_kernel_feature(board);
                 }
-                _ => (), // don't add any board because this is simulation
+                Some("bao1x-sim") => {
+                    let board = "board-dabao";
+                    // select the board
+                    builder.add_feature(board);
+                    builder.add_loader_feature(board);
+                    builder.add_kernel_feature(board);
+                    builder.kernel_disable_defaults(); // need to turn of kernel DUART exclusive access so console can work!
+                }
+                _ => panic!("unhandled configuration"),
             };
 
             // placement in flash is a tension between dev convenience and RAM usage. Things in flash
             // are resident, non-swapable, but end up making the slow kernel burn process take longer.
-            let cramium_flash_pkgs =
-                ["xous-log", "xous-names", "cram-mbox1", "cram-mbox2" /* "cram-hal-service" */].to_vec();
-            let cramium_swap_pkgs = [].to_vec();
+            let bao1x_flash_pkgs = [
+                "xous-log",
+                "xous-names",
+                "xous-ticktimer",
+                "bao1x-mbox1",
+                "bao1x-mbox2", /* "bao1x-hal-service" */
+            ]
+            .to_vec();
+            let bao1x_swap_pkgs = [].to_vec();
 
             builder.add_loader_feature("debug-print");
+            builder.add_loader_feature("verilator-only");
             // builder.add_kernel_feature("debug-print");
             // builder.add_kernel_feature("debug-swap-verbose");
 
             // builder.add_feature("quantum-timer");
             // builder.add_feature("auto-trng"); // automatically initialize TRNG tester inside USB stack
             builder.add_kernel_feature("v2p");
+            builder.add_kernel_feature("verilator-only");
             // builder.add_feature("mass-storage");
             // builder.add_feature("ditherpunk");
 
             builder.add_loader_feature("sram-margin");
             match task.as_deref() {
-                Some("cramium-sim") => builder.target_cramium_fpga(),
-                Some("cramium-soc") => builder.target_cramium_soc(),
+                Some("bao1x-sim") => builder.target_bao1x_soc(),
+                Some("bao1x") => builder.target_bao1x_soc(),
                 _ => panic!("should be unreachable"),
             };
-            broken_aes_cleanup = true;
 
-            for service in cramium_flash_pkgs {
+            for service in bao1x_flash_pkgs {
                 builder.add_service(service, LoaderRegion::Flash);
             }
             builder.add_services(&get_cratespecs());
-            for service in cramium_swap_pkgs {
+            for service in bao1x_swap_pkgs {
                 builder.add_service(service, LoaderRegion::Swap);
             }
         }
 
-        Some("baosec") => {
+        Some("baremetal-artybio") => {
+            builder.set_baremetal(true);
+            builder.target_artybio();
+
+            /*
+            let existing_lto = env::var("CARGO_PROFILE_RELEASE_LTO").map(Some).unwrap_or(None);
+            let existing_codegen_units =
+                env::var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS").map(Some).unwrap_or(None);
+            // these settings will generate the most compact code (but also the hardest to debug)
+            env::set_var("CARGO_PROFILE_RELEASE_LTO", "true");
+            env::set_var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
+
+            let mut local_args = vec!["build"];
+            /*
+            let output_root = format!(
+                "{}/target/{}{}/",
+                project_root().into_os_string().into_string().unwrap(),
+                crate::TARGET_TRIPLE_RISCV32_KERNEL,
+                stream.as_str(),
+            );
+            local_args.push(&output_root); */
+
+            local_args.push("--target");
+            local_args.push(crate::TARGET_TRIPLE_RISCV32_KERNEL);
+
+            local_args.push("--features");
+            local_args.push("artybio");
+
+            let status =
+                std::process::Command::new(cargo()).current_dir(project_root()).args(&local_args).status()?;
+            if !status.success() {
+                return Err("Baremetal build failed".into());
+            }
+
+            // restore the LTO settings
+            if let Some(existing) = existing_lto {
+                env::set_var("CARGO_PROFILE_RELEASE_LTO", existing);
+            }
+            if let Some(existing) = existing_codegen_units {
+                env::set_var("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", existing);
+            }*/
+        }
+
+        Some("baremetal-artyvexii") => {
+            builder.set_baremetal(true);
+            builder.target_artyvexii();
+        }
+
+        Some("baremetal-bao1x") | Some("bao1x-baremetal-baosec") => {
             let board = "board-baosec";
+            builder.set_board(board);
+            builder.add_loader_feature(board);
+            builder.add_loader_feature("bao1x-usb");
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "baremetal/src/platform/bao1x/link.x",
+                (bao1x_api::BAREMETAL_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            builder.set_baremetal(true).target_baremetal_bao1x("baremetal").set_sigblock_size(sigblock_size);
+        }
+
+        Some("bao1x-baremetal-dabao") => {
+            let board = "board-dabao";
+            builder.set_board(board);
+            builder.add_loader_feature(board);
+            builder.add_loader_feature("bao1x-usb");
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "baremetal/src/platform/bao1x/link.x",
+                (bao1x_api::BAREMETAL_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            builder.set_baremetal(true).target_baremetal_bao1x("baremetal").set_sigblock_size(sigblock_size);
+        }
+
+        Some("baremetal-bao1x-evb") => {
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "baremetal/src/platform/bao1x/link.x",
+                (0x6100_0000 + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            builder.set_baremetal(true);
+            builder.add_loader_feature("bao1x-evb");
+            builder.set_sigblock_size(sigblock_size);
+            builder.target_baremetal_bao1x("baremetal");
+        }
+
+        Some("bao1x-boot0") => {
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "bao1x-boot/boot0/link.x",
+                (bao1x_api::BOOT0_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            builder
+                .set_baremetal(true)
+                .target_baremetal_bao1x("bao1x-boot0")
+                .set_sigblock_size(sigblock_size);
+        }
+
+        Some("bao1x-boot1") => {
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "bao1x-boot/boot1/src/platform/bao1x/link.x",
+                (bao1x_api::BOOT1_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            // builder.add_loader_feature("unsafe-debug");
+            builder
+                .set_baremetal(true)
+                .target_baremetal_bao1x("bao1x-boot1")
+                .set_sigblock_size(sigblock_size);
+        }
+
+        Some("bao1x-alt-boot1") => {
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "bao1x-boot/boot1/src/platform/bao1x/link.x",
+                (bao1x_api::LOADER_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            builder.add_loader_feature("alt-boot1");
+            // builder.add_loader_feature("force-dabao");
+            builder
+                .set_baremetal(true)
+                .target_baremetal_bao1x("bao1x-alt-boot1")
+                .set_sigblock_size(sigblock_size);
+        }
+
+        Some("bao1x-boot1-lite") => {
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "bao1x-boot/boot1/src/platform/bao1x/link.x",
+                (bao1x_api::BOOT1_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            // builder.add_loader_feature("unsafe-debug");
+            builder
+                .set_baremetal(true)
+                .target_baremetal_bao1x("bao1x-boot1")
+                .add_loader_feature("oem-baosec-lite")
+                .set_sigblock_size(sigblock_size);
+        }
+
+        Some("bao1x-alt-boot1-lite") => {
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "bao1x-boot/boot1/src/platform/bao1x/link.x",
+                (bao1x_api::LOADER_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            builder.add_loader_feature("alt-boot1");
+            // builder.add_loader_feature("force-dabao");
+            builder
+                .set_baremetal(true)
+                .target_baremetal_bao1x("bao1x-alt-boot1")
+                .add_loader_feature("oem-baosec-lite")
+                .set_sigblock_size(sigblock_size);
+        }
+
+        Some("baosec") => {
+            baosec_common(&mut builder)?;
+        }
+
+        Some("baosec-lite") => {
+            baosec_common(&mut builder)?;
+            builder.add_feature("oem-baosec-lite");
+            builder.add_loader_feature("oem-baosec-lite");
+        }
+
+        Some("baosec-improper-keystore") => {
+            let board = "board-baosec";
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "loader/src/platform/bao1x/link.x",
+                (bao1x_api::LOADER_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
             // select the board
+            builder.set_board(board);
             builder.add_feature(board);
             builder.add_loader_feature(board);
             builder.add_kernel_feature(board);
+            builder.set_sigblock_size(sigblock_size);
 
-            // placement in flash is a tension between dev convenience and RAM usage. Things in flash
-            // are resident, non-swapable, but end up making the slow kernel burn process take longer.
-            // Layout:
-            //   - kernel, ticktimer, log, names, swapper are essential services and stay resident. Must be <1
-            //     MiB total.
-            //   - usb-cramium is latency-sensitive and runs a handler in a non-swappable IRQ context, and
-            //     thus cannot be swapped out. It contains the USB stack and API layer. It needs to maintain a
-            //     mutex with bao-video as the camera cannot run simultaneously with the USB stack due to
-            //     sharing of the IFRAM space.
-            //   - cram-hal-service contains all the non-latency sensitive hardware APIs
-            //   - bao-video pulls camera + display + qr decoding into a single package single memory space to
-            //     optimize performance. Must maintain a mutex with usb-cramium on the camera IFRAM space.
-            //   - bao-console is the serial debug console handler
-            //   - [planned] pddb server
-            //   - [planned] vault application
-            let bao_rram_pkgs = ["xous-ticktimer", "xous-log", "xous-names" /* "usb-cramium" */].to_vec(); /* "usb-cramium" */
-            let bao_swap_pkgs = ["cram-hal-service", "bao-console", "bao-video"].to_vec(); /* "bao-video" */
+            let bao_rram_pkgs = [
+                "xous-ticktimer",
+                "xous-log",
+                "xous-names",
+                "usb-bao1x",
+                "bao1x-hal-service",
+                "bao-console",
+                "keystore", // deliberately out of order
+                "bao-video",
+            ]
+            .to_vec();
             if !builder.is_swap_set() {
-                builder.set_swap(0, 8 * 1024 * 1024);
+                // reserve 3MiB for system services: ultimately, "pddb, modals, and bao-video"
+                builder.set_swap(0, bao1x_api::offsets::baosec::SWAP_RAM_LEN as _);
             }
             builder.add_loader_feature("swap");
             builder.add_kernel_feature("swap");
             builder.add_feature("swap");
 
             builder.add_loader_feature("debug-print");
-            // the following feature needs to be uncommented if we also enable
-            // debug-print-swapper inside xous-swapper
-            if false {
-                builder.add_loader_feature("userspace-swap-debug");
-                builder.add_feature("debug-print-swapper");
-                // use this to enable debug in USB, when the package is selected
-                builder.add_feature("debug-print-usb");
-            } else {
-            }
-            builder.add_kernel_feature("debug-swap");
-            // builder.add_kernel_feature("debug-print");
-            // builder.add_kernel_feature("debug-swap-verbose");
-            // builder.add_feature("quantum-timer"); // this isn't in NTO..
             builder.add_kernel_feature("v2p");
-            builder.add_loader_feature("sram-margin");
-            builder.add_loader_feature("usb");
-            builder.add_loader_feature("updates");
-            match task.as_deref() {
-                Some("baosec") => builder.target_cramium_soc(),
-                _ => panic!("should be unreachable"),
-            };
-            broken_aes_cleanup = true;
+            builder.target_bao1x_soc();
 
             // It is important that this is the first service added, because the swapper *must* be in PID 2
             builder.add_service("xous-swapper", LoaderRegion::Flash);
@@ -623,9 +793,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 builder.add_service(service, LoaderRegion::Flash);
             }
             builder.add_services(&get_cratespecs());
-            for service in bao_swap_pkgs {
-                builder.add_service(service, LoaderRegion::Swap);
+        }
+
+        Some("dabao") => {
+            let board = "board-dabao";
+            let sigblock_size = 0x300;
+            update_flash_origin(
+                "loader/src/platform/bao1x/link.x",
+                (bao1x_api::LOADER_START + sigblock_size + STATICS_LEN) as u32,
+            )?;
+            // select the board
+            builder.set_board(board);
+            builder.add_feature(board);
+            builder.add_loader_feature(board);
+            builder.add_kernel_feature(board);
+            builder.add_detached_app_feature(board);
+            builder.set_sigblock_size(sigblock_size);
+
+            // minimal set of services for app development on a dabao. Need to save space for the app itself!
+            let bao_rram_pkgs =
+                ["xous-ticktimer", "keystore", "xous-log", "xous-names", "usb-bao1x", "bao1x-hal-service"]
+                    .to_vec();
+            let bao_app_pkgs: Vec<&'static str> = ["dabao-console"].to_vec();
+
+            builder.add_loader_feature("debug-print");
+            builder.add_kernel_feature("v2p");
+            builder.add_kernel_feature("print-panics");
+            builder.add_kernel_feature("debug-proc");
+            match task.as_deref() {
+                Some("dabao") => builder.target_bao1x_soc(),
+                _ => panic!("should be unreachable"),
+            };
+
+            for service in bao_rram_pkgs {
+                builder.add_service(service, LoaderRegion::Flash);
             }
+            builder.add_apps(&bao_app_pkgs);
+            builder.add_apps(&get_cratespecs());
         }
 
         // ------ ARM hardware image configs ------
@@ -649,59 +853,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("generate-locales") => generate_locales()?,
         Some("wycheproof-import") => wycheproof_import()?,
         Some("dummy-template") => generate_app_menus(&Vec::new()),
-        _ => print_help(),
+        task => {
+            if let Some(task) = task {
+                eprintln!("error: task {task:?} not recognized");
+            }
+
+            print_help();
+            std::process::exit(1);
+        }
     }
+    // clean up any duplicates - this is an artifact of wanting to include dabao-console
+    // as a "default app" to make behavior more intuitive for beginners trying out dabao,
+    // but also wanting to list it in the UI as an app so that developers are /aware/ of
+    // dabao-console as an app they can modify. Simply hiding it by sticking it in the services
+    // directory makes in hard to discover. Maybe this will be changed to handle it entirely
+    // at the UI layer but anyways - this avoids accidental duplicate processes which is a good thing
+    // in general.
+    builder.deduplicate_processes();
     builder.build()?;
 
-    // AES is broken in the current rev of the Cramium SoC. This unpatches the crate so other builds can
-    // work properly.
-    if broken_aes_cleanup {
-        builder::search_and_replace_in_file(
-            "services/aes/Cargo.toml",
-            "default = [\"cramium-soc\"]",
-            "default = []",
-        )
-        .expect("couldn't patch AES");
-        builder::search_and_replace_in_file(
-            "Cargo.toml",
-            "# [patch.crates-io.curve25519-dalek]",
-            "[patch.crates-io.curve25519-dalek]",
-        )
-        .expect("couldn't patch curve25519");
-        builder::search_and_replace_in_file(
-            "Cargo.toml",
-            "# git = \"https://github.com/betrusted-io/curve25519-dalek.git\"",
-            "git = \"https://github.com/betrusted-io/curve25519-dalek.git\"",
-        )
-        .expect("couldn't patch curve25519");
-        builder::search_and_replace_in_file(
-            "Cargo.toml",
-            "# branch = \"main\" # c25519",
-            "branch = \"main\" # c25519",
-        )
-        .expect("couldn't patch curve25519");
-        builder::search_and_replace_in_file(
-            "services/root-keys/Cargo.toml",
-            "# features = [\"auto-release\", \"warn-fallback\"]",
-            "features = [\"auto-release\", \"warn-fallback\"]",
-        )
-        .expect("couldn't patch rootkeys");
-        builder::search_and_replace_in_file(
-            "services/shellchat/Cargo.toml",
-            "# features = [\"auto-release\", \"warn-fallback\"]",
-            "features = [\"auto-release\", \"warn-fallback\"]",
-        )
-        .expect("couldn't patch shellchat");
-    }
-    match builder::search_in_file("services/aes/Cargo.toml", "default = []") {
-        Ok(false) => {
-            println!(
-                "Build configuration is out of sync: cramium-soc patch on AES crate was not cleared out"
-            );
-            return Err("services/aes/Cargo.toml is in a bad state! Revert any patches to the file.".into());
-        }
-        _ => {}
-    }
     // the intent of this call is to check that crates we are sourcing from crates.io
     // match the crates in our local source. The usual cause of an inconsistency is
     // a maintainer forgot to publish a change to crates.io.
@@ -740,6 +910,9 @@ fn print_help() {
     eprintln!(
 "cargo xtask [verb] [cratespecs ..]
     [--feature [feature name]]
+    [--loader-feature [loader feature name]]
+    [--kernel-feature [kernel feature name]]
+    [--app-feature [detached app feature name]]
     [--lkey [loader key]] [--kkey [kernel key]]
     [--swap [offset:size]]
     [--app [cratespec]]
@@ -792,17 +965,25 @@ Hardware images:
  ro-test                 automation framework for TRNG testing (RO directly, no CPRNG). [cratespecs] ignored.
  av-test                 automation framework for TRNG testing (AV directly, no CPRNG). [cratespecs] ignored.
  tiny                    Precursor tiny image. For testing with services built out-of-tree.
- cramium-soc             BSP validation image for Cramium. Contains a superset of features, in various states of testing.
- cramium-sim             Tiny target for verilator simulation
  baosec                  Baosec application target image.
+ dabao                   Dabao application target image.
+ bao1x-baremetal-baosec  Baremetal image for baosec boards.
+ bao1x-baremetal-dabao   Baremetal image for dabao boards.
+ bao1x-boot0             Boot0 partition for baochip1x targets.
+ bao1x-boot1             Boot1 partition for baochip1x targets.
+ bao1x-alt-boot1         Alterante boot1 partition for baochip1x targets. Burns into the 'loader/baremetal' region
+                         and allows for updating of boot1 when this partition is active.
 
 Hosted emulation:
  run                     Run user image in hosted mode with release flags. [cratespecs] are apps
+ baosec-emu              Run user image in hosted mode but for the baosec target
  pddb-ci                 PDDB config for CI testing (eg: TRNG->deterministic for reproducible errors). [cratespecs] ignored.
  pddb-btest              PDDB stress tester for secret basis creation/deletion [cratespecs] ignored.
  hosted-debug            Run user image in hosted mode with debug flags. [cratespecs] are apps
  gfx-dev                 Testing mode for graphics primitives. [cratespecs] are services
  pddb-dev                Testing for compilation errors on hardware targets on the PDDB.
+ hosted-ci               Check that precursor hosted mode isn't broken
+ hosted-bao1x-ci         Check that bao1x hosted mode isn't broken
 
 Renode emulation:
  renode-image            Renode user image. Unspecified [cratespecs] are apps
@@ -864,4 +1045,181 @@ fn get_flag(flag: &str) -> Result<Vec<String>, DynError> {
         }
     }
     Ok(list)
+}
+
+fn setup_curve25519_backend(features: &Vec<String>) {
+    // Determine workspace root (xtask assumed to be in subdir)
+    let workspace_root = locate_workspace_root().expect("Failed to find workspace root");
+    let config_path = workspace_root.join(".cargo/config.toml");
+
+    // assume that the system has the curve25519 accelerator if it's not the vexii-test config
+    let has_accelerator = !features.contains(&"vexii-test".to_string());
+
+    // Desired cfg value
+    let desired_cfg = if has_accelerator {
+        "curve25519_dalek_backend=\"u32e_backend\""
+    } else {
+        "curve25519_dalek_backend=\"u32_backend\""
+    };
+
+    // Read original lines
+    let original = fs::read_to_string(&config_path).expect("Failed to read config.toml");
+    let mut modified = false;
+    let mut in_target = false;
+
+    let lines: Vec<String> = original
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+
+            // Detect section
+            if trimmed.starts_with("[target.") && trimmed.contains("riscv32imac-unknown-xous-elf") {
+                in_target = true;
+                return line.to_string();
+            }
+
+            if in_target && trimmed.starts_with('[') && trimmed != "[target.riscv32imac-unknown-xous-elf]" {
+                in_target = false; // exited the block
+            }
+
+            if in_target && trimmed.starts_with("rustflags") {
+                if trimmed.contains(desired_cfg) {
+                    return line.to_string(); // already correct
+                }
+
+                // Replace line with correct cfg
+                modified = true;
+                return format!(r#"rustflags = ["--cfg", '{}']"#, desired_cfg);
+            }
+
+            line.to_string()
+        })
+        .collect();
+
+    // Only write if modified
+    if modified {
+        fs::write(&config_path, lines.join("\n")).expect("Failed to write config.toml");
+        println!("Updated .cargo/config.toml");
+    } else {
+        println!("No change needed in .cargo/config.toml");
+    }
+}
+
+/// Traverse upward to find workspace root (directory with `.cargo/config.toml`)
+fn locate_workspace_root() -> Option<PathBuf> {
+    let mut dir = env::current_dir().ok()?;
+    while !dir.join(".cargo/config.toml").exists() {
+        if !dir.pop() {
+            return None;
+        }
+    }
+    Some(dir)
+}
+
+fn update_flash_origin<P: AsRef<Path>>(path: P, new_origin: u32) -> std::io::Result<()> {
+    let content = fs::read_to_string(&path)?;
+    let updated = content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("FLASH") && line.contains("ORIGIN") {
+                let parts: Vec<&str> = line.split(',').collect();
+                let origin_part = format!("ORIGIN = 0x{:08X}", new_origin);
+                let length_part = parts.iter().find(|s| s.trim().starts_with("LENGTH")).unwrap_or(&"");
+                format!("  FLASH : {}, {}", origin_part, length_part.trim())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    fs::write(path, updated)?;
+    Ok(())
+}
+
+fn baosec_common(builder: &mut Builder) -> std::io::Result<()> {
+    let board = "board-baosec";
+    let sigblock_size = 0x300;
+    update_flash_origin(
+        "loader/src/platform/bao1x/link.x",
+        (bao1x_api::LOADER_START + sigblock_size + STATICS_LEN) as u32,
+    )?;
+    // select the board
+    builder.set_board(board);
+    builder.add_feature(board);
+    builder.add_loader_feature(board);
+    builder.add_kernel_feature(board);
+    builder.set_sigblock_size(sigblock_size);
+
+    // placement in flash is a tension between dev convenience and RAM usage. Things in flash
+    // are resident, non-swapable, but end up making the slow kernel burn process take longer.
+    // Layout:
+    //   - kernel, ticktimer, log, names, swapper are essential services and stay resident. Must be <1 MiB
+    //     total.
+    //   - usb-bao1x is latency-sensitive and runs a handler in a non-swappable IRQ context, and thus cannot
+    //     be swapped out. It contains the USB stack and API layer. It needs to maintain a mutex with
+    //     bao-video as the camera cannot run simultaneously with the USB stack due to sharing of the IFRAM
+    //     space.
+    //   - bao1x-hal-service contains all the non-latency sensitive hardware APIs
+    //   - bao-video pulls camera + display + qr decoding into a single package single memory space to
+    //     optimize performance. Must maintain a mutex with usb-bao1x on the camera IFRAM space.
+    //   - bao-console is the serial debug console handler
+    //   - [planned] pddb server
+    //   - [planned] vault application
+    let bao_rram_pkgs = [
+        "xous-ticktimer",
+        "xous-log",
+        "xous-names",
+        "usb-bao1x",
+        "bao1x-hal-service",
+        "modals",
+        "pddb",
+        "bao-video",
+    ]
+    .to_vec();
+    let bao_swap_pkgs = ["bao-console", "vault2"].to_vec();
+    if !builder.is_swap_set() {
+        // reserve 3MiB for system services: ultimately, "pddb, modals, and bao-video"
+        builder.set_swap(0, bao1x_api::offsets::baosec::SWAP_RAM_LEN as _);
+    }
+    builder.add_loader_feature("swap");
+    builder.add_kernel_feature("print-panics");
+    builder.add_kernel_feature("swap");
+    builder.add_feature("swap");
+
+    builder.add_loader_feature("debug-print");
+    // the following feature needs to be uncommented if we also enable
+    // debug-print-swapper inside xous-swapper
+    if false {
+        builder.add_loader_feature("userspace-swap-debug");
+        builder.add_feature("debug-print-swapper");
+        // use this to enable debug in USB, when the package is selected
+        // builder.add_feature("debug-print-usb");
+    } else {
+    }
+    // builder.add_kernel_feature("debug-swap");
+    // builder.add_kernel_feature("debug-print");
+    // builder.add_kernel_feature("debug-swap-verbose");
+    // builder.add_feature("quantum-timer"); // this isn't in bao1x..
+    builder.add_kernel_feature("v2p");
+    builder.target_bao1x_soc();
+
+    // It is important that this is the first service added, because the swapper *must* be in PID 2
+    builder.add_service("xous-swapper", LoaderRegion::Flash);
+    // It is important that this is the second service added, as keystore *must* be in PID 3
+    // (as constrained by the coreuser setting that is locked out by the time Xous runs)
+    builder.add_service("keystore", LoaderRegion::Flash);
+
+    for service in bao_rram_pkgs {
+        builder.add_service(service, LoaderRegion::Flash);
+    }
+    builder.add_services(&get_cratespecs());
+    for service in bao_swap_pkgs {
+        builder.add_service(service, LoaderRegion::Swap);
+    }
+    for app in get_cratespecs() {
+        builder.add_service(&app, LoaderRegion::Swap);
+    }
+    // builder.add_feature("modal-testing");
+    Ok(())
 }
