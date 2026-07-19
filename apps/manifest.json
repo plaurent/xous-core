@@ -119,6 +119,15 @@
             }
         }
     },
+    "edlin": {
+        "context_name": "edlin text app",
+        "menu_name": {
+            "appmenu.edlin": {
+                "en": "Edlin text editor",
+                "en-tts": "Edlin text editor"
+            }
+        }
+    },
     "vault": {
         "context_name": "Key Vault",
         "menu_name": {

@@ -60,7 +60,7 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "hex-literal 0.3.4",
- "log",
+ "log 0.4.22",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
 ]
@@ -128,7 +128,7 @@ version = "0.1.0"
 dependencies = [
  "gam",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -339,7 +339,7 @@ dependencies = [
  "com",
  "gam",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -367,7 +367,7 @@ dependencies = [
  "chrono",
  "keystore",
  "keystore-api",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -400,7 +400,7 @@ dependencies = [
  "getrandom 0.2.12",
  "libm 0.2.8",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "nalgebra",
  "num-derive 0.4.2",
@@ -495,7 +495,7 @@ name = "bao1x-emu"
 version = "0.1.0"
 dependencies = [
  "bao1x-api 0.1.0",
- "log",
+ "log 0.4.22",
  "minifb",
  "num-derive 0.4.2",
  "num-traits",
@@ -525,7 +525,7 @@ dependencies = [
  "ed25519-dalek-bao1x",
  "either",
  "linked_list_allocator",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rand_chacha 0.3.1",
@@ -555,7 +555,7 @@ dependencies = [
  "chrono",
  "flatipc",
  "flatipc-derive",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rand 0.8.5",
@@ -576,7 +576,7 @@ name = "bao1x-mbox1"
 version = "0.1.0"
 dependencies = [
  "aes",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "utralib 0.1.27",
@@ -590,7 +590,7 @@ dependencies = [
 name = "bao1x-mbox2"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "utralib 0.1.27",
@@ -725,7 +725,7 @@ dependencies = [
  "bao1x-api 0.1.0",
  "bao1x-hal",
  "bitbybit",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "utralib 0.1.27",
@@ -828,7 +828,7 @@ dependencies = [
 name = "blitstr2"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -870,43 +870,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e412e2cd0f2b2d93e02543ceae7917b3c70331573df19ee046bcbc35e45e87d7"
 dependencies = [
  "byteorder",
-<<<<<<< HEAD
  "cipher",
-=======
- "cipher 0.4.3",
-]
-
-[[package]]
-name = "book"
-version = "0.1.0"
-dependencies = [
- "com",
- "gam",
- "graphics-server",
- "locales",
- "log",
- "modals",
- "num-derive",
- "num-traits",
- "trng",
- "xous 0.9.55 (registry+https://github.com/rust-lang/crates.io-index)",
- "xous-api-log",
- "xous-api-names",
- "xous-api-ticktimer",
- "xous-ipc 0.9.55 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "bstr"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba3569f383e8f1598449f1a423e72e99569137b47740b1da11ef19af3d5c3223"
-dependencies = [
- "lazy_static",
- "memchr",
- "regex-automata",
- "serde",
->>>>>>> 397fe3c51 (add book)
 ]
 
 [[package]]
@@ -1034,7 +998,7 @@ dependencies = [
  "ime-plugin-shell",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -1063,7 +1027,7 @@ dependencies = [
  "ime-plugin-shell",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "net",
  "num-derive 0.4.2",
@@ -1224,7 +1188,7 @@ name = "codec"
 version = "0.1.0"
 dependencies = [
  "llio",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -1254,7 +1218,7 @@ version = "0.1.0"
 dependencies = [
  "com_rs 0.1.0 (git+https://github.com/betrusted-io/com_rs?rev=891bdd3ca8e41f81510d112483e178aea3e3a921)",
  "llio",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -1321,7 +1285,7 @@ checksum = "f7144d30dcf0fafbce74250a3963025d8d52177934239851c917d29f1df280c2"
 name = "content-plugin-api"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "rkyv 0.8.8",
  "ux-api",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1361,7 +1325,7 @@ dependencies = [
  "bao1x-hal-service",
  "ime-plugin-shell",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -1603,7 +1567,7 @@ dependencies = [
  "cbc",
  "cbor",
  "hex 0.3.2",
- "log",
+ "log 0.4.22",
  "p256",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -1631,7 +1595,7 @@ dependencies = [
  "cbc",
  "cbor-vault2",
  "hex 0.3.2",
- "log",
+ "log 0.4.22",
  "p256",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -1653,7 +1617,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a59eaecb592b343e37cffd3e67c5c64c6de0452a07731c2044d164c5b986cb64"
 dependencies = [
  "hidapi",
- "log",
+ "log 0.4.22",
 ]
 
 [[package]]
@@ -1676,7 +1640,7 @@ dependencies = [
  "digest 0.10.7",
  "engine25519-as",
  "fiat-crypto 0.2.7",
- "log",
+ "log 0.4.22",
  "rustc_version 0.4.0",
  "subtle",
  "utralib 0.1.27",
@@ -1740,7 +1704,7 @@ dependencies = [
  "engine25519-as",
  "fiat-crypto 0.1.20",
  "hex 0.4.3",
- "log",
+ "log 0.4.22",
  "packed_simd_2",
  "rand 0.7.3",
  "rand_core 0.5.1",
@@ -1766,7 +1730,7 @@ dependencies = [
  "bytemuck",
  "crc32fast",
  "keystore",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "usb-bao1x",
@@ -1995,6 +1959,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dimsum"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a534ca825bb6dbba48ec8eea24f1592f4e1169a7d87bdb60e5eba16bcfe92e57"
+
+[[package]]
 name = "dirs-next"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2043,7 +2013,7 @@ dependencies = [
  "gam",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "net",
  "num-derive 0.4.2",
@@ -2073,7 +2043,7 @@ checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
 name = "early_settings"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "once_cell",
@@ -2204,25 +2174,17 @@ dependencies = [
  "ime-plugin-shell",
  "llio",
  "locales",
-<<<<<<< HEAD
- "log",
- "num-derive",
-=======
  "log 0.4.22",
  "num-derive 0.4.2",
->>>>>>> 8de32f8f3 (fix strings, edlin ? prints line cursor position)
  "num-traits",
+ "retrobasic",
  "trng",
  "ureq",
- "xous 0.9.57 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
  "xous-api-names",
  "xous-api-ticktimer",
-<<<<<<< HEAD
- "xous-ipc 0.9.57 (registry+https://github.com/rust-lang/crates.io-index)",
-=======
- "xous-ipc 0.10.4 (registry+https://github.com/rust-lang/crates.io-index)",
->>>>>>> 8de32f8f3 (fix strings, edlin ? prints line cursor position)
+ "xous-ipc 0.10.10 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -2305,7 +2267,7 @@ version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c533630cf40e9caa44bd91aadc88a75d75a4c3a12b4cfde353cbed41daa1e1f1"
 dependencies = [
- "log",
+ "log 0.4.22",
 ]
 
 [[package]]
@@ -2379,7 +2341,7 @@ checksum = "44533bbbb3bb3c1fa17d9f2e4e38bbbaf8396ba82193c4cb1b6445d711445d36"
 dependencies = [
  "atty",
  "humantime 1.3.0",
- "log",
+ "log 0.4.22",
  "regex",
  "termcolor",
 ]
@@ -2392,7 +2354,7 @@ checksum = "a12e6657c4c97ebab115a42dcee77225f7f482cdd841cf7088c657a42e9e00e7"
 dependencies = [
  "atty",
  "humantime 2.2.0",
- "log",
+ "log 0.4.22",
  "regex",
  "termcolor",
 ]
@@ -2472,7 +2434,7 @@ version = "0.1.0"
 dependencies = [
  "ffi-sys",
  "keyboard",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "utralib 0.1.27",
@@ -2763,7 +2725,7 @@ dependencies = [
  "ime-plugin-shell",
  "keyboard",
  "locales",
- "log",
+ "log 0.4.22",
  "miniz_oxide 0.4.4",
  "num-derive 0.4.2",
  "num-traits",
@@ -2797,7 +2759,7 @@ checksum = "f4e02bf1b1a624d96925c608f1b268d82a76cbc587ce9e59f7c755e9ea11c75c"
 dependencies = [
  "bitflags 1.3.2",
  "cfg-if",
- "log",
+ "log 0.4.22",
  "managed",
  "num-traits",
  "paste",
@@ -2859,7 +2821,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eed551bd858894367c918b3f2fb1c9d73d753a1ad450768bcaa1467695c09e69"
 dependencies = [
  "bitflags 1.3.2",
- "log",
+ "log 0.4.22",
  "packing 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "usbd_scsi 0.1.0",
 ]
@@ -2879,7 +2841,7 @@ dependencies = [
  "blitstr2",
  "keyboard",
  "locales",
- "log",
+ "log 0.4.22",
  "minifb",
  "num-derive 0.4.2",
  "num-traits",
@@ -3009,7 +2971,7 @@ dependencies = [
  "blitstr2",
  "gam",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "tts-frontend",
@@ -3024,7 +2986,7 @@ dependencies = [
 name = "helloworld"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "utralib 0.1.27",
@@ -3098,7 +3060,7 @@ dependencies = [
  "blitstr2",
  "gam",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "tts-frontend",
@@ -3144,7 +3106,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df22a4d90f1b0e65fe3e0d6ee6a4608cc4d81f4b2eb3e670f44bb6bde711e452"
 dependencies = [
  "httparse",
- "log",
+ "log 0.4.22",
 ]
 
 [[package]]
@@ -3250,7 +3212,7 @@ dependencies = [
  "ime-plugin-api",
  "keyboard",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3268,7 +3230,7 @@ dependencies = [
 name = "ime-plugin-api"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3283,7 +3245,7 @@ name = "ime-plugin-shell"
 version = "0.1.0"
 dependencies = [
  "ime-plugin-api",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3301,7 +3263,7 @@ version = "0.1.0"
 dependencies = [
  "ime-plugin-api",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3416,7 +3378,7 @@ dependencies = [
 name = "jtag"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3442,7 +3404,7 @@ dependencies = [
 name = "kernel-test"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "utralib 0.1.27",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
@@ -3455,7 +3417,7 @@ version = "0.1.0"
 dependencies = [
  "early_settings",
  "llio",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3488,7 +3450,7 @@ dependencies = [
  "hkdf",
  "keystore-api",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -3619,7 +3581,7 @@ version = "0.1.0"
 dependencies = [
  "com",
  "dns",
- "log",
+ "log 0.4.22",
  "net",
  "num-derive 0.4.2",
  "num-traits",
@@ -3652,7 +3614,7 @@ dependencies = [
  "bitflags 1.3.2",
  "chrono",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3731,6 +3693,15 @@ name = "lockfree-object-pool"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9374ef4228402d4b7e403e5838cb880d9ee663314b0a900d5a6aabf0c213552e"
+
+[[package]]
+name = "log"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e19e8d5c34a3e0e2223db8e060f9e8264aeeb5c5fc64a4ee9965c062211c024b"
+dependencies = [
+ "log 0.4.22",
+]
 
 [[package]]
 name = "log"
@@ -3878,7 +3849,7 @@ dependencies = [
  "blitstr2",
  "gam",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -3907,7 +3878,7 @@ dependencies = [
  "ime-plugin-shell",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "net",
  "num-derive 0.4.2",
@@ -3942,7 +3913,7 @@ dependencies = [
  "ime-plugin-shell",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "net",
  "num-derive 0.4.2",
  "num-traits",
@@ -4017,7 +3988,7 @@ dependencies = [
  "com_rs 0.1.0 (git+https://github.com/betrusted-io/com_rs?rev=891bdd3ca8e41f81510d112483e178aea3e3a921)",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -4467,7 +4438,7 @@ dependencies = [
  "keystore-api",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -4501,7 +4472,7 @@ name = "pddb-fs-tests"
 version = "0.1.0"
 dependencies = [
  "gam",
- "log",
+ "log 0.4.22",
  "modals",
  "pddb",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4550,7 +4521,7 @@ checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 name = "perflib"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "utralib 0.1.27",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -4559,7 +4530,7 @@ dependencies = [
 name = "persistent_store"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "pddb",
  "tempfile",
 ]
@@ -4841,7 +4812,7 @@ checksum = "b4aeaa1f2460f1d348eeaeed86aea999ce98c1bded6f089ff8514c9d9dbdc973"
 dependencies = [
  "anyhow",
  "indexmap 2.2.2",
- "log",
+ "log 0.4.22",
  "protobuf",
  "protobuf-support",
  "tempfile",
@@ -5164,7 +5135,7 @@ dependencies = [
  "ime-plugin-shell",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "trng",
@@ -5174,6 +5145,14 @@ dependencies = [
  "xous-api-names",
  "xous-api-ticktimer",
  "xous-ipc 0.10.10 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "retrobasic"
+version = "0.1.0"
+dependencies = [
+ "dimsum",
+ "log 0.3.9",
 ]
 
 [[package]]
@@ -5207,7 +5186,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.2.12",
  "libc",
- "log",
+ "log 0.4.22",
  "rkyv 0.4.3",
  "spin",
  "untrusted 0.9.0",
@@ -5320,7 +5299,7 @@ dependencies = [
  "keystore-api",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -5419,7 +5398,7 @@ version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e87c9956bd9807afa1f77e0f7594af32566e830e088a5576d27c5b6f30f49d41"
 dependencies = [
- "log",
+ "log 0.4.22",
  "ring",
  "rustls-pki-types",
  "rustls-webpki",
@@ -5658,7 +5637,7 @@ dependencies = [
  "cpufeatures",
  "crypto-common",
  "digest 0.10.7",
- "log",
+ "log 0.4.22",
  "num-derive 0.3.3",
  "num-traits",
  "rand 0.8.5",
@@ -5737,7 +5716,7 @@ dependencies = [
  "keystore-api",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "net",
  "num-derive 0.4.2",
@@ -5860,7 +5839,7 @@ dependencies = [
  "defmt",
  "heapless 0.8.0",
  "libc",
- "log",
+ "log 0.4.22",
  "managed",
 ]
 
@@ -5877,7 +5856,7 @@ dependencies = [
 name = "spawn"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
 ]
@@ -5907,7 +5886,7 @@ dependencies = [
  "com",
  "lazy_static",
  "llio",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "precursor-hal",
@@ -5984,7 +5963,7 @@ dependencies = [
  "keystore-api",
  "llio",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "net",
  "num-derive 0.4.2",
@@ -6069,7 +6048,7 @@ name = "swaptest1"
 version = "0.1.0"
 dependencies = [
  "arbitrary-int",
- "log",
+ "log 0.4.22",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
  "xous-api-names",
@@ -6082,7 +6061,7 @@ name = "swaptest2"
 version = "0.1.0"
 dependencies = [
  "arbitrary-int",
- "log",
+ "log 0.4.22",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
  "xous-api-names",
@@ -6173,7 +6152,7 @@ dependencies = [
 name = "test-swapper"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -6244,7 +6223,7 @@ dependencies = [
 name = "ticktimer-test-client"
 version = "0.1.0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
  "xous-api-names",
@@ -6322,7 +6301,7 @@ version = "0.1.0"
 dependencies = [
  "der 0.7.8",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "net",
  "num-derive 0.4.2",
@@ -6430,7 +6409,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
 dependencies = [
- "log",
+ "log 0.4.22",
  "once_cell",
  "tracing-core",
 ]
@@ -6465,7 +6444,7 @@ version = "0.1.0"
 dependencies = [
  "blitstr2",
  "gam",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "usb-device-xous",
@@ -6482,7 +6461,7 @@ version = "0.1.0"
 dependencies = [
  "flatipc",
  "flatipc-derive",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rand 0.8.5",
@@ -6503,7 +6482,7 @@ name = "tts-frontend"
 version = "0.1.0"
 dependencies = [
  "codec",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -6527,7 +6506,7 @@ dependencies = [
  "data-encoding",
  "http",
  "httparse",
- "log",
+ "log 0.4.22",
  "rand 0.8.5",
  "sha1",
  "thiserror",
@@ -6615,7 +6594,7 @@ dependencies = [
  "base64 0.21.7",
  "flate2",
  "hootbin",
- "log",
+ "log 0.4.22",
  "once_cell",
  "rustls",
  "rustls-pki-types",
@@ -6647,7 +6626,7 @@ dependencies = [
  "bao1x-hal-service",
  "frunk_core",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "packed_struct",
@@ -6669,7 +6648,7 @@ name = "usb-device"
 version = "0.2.8"
 source = "git+https://github.com/betrusted-io/usb-device.git?branch=main#7ab6ba8120f3d7b6e0904a7ef33e27e192617fe9"
 dependencies = [
- "log",
+ "log 0.4.22",
 ]
 
 [[package]]
@@ -6685,7 +6664,7 @@ dependencies = [
  "ghostfat",
  "keyboard",
  "llio",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -6719,7 +6698,7 @@ dependencies = [
  "bitfield",
  "embedded-time",
  "keyboard",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rand 0.8.5",
@@ -6761,7 +6740,7 @@ name = "usbd_bulk_only_transport"
 version = "0.1.0"
 dependencies = [
  "embedded-hal 0.2.7",
- "log",
+ "log 0.4.22",
  "nb 0.1.3",
  "packing 0.2.0",
  "typenum",
@@ -6791,7 +6770,7 @@ name = "usbd_mass_storage"
 version = "0.1.0"
 dependencies = [
  "embedded-hal 0.2.7",
- "log",
+ "log 0.4.22",
  "nb 0.1.3",
  "packing 0.2.0",
  "typenum",
@@ -6834,7 +6813,7 @@ name = "usbd_scsi"
 version = "0.1.1"
 dependencies = [
  "embedded-hal 0.2.7",
- "log",
+ "log 0.4.22",
  "nb 0.1.3",
  "packing 0.2.0",
  "typenum",
@@ -6893,7 +6872,7 @@ dependencies = [
  "enum_dispatch",
  "hex 0.4.3",
  "locales",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "qrcode",
@@ -6932,7 +6911,7 @@ dependencies = [
  "hmac",
  "ime-plugin-api",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "net",
  "num-derive 0.4.2",
@@ -6989,7 +6968,7 @@ dependencies = [
  "hmac",
  "keystore",
  "locales",
- "log",
+ "log 0.4.22",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
@@ -7031,7 +7010,7 @@ dependencies = [
  "env_logger 0.9.3",
  "hex 0.4.3",
  "hidapi",
- "log",
+ "log 0.4.22",
  "protobuf",
  "protobuf-codegen",
  "serde",
@@ -7120,7 +7099,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9e7e1900c352b609c8488ad12639a311045f40a35491fb69ba8c12f758af70b"
 dependencies = [
  "bumpalo",
- "log",
+ "log 0.4.22",
  "once_cell",
  "proc-macro2",
  "quote",
@@ -7581,7 +7560,7 @@ version = "0.1.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc00f06eb68245d2f277a9f0a5d29ff9d7cc3d5b88a62d85e1f094a79aa7ee95"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -7594,7 +7573,7 @@ version = "0.9.71"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "998a4eb5abd7defef5b4a5a701ff1009787cd9184c1a6e73100f99aa53390152"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -7607,7 +7586,7 @@ dependencies = [
 name = "xous-api-susres"
 version = "0.9.68"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -7624,7 +7603,7 @@ version = "0.9.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "116c252eaaee82617af35497abaa479dc67e65e7d1c503fbb3b6507dfccc51b0"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -7641,7 +7620,7 @@ version = "0.9.70"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9a00a93c3c38caf7f99e73828544027fa0483d0f6ee487b9a1a7b3ee885039d"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -7657,7 +7636,7 @@ name = "xous-bio"
 version = "0.1.0"
 dependencies = [
  "defmt",
- "log",
+ "log 0.4.22",
  "utralib 0.1.27",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -7667,7 +7646,7 @@ name = "xous-bio-bdma"
 version = "0.1.0"
 dependencies = [
  "defmt",
- "log",
+ "log 0.4.22",
  "utralib 0.1.27",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -7731,7 +7710,7 @@ name = "xous-log"
 version = "0.1.28"
 dependencies = [
  "bao1x-hal",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -7745,7 +7724,7 @@ dependencies = [
 name = "xous-names"
 version = "0.9.37"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rkyv 0.8.8",
@@ -7762,7 +7741,7 @@ version = "0.1.0"
 dependencies = [
  "bao1x-hal",
  "bitfield",
- "log",
+ "log 0.4.22",
  "pio",
  "pio-proc",
  "utralib 0.1.27",
@@ -7790,7 +7769,7 @@ name = "xous-susres"
 version = "0.1.36"
 dependencies = [
  "loader",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "precursor-hal",
@@ -7812,7 +7791,7 @@ dependencies = [
  "bao1x-api 0.1.0",
  "bao1x-hal",
  "loader",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "precursor-hal",
@@ -7829,7 +7808,7 @@ version = "0.1.32"
 dependencies = [
  "bao1x-api 0.1.0",
  "loader",
- "log",
+ "log 0.4.22",
  "num-derive 0.4.2",
  "num-traits",
  "rand_chacha 0.3.1",
@@ -7859,7 +7838,7 @@ dependencies = [
  "ed25519-dalek",
  "env_logger 0.7.1",
  "hex-literal 1.0.0",
- "log",
+ "log 0.4.22",
  "pem",
  "pkcs8 0.8.0",
  "rand 0.8.5",
@@ -7878,7 +7857,7 @@ version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2133f122ecaf3ec54ba59cb3731538b6f2dde513de1b9daf0ffa05c5263ccebc"
 dependencies = [
- "log",
+ "log 0.4.22",
  "num-derive 0.3.3",
  "num-traits",
  "rkyv 0.8.8",
@@ -7983,7 +7962,7 @@ dependencies = [
  "bumpalo",
  "crc32fast",
  "lockfree-object-pool",
- "log",
+ "log 0.4.22",
  "once_cell",
  "simd-adler32",
 ]

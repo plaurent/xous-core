@@ -73,7 +73,6 @@ members = [
   "apps/app-loader",
   "apps/app-loader/spawn",
   "apps/ball",
-  "apps/book",
   "apps/hello",
   "apps/mtxchat",
   "apps/mtxcli",
