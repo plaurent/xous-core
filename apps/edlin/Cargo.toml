@@ -29,6 +29,7 @@ cos_table = { path = "../../libs/cos_table" }
 retrobasic = {path = "./retrobasic"}
 ureq = { version = "2.7.1", features = ["json"] }
 mail = { path = "../../libs/mail" }
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 
 [features]
 default = []

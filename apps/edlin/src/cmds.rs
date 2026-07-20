@@ -16,6 +16,9 @@ use retrobasic;
 
 use mail::{ImapChunk, ImapClient, SmtpClient};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
+
 
 
 use std::collections::HashMap;
@@ -214,8 +217,10 @@ fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
 /// stricter line-anchored matching is the correct (and necessary) choice
 /// (see its doc comment for why unanchored matching breaks there).
 ///
-/// Does not decode RFC 2047 encoded-words (e.g. "=?UTF-8?B?...?="), so
-/// non-ASCII subjects will show up encoded.
+/// Decodes RFC 2047 encoded-words (e.g. "=?UTF-8?Q?Caf=C3=A9?=" ->
+/// "Café") via decode_rfc2047() below, so non-ASCII subjects show up
+/// readable instead of with the raw "=?charset?Q?...?=" wrapper and its
+/// "=XX" escapes passed straight through.
 fn extract_subject(header_text: &str) -> std::string::String {
     if let Some(pos) = find_ascii_ci(header_text, "subject:") {
         let after = &header_text[pos + "subject:".len()..];
@@ -229,7 +234,7 @@ fn extract_subject(header_text: &str) -> std::string::String {
                 j += 1;
             }
             if !subject.is_empty() {
-                return subject;
+                return decode_rfc2047(&subject);
             }
         }
     }
@@ -461,6 +466,164 @@ fn decode_quoted_printable(input: &str) -> std::string::String {
         }
     }
     std::string::String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Decodes RFC 2047 "Q" encoding, used inside encoded-words
+/// (=?charset?Q?...?=). Same "=XX" hex-escape idea as body
+/// quoted-printable (decode_quoted_printable above), reusing the same
+/// hex_digit() helper, but with two differences: "_" decodes to a space
+/// (a literal space can't appear inside an encoded-word, since whitespace
+/// is what delimits header tokens, so encoders substitute "_" instead),
+/// and there's no soft-line-break handling -- an encoded-word is a single
+/// token that never spans a line.
+fn decode_rfc2047_q(input: &str) -> Vec<u8> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'_' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'=' => {
+                if let (Some(&h1), Some(&h2)) = (bytes.get(i + 1), bytes.get(i + 2)) {
+                    if let (Some(hi), Some(lo)) = (hex_digit(h1), hex_digit(h2)) {
+                        out.push((hi << 4) | lo);
+                        i += 3;
+                        continue;
+                    }
+                }
+                out.push(b'=');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Interprets already-decoded encoded-word bytes according to the
+/// declared charset. Only UTF-8 and ISO-8859-1/US-ASCII get an exact
+/// mapping -- both are simple, total byte<->codepoint relationships
+/// (ISO-8859-1's code points are just its byte values, 0-255). Anything
+/// else falls back to a lossy UTF-8 interpretation of the raw bytes,
+/// which won't render correctly for that charset but won't corrupt
+/// surrounding text or panic either. Full charset conversion (Windows-1252,
+/// GB2312, Shift-JIS, etc.) is out of scope here.
+fn bytes_to_string_for_charset(bytes: &[u8], charset: &str) -> std::string::String {
+    let lower = charset.to_lowercase();
+    if lower == "us-ascii" || lower == "iso-8859-1" || lower == "iso8859-1" || lower == "latin1" {
+        bytes.iter().map(|&b| b as char).collect()
+    } else {
+        std::string::String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+/// Tries to decode one RFC 2047 encoded-word at the start of `s`
+/// (=?charset?encoding?encoded-text?=). Returns the decoded text and the
+/// byte length of the token consumed (so the caller can skip past it),
+/// or None if `s` doesn't start with a well-formed encoded-word.
+fn try_decode_encoded_word(s: &str) -> Option<(std::string::String, usize)> {
+    if !s.starts_with("=?") {
+        return None;
+    }
+    let rest = &s[2..];
+    let charset_end = rest.find('?')?;
+    let charset = &rest[..charset_end];
+    let after_charset = &rest[charset_end + 1..];
+    // encoding must be exactly one (ASCII) char, immediately followed by '?'
+    if after_charset.as_bytes().get(1) != Some(&b'?') {
+        return None;
+    }
+    let encoding = *after_charset.as_bytes().first()?;
+    let after_encoding = &after_charset[2..];
+    let text_end = after_encoding.find("?=")?;
+    let encoded_text = &after_encoding[..text_end];
+
+    let decoded_bytes: Vec<u8> = match encoding.to_ascii_uppercase() {
+        b'Q' => decode_rfc2047_q(encoded_text),
+        b'B' => B64.decode(encoded_text.as_bytes()).ok()?,
+        _ => return None,
+    };
+    let decoded_string = bytes_to_string_for_charset(&decoded_bytes, charset);
+
+    // "=?" + charset + "?" + encoding(1) + "?" + encoded_text + "?="
+    let total_len = 2 + charset_end + 1 + 1 + 1 + text_end + 2;
+    Some((decoded_string, total_len))
+}
+
+/// Decodes every RFC 2047 encoded-word in a header value, e.g. a Subject
+/// like "=?UTF-8?Q?Caf=C3=A9?=" or "=?UTF-8?B?SGVsbG8sIHdvcmxkIQ==?=".
+/// This is where things like the literal "=?utf-8?Q?" wrapper and stray
+/// "=80"-style escapes inside it (which are just Q-encoding's hex
+/// escapes, same idea as body quoted-printable) come from when a subject
+/// isn't decoded.
+///
+/// Per RFC 2047, whitespace that separates two *adjacent* encoded-words
+/// is removed on decode (a long non-ASCII subject is often split into
+/// several encoded-words by the sender's client); whitespace next to
+/// plain text is left alone. Plain-text runs (no "=?...?=" involved) pass
+/// through unchanged, including any raw non-ASCII UTF-8 a sender put in
+/// the header directly instead of RFC-2047-encoding it.
+fn decode_rfc2047(input: &str) -> std::string::String {
+    let mut out = std::string::String::with_capacity(input.len());
+    let mut chars = input.char_indices().peekable();
+    let mut last_was_encoded_word = false;
+
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '=' && input[idx..].starts_with("=?") {
+            if let Some((decoded, token_len)) = try_decode_encoded_word(&input[idx..]) {
+                out.push_str(&decoded);
+                let end = idx + token_len;
+                while let Some(&(next_idx, _)) = chars.peek() {
+                    if next_idx >= end {
+                        break;
+                    }
+                    chars.next();
+                }
+                last_was_encoded_word = true;
+                continue;
+            }
+        }
+
+        if ch.is_whitespace() && last_was_encoded_word {
+            let ws_start = idx;
+            let mut ws_end = idx + ch.len_utf8();
+            while let Some(&(next_idx, next_ch)) = chars.peek() {
+                if next_ch.is_whitespace() {
+                    ws_end = next_idx + next_ch.len_utf8();
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if let Some((decoded, token_len)) = try_decode_encoded_word(&input[ws_end..]) {
+                out.push_str(&decoded);
+                let end = ws_end + token_len;
+                while let Some(&(next_idx, _)) = chars.peek() {
+                    if next_idx >= end {
+                        break;
+                    }
+                    chars.next();
+                }
+                last_was_encoded_word = true;
+                continue;
+            }
+            // not adjacent to another encoded-word -- keep the whitespace
+            out.push_str(&input[ws_start..ws_end]);
+            last_was_encoded_word = false;
+            continue;
+        }
+
+        out.push(ch);
+        last_was_encoded_word = false;
+    }
+
+    out
 }
 
 impl Edlin {
