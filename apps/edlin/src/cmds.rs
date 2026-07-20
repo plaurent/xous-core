@@ -158,22 +158,54 @@ fn parse_seq_num(text: &str) -> Option<u32> {
     tokens.next()?.parse::<u32>().ok()
 }
 
-/// Pulls the Subject: header value (with RFC 2822 line-folding
-/// continuation lines joined back in) out of a header-fields fetch
-/// response. Does not decode RFC 2047 encoded-words (e.g.
-/// "=?UTF-8?B?...?="), so non-ASCII subjects will show up encoded.
+/// Case-insensitive (ASCII-only) substring search that returns a byte
+/// offset safe to slice the original `&str` at. Deliberately not
+/// `haystack.to_lowercase().find(...)`: lowercasing can change a
+/// string's byte length for non-ASCII input, which would make the
+/// returned offset unsafe to use against the original slice.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    for i in 0..=(h.len() - n.len()) {
+        if h[i..i + n.len()].eq_ignore_ascii_case(n) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Pulls the Subject: header value out of a header-fields fetch response.
+///
+/// Deliberately does NOT use header_value() below, and searches
+/// unanchored instead: the IMAP literal carrying this header text gets
+/// concatenated directly onto the tail of the preceding
+/// "* n FETCH (BODY[HEADER.FIELDS (SUBJECT)] " response syntax with no
+/// line break in between (literals are just inline string data on the
+/// wire), so "Subject:" is essentially never the first thing on a line
+/// here -- unlike a real RFC 5322 header block, where header_value()'s
+/// stricter line-anchored matching is the correct (and necessary) choice
+/// (see its doc comment for why unanchored matching breaks there).
+///
+/// Does not decode RFC 2047 encoded-words (e.g. "=?UTF-8?B?...?="), so
+/// non-ASCII subjects will show up encoded.
 fn extract_subject(header_text: &str) -> std::string::String {
-    let lines: Vec<&str> = header_text.lines().collect();
-    for (i, line) in lines.iter().enumerate() {
-        if line.len() >= 8 && line[..8].eq_ignore_ascii_case("Subject:") {
-            let mut subject = line[8..].trim().to_string();
-            let mut j = i + 1;
+    if let Some(pos) = find_ascii_ci(header_text, "subject:") {
+        let after = &header_text[pos + "subject:".len()..];
+        let lines: Vec<&str> = after.lines().collect();
+        if !lines.is_empty() {
+            let mut subject = lines[0].trim().to_string();
+            let mut j = 1;
             while j < lines.len() && (lines[j].starts_with(' ') || lines[j].starts_with('\t')) {
                 subject.push(' ');
                 subject.push_str(lines[j].trim());
                 j += 1;
             }
-            return subject;
+            if !subject.is_empty() {
+                return subject;
+            }
         }
     }
     std::string::String::from("(no subject)")
@@ -187,17 +219,223 @@ fn flatten_chunks(chunks: &[ImapChunk]) -> std::string::String {
     chunks.iter().map(|c| std::string::String::from_utf8_lossy(c.as_bytes()).into_owned()).collect()
 }
 
-/// Splits a raw RFC 5322 message into headers/body at the first blank
-/// line and returns the body half. Returns an empty string if no
-/// blank-line boundary is found (malformed or headers-only message).
-fn split_body(raw_text: &str) -> &str {
+/// Splits raw message/part text into (header block, body) at the first
+/// blank line. Body is "" if no blank-line boundary exists (malformed or
+/// headers-only text).
+fn split_headers_body(raw_text: &str) -> (&str, &str) {
     if let Some(pos) = raw_text.find("\r\n\r\n") {
-        &raw_text[pos + 4..]
+        (&raw_text[..pos], &raw_text[pos + 4..])
     } else if let Some(pos) = raw_text.find("\n\n") {
-        &raw_text[pos + 2..]
+        (&raw_text[..pos], &raw_text[pos + 2..])
     } else {
-        ""
+        (raw_text, "")
     }
+}
+
+/// Returns a header's value by actually parsing the header block into
+/// fields -- requiring the header name to start a real field line, not
+/// just appear somewhere in the block's text -- and honoring RFC 5322
+/// folding (a line starting with whitespace continues the previous
+/// field).
+///
+/// The anchoring is required, not optional: header values routinely
+/// contain colon-separated text that looks like a header name.
+/// DKIM-Signature's "h=" tag, for example, lists the names of every
+/// header it covers -- "h=From:To:Subject:Date:Content-Type:MIME-Version:
+/// References" -- as part of one long folded DKIM-Signature value. An
+/// unanchored search for "content-type:" matches inside that list, and
+/// the folding-continuation logic then swallows the rest of the folded
+/// DKIM signature (its bh= and b= tags) as if that were the Content-Type
+/// value -- which is exactly the bogus "content-type: ...bh=...; b=..."
+/// this function used to produce before it was rewritten to parse fields
+/// properly.
+///
+/// Case-insensitive on the header name; the returned value is trimmed
+/// but case-preserved, so compare it lowercased if that matters to the
+/// caller. Callers must pass the header block for the *specific part*
+/// they care about (see split_headers_body / find_text_part below) --
+/// this doesn't know anything about MIME structure on its own.
+fn header_value(header_block: &str, name: &str) -> Option<std::string::String> {
+    let lower_name = name.to_lowercase();
+    let lines: Vec<&str> = header_block.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.starts_with(' ') || line.starts_with('\t') {
+            i += 1; // orphan continuation line -- not a field start, skip
+            continue;
+        }
+        match line.find(':') {
+            Some(colon) => {
+                let field_name = line[..colon].trim();
+                // Walk past this field's continuation lines regardless of
+                // whether it's a match, so they're never mistaken for a
+                // field start on a later iteration.
+                let mut j = i + 1;
+                while j < lines.len() && (lines[j].starts_with(' ') || lines[j].starts_with('\t')) {
+                    j += 1;
+                }
+                if field_name.eq_ignore_ascii_case(&lower_name) {
+                    let mut value = line[colon + 1..].trim().to_string();
+                    for cont in &lines[i + 1..j] {
+                        value.push(' ');
+                        value.push_str(cont.trim());
+                    }
+                    return Some(value);
+                }
+                i = j;
+            }
+            None => i += 1,
+        }
+    }
+    None
+}
+
+/// Extracts the "boundary" parameter from a Content-Type header value,
+/// e.g. `multipart/alternative; boundary="abc123"` or
+/// `multipart/mixed; boundary=abc123`.
+fn parse_boundary(content_type_value: &str) -> Option<std::string::String> {
+    let pos = find_ascii_ci(content_type_value, "boundary=")?;
+    let after = content_type_value[pos + "boundary=".len()..].trim_start();
+    if let Some(rest) = after.strip_prefix('"') {
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    } else {
+        let end = after.find(|c: char| c == ';' || c.is_whitespace()).unwrap_or(after.len());
+        let value = after[..end].trim();
+        if value.is_empty() { None } else { Some(value.to_string()) }
+    }
+}
+
+/// Splits a multipart body into the raw (still headers+body combined)
+/// text of each part, given the boundary string from the enclosing
+/// Content-Type header. Preamble before the first boundary line and
+/// epilogue after the closing "--boundary--" are discarded, the same as
+/// a real mail client would do with them.
+fn split_multipart(body: &str, boundary: &str) -> Vec<std::string::String> {
+    let delim = format!("--{boundary}");
+    let mut parts = Vec::new();
+    let mut remaining = match body.find(&delim) {
+        Some(pos) => &body[pos..],
+        None => return parts, // doesn't actually contain the boundary
+    };
+    loop {
+        remaining = &remaining[delim.len()..];
+        if remaining.starts_with("--") {
+            break; // closing delimiter "--boundary--"
+        }
+        remaining =
+            remaining.strip_prefix("\r\n").or_else(|| remaining.strip_prefix('\n')).unwrap_or(remaining);
+        match remaining.find(&delim) {
+            Some(next_pos) => {
+                parts.push(remaining[..next_pos].to_string());
+                remaining = &remaining[next_pos..];
+            }
+            None => {
+                parts.push(remaining.to_string());
+                break;
+            }
+        }
+    }
+    parts
+}
+
+/// Walks a (possibly nested) multipart structure looking for a readable
+/// text/plain part, preferring it over text/html or anything else.
+/// Falls back to the first leaf part found if no text/plain part exists,
+/// and returns the input unchanged if it isn't multipart at all (the
+/// common case: most mail is a single part) or the boundary can't be
+/// parsed out of a malformed Content-Type.
+///
+/// `depth` bounds the recursion: real messages are rarely more than 2-3
+/// multipart levels deep (e.g. multipart/mixed > multipart/alternative >
+/// multipart/related), this just stops it from ever running away on a
+/// malformed or adversarial structure.
+fn find_text_part(header_block: &str, body: &str, depth: u8) -> (std::string::String, std::string::String) {
+    let content_type = header_value(header_block, "content-type").unwrap_or_default();
+    if depth == 0 || !content_type.to_lowercase().starts_with("multipart/") {
+        return (header_block.to_string(), body.to_string());
+    }
+    let boundary = match parse_boundary(&content_type) {
+        Some(b) => b,
+        None => return (header_block.to_string(), body.to_string()),
+    };
+    let raw_parts = split_multipart(body, &boundary);
+    if raw_parts.is_empty() {
+        return (header_block.to_string(), body.to_string());
+    }
+
+    let mut fallback: Option<(std::string::String, std::string::String)> = None;
+    for raw_part in &raw_parts {
+        let (part_headers, part_body) = split_headers_body(raw_part);
+        let part_content_type = header_value(part_headers, "content-type").unwrap_or_default().to_lowercase();
+
+        let (resolved_headers, resolved_body) = if part_content_type.starts_with("multipart/") {
+            find_text_part(part_headers, part_body, depth - 1)
+        } else {
+            (part_headers.to_string(), part_body.to_string())
+        };
+
+        let resolved_content_type =
+            header_value(&resolved_headers, "content-type").unwrap_or_default().to_lowercase();
+        if resolved_content_type.starts_with("text/plain") || resolved_content_type.is_empty() {
+            return (resolved_headers, resolved_body);
+        }
+        if fallback.is_none() {
+            fallback = Some((resolved_headers, resolved_body));
+        }
+    }
+    fallback.unwrap_or_else(|| (header_block.to_string(), body.to_string()))
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decodes RFC 2045 quoted-printable content: "=XX" is a hex-escaped
+/// byte (this is where things like "=E2=80=9C" -- the UTF-8 bytes for a
+/// curly left double quote -- come from), and a trailing "=" at the end
+/// of a line is a soft line break (join with the next line, no newline
+/// inserted). Everything else passes through unchanged.
+///
+/// Malformed escapes (an "=" not followed by two hex digits or a line
+/// break) are left as a literal "=" rather than erroring -- a
+/// best-effort readable rendering beats refusing to show a slightly
+/// malformed message.
+fn decode_quoted_printable(input: &str) -> std::string::String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'=' {
+            if bytes.get(i + 1) == Some(&b'\r') && bytes.get(i + 2) == Some(&b'\n') {
+                i += 3; // soft line break
+                continue;
+            }
+            if bytes.get(i + 1) == Some(&b'\n') {
+                i += 2; // soft line break (bare LF)
+                continue;
+            }
+            if let (Some(&h1), Some(&h2)) = (bytes.get(i + 1), bytes.get(i + 2)) {
+                if let (Some(hi), Some(lo)) = (hex_digit(h1), hex_digit(h2)) {
+                    out.push((hi << 4) | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(b'=');
+            i += 1;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    std::string::String::from_utf8_lossy(&out).into_owned()
 }
 
 impl Edlin {
@@ -440,11 +678,16 @@ impl Edlin {
         items.sort_by(|a, b| b.0.cmp(&a.0)); // descending: most recent first
 
         self.data.clear();
+        // Row 0 is a header, not a subject -- this pushes each subject to
+        // row (recency index), so the text on row 1 is the subject of the
+        // message "mr 1" would load, row 2 <-> "mr 2", etc., with no +1
+        // needed to translate between what's on screen and what to fetch.
+        self.data.push(std::string::String::from("Email Subjects"));
         for (_, subject) in items.iter() {
             self.data.push(subject.clone());
         }
         self.line_cursor = 0;
-        format!("Loaded {} subject(s).", self.data.len())
+        format!("Loaded {} subject(s).", items.len())
     }
 
     /// Connects to the IMAP server, selects INBOX, and fetches the raw
@@ -527,13 +770,54 @@ impl Edlin {
         match self.imap_fetch_raw(recency_index) {
             Ok((total, raw)) => {
                 let text = std::string::String::from_utf8_lossy(&raw).into_owned();
-                let body = split_body(&text);
+                let (top_headers, top_body) = split_headers_body(&text);
+                let top_content_type =
+                    header_value(top_headers, "content-type").unwrap_or_else(|| std::string::String::from("(none)"));
+                // Most real-world mail today is multipart/alternative
+                // (text/plain + text/html) even for plain-looking
+                // messages -- walk down to the text/plain leaf part
+                // rather than assuming the message is single-part.
+                let (part_headers, part_body) = find_text_part(top_headers, top_body, 4);
+                let part_content_type = header_value(&part_headers, "content-type")
+                    .unwrap_or_else(|| std::string::String::from("(none)"));
+                // Decode using *that part's own* Content-Transfer-Encoding,
+                // not the top-level message's -- a multipart envelope's
+                // top-level CTE is usually absent/7bit; the encoding that
+                // actually applies to this text lives on the part header.
+                let cte = header_value(&part_headers, "content-transfer-encoding").map(|v| v.to_lowercase());
+                let cte_display = cte.clone().unwrap_or_else(|| std::string::String::from("(none)"));
+                let body = match cte.as_deref() {
+                    Some("quoted-printable") => decode_quoted_printable(&part_body),
+                    _ => part_body,
+                };
                 self.data.clear();
                 for line in body.lines() {
                     self.data.push(line.to_string());
                 }
                 self.line_cursor = 0;
-                format!("Loaded body of message {} of {} ({} lines).", recency_index, total, self.data.len())
+                // Diagnostic tail on the status line: what we detected at
+                // the top level, which part we settled on, and what CTE
+                // (if any) we decoded against. Once this is showing sane
+                // values reliably it's fine to trim back down to the
+                // plain "Loaded body of message..." message.
+                log::info!(
+                    "Loaded body of message {} of {} ({} lines). [top-type: {} | part-type: {} | part-cte: {}]",
+                    recency_index,
+                    total,
+                    self.data.len(),
+                    top_content_type,
+                    part_content_type,
+                    cte_display
+                );
+                format!(
+                    "Loaded body of message {} of {} ({} lines). [top-type: {} | part-type: {} | part-cte: {}]",
+                    recency_index,
+                    total,
+                    self.data.len(),
+                    top_content_type,
+                    part_content_type,
+                    cte_display
+                )
             }
             Err(e) => e,
         }
