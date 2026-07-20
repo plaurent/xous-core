@@ -114,11 +114,23 @@ pub struct Edlin {
 
     ///// mail (IMAP/SMTP) account settings.
     /////
-    ///// These are hardcoded here rather than exposed through a runtime
-    ///// command: edit them and rebuild before flashing your own firmware.
-    ///// IMAP/SMTP credentials live in plaintext in the compiled binary and
-    ///// in this struct's RAM for the lifetime of the process -- fine for a
-    ///// personal device you build yourself, not something to hand out.
+    ///// Not set from source anymore: loaded from a "mail" file via the
+    ///// existing "r"/"w" file commands (see apply_mail_config() and its
+    ///// call sites in process() below). Typical flow: "i", type
+    ///// "imap_user=..." / "imap_pass=..." / etc. one per line, "." to
+    ///// leave insert mode, "w mail" to save -- or "r mail" on every
+    ///// subsequent launch to reload into these fields. The defaults
+    ///// below are intentionally blank/placeholder so a forgotten
+    ///// "r mail" fails loudly (connection error) instead of silently
+    ///// trying to talk to nothing.
+    /////
+    ///// The "mail" file is stored the same way any other Edlin file is
+    ///// (a pddb-backed dict, encrypted at rest on real hardware), which
+    ///// is a meaningfully better place for a plaintext password to live
+    ///// than baked into the firmware binary -- but it's still plaintext
+    ///// once decrypted into this struct's RAM for the process lifetime,
+    ///// so still not something to hand your device to someone else with
+    ///// mail configured.
     imap_user: std::string::String,
     imap_pass: std::string::String,
     imap_host: std::string::String,
@@ -134,6 +146,19 @@ pub struct Edlin {
 }
 
 ///// Mail helpers (parsing only, no self needed) /////
+
+/// Blank "mail" config template loaded by "r mail" when no "mail" file
+/// has been saved yet, so there's something to fill in and save rather
+/// than an empty buffer. Deliberately omits imap_port/smtp_port:
+/// apply_mail_config() leaves those at their built-in defaults (993/465)
+/// when the key is absent, so there's no need to spell them out unless
+/// non-default ports are actually wanted.
+fn mail_template() -> Vec<std::string::String> {
+    ["imap_user=", "imap_pass=", "imap_host=", "smtp_user=", "smtp_pass=", "smtp_from=", "smtp_host="]
+        .iter()
+        .map(|s| std::string::String::from(*s))
+        .collect()
+}
 
 /// Parses the message count out of a SELECT response's "* <n> EXISTS"
 /// untagged line.
@@ -620,6 +645,94 @@ impl Edlin {
 
     ///// Mail commands /////
 
+    /// Parses self.data as "key=value" lines -- one setting per line,
+    /// e.g. "imap_host=imap.example.com" -- and applies them to the mail
+    /// account fields. Called automatically from the "r"/"w" file
+    /// handlers below whenever the file being read or written is named
+    /// "mail", so there's no separate config command: you edit
+    /// credentials the same way you edit anything else in Edlin, then
+    /// "w mail" to save (first time) or "r mail" to reload them on a
+    /// later launch.
+    ///
+    /// Recognized keys: imap_user, imap_pass, imap_host, imap_port,
+    /// smtp_user, smtp_pass, smtp_from, smtp_host, smtp_port. Blank
+    /// lines and lines starting with '#' are ignored (so you can leave
+    /// yourself comments). Unknown keys, lines with no '=', and
+    /// unparseable *_port values are collected and reported back rather
+    /// than silently dropped -- a credentials file failing partway
+    /// through should be obvious, not something you discover later when
+    /// "ms" mysteriously can't connect.
+    fn apply_mail_config(&mut self) -> std::string::String {
+        let lines = self.data.clone();
+        let mut applied = 0usize;
+        let mut skipped: Vec<std::string::String> = Vec::new();
+
+        for raw_line in lines.iter() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, value) = match line.split_once('=') {
+                Some((k, v)) => (k.trim(), v.trim()),
+                None => {
+                    skipped.push(line.to_string());
+                    continue;
+                }
+            };
+            match key {
+                "imap_user" => {
+                    self.imap_user = value.to_string();
+                    applied += 1;
+                }
+                "imap_pass" => {
+                    self.imap_pass = value.to_string();
+                    applied += 1;
+                }
+                "imap_host" => {
+                    self.imap_host = value.to_string();
+                    applied += 1;
+                }
+                "imap_port" => match value.parse::<u16>() {
+                    Ok(p) => {
+                        self.imap_port = p;
+                        applied += 1;
+                    }
+                    Err(_) => skipped.push(line.to_string()),
+                },
+                "smtp_user" => {
+                    self.smtp_user = value.to_string();
+                    applied += 1;
+                }
+                "smtp_pass" => {
+                    self.smtp_pass = value.to_string();
+                    applied += 1;
+                }
+                "smtp_from" => {
+                    self.smtp_from = value.to_string();
+                    applied += 1;
+                }
+                "smtp_host" => {
+                    self.smtp_host = value.to_string();
+                    applied += 1;
+                }
+                "smtp_port" => match value.parse::<u16>() {
+                    Ok(p) => {
+                        self.smtp_port = p;
+                        applied += 1;
+                    }
+                    Err(_) => skipped.push(line.to_string()),
+                },
+                _ => skipped.push(line.to_string()),
+            }
+        }
+
+        if skipped.is_empty() {
+            format!("Applied {} mail setting(s).", applied)
+        } else {
+            format!("Applied {} mail setting(s), skipped {}: {}", applied, skipped.len(), skipped.join("; "))
+        }
+    }
+
     /// "ms" / "ms N" -- connects to the IMAP server and loads the N most
     /// recent messages' subjects into self.data, one per line, newest
     /// first (self.data[0] is the most recent -- matches "mr 1" below).
@@ -998,11 +1111,16 @@ impl Edlin {
                 if line.to_lowercase().starts_with("w") {
                     let filename = line.replacen("w ", "", 1).replacen("W ", "", 1);
                     if filename.len() > 0 {
+                        let is_mail_file = filename.eq_ignore_ascii_case("mail");
 
                         if let Err(_e) = self.save(filename) {
                             return vec![std::string::String::from("Failed to save file.")];
                         }
 
+                        if is_mail_file {
+                            let summary = self.apply_mail_config();
+                            return vec![format!("Save ok *{}: {}", self.line_cursor, summary)];
+                        }
                         return vec![format!("Save ok *{}:", self.line_cursor)];
                     } else {
                         return vec![std::string::String::from("Please enter a filename after w.")];
@@ -1011,8 +1129,28 @@ impl Edlin {
                 if line.to_lowercase().starts_with("r"){
                     let filename = line.replacen("r ", "", 1).replacen("R ", "", 1);
                     if filename.len() > 0 {
+                        let is_mail_file = filename.eq_ignore_ascii_case("mail");
                         if let Err(_e) = self.load(filename) {
                             return vec![std::string::String::from("Failed to load file.")];
+                        }
+                        if is_mail_file {
+                            if self.data.is_empty() {
+                                // load() clears self.data first and leaves
+                                // it empty when there's nothing saved under
+                                // this name (no "_line0" key) -- that's the
+                                // only signal available, since an actually-
+                                // saved-but-empty file looks identical at
+                                // the storage layer. Give the user a
+                                // template to fill in rather than a blank
+                                // buffer and a misleading "0 settings" reply.
+                                self.data = mail_template();
+                                self.line_cursor = self.data.len();
+                                return vec![std::string::String::from(
+                                    "No saved mail file found -- loaded a blank template. Edit and \"w mail\" to save.",
+                                )];
+                            }
+                            let summary = self.apply_mail_config();
+                            return vec![format!("*{}: {}", self.line_cursor, summary)];
                         }
                         return vec![format!("*{}:", self.line_cursor)];
                     } else {
@@ -1032,7 +1170,7 @@ impl Edlin {
                 }
                 if line.to_lowercase().starts_with("?"){
                     //return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
-                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)", self.line_cursor, self.data.len())];
+                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)\nr mail / w mail  load/save IMAP+SMTP creds (key=value lines)", self.line_cursor, self.data.len())];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
@@ -1198,16 +1336,17 @@ impl CmdEnv {
             gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
             com: com::Com::new(&xns).unwrap(),
 
-            ///// EDIT THESE before building your own firmware.
-            imap_user: std::string::String::from("precursor_pakl_net"),
-            imap_pass: std::string::String::from("sdkfljl234324#"),
-            imap_host: std::string::String::from("mail.de.opalstack.com"),
+            ///// Blank until "r mail" loads the mail file -- see
+            ///// apply_mail_config() and its call sites in process().
+            imap_user: std::string::String::new(),
+            imap_pass: std::string::String::new(),
+            imap_host: std::string::String::new(),
             imap_port: 993, // implicit TLS (IMAPS); see ImapClient::connect
 
-            smtp_user: std::string::String::from("precursor_pakl_net"),
-            smtp_pass: std::string::String::from("sdkfljl234324#"),
-            smtp_from: std::string::String::from("pre@pakl.net"),
-            smtp_host: std::string::String::from("smtp.de.opalstack.com"),
+            smtp_user: std::string::String::new(),
+            smtp_pass: std::string::String::new(),
+            smtp_from: std::string::String::new(),
+            smtp_host: std::string::String::new(),
             smtp_port: 465, // implicit TLS (SMTPS); see SmtpClient::connect
         };
         //edlin.data.push(std::string::String::from("Hello world."));
