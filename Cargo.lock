@@ -2175,6 +2175,7 @@ dependencies = [
  "llio",
  "locales",
  "log 0.4.22",
+ "mail",
  "num-derive 0.4.2",
  "num-traits",
  "retrobasic",

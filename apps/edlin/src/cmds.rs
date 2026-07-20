@@ -14,6 +14,8 @@ use ureq;
 
 use retrobasic;
 
+use mail::{ImapChunk, ImapClient, SmtpClient};
+
 
 
 use std::collections::HashMap;
@@ -109,6 +111,93 @@ pub struct Edlin {
     current_backlight_setting: u8,
     gam: gam::Gam,
     com: com::Com,
+
+    ///// mail (IMAP/SMTP) account settings.
+    /////
+    ///// These are hardcoded here rather than exposed through a runtime
+    ///// command: edit them and rebuild before flashing your own firmware.
+    ///// IMAP/SMTP credentials live in plaintext in the compiled binary and
+    ///// in this struct's RAM for the lifetime of the process -- fine for a
+    ///// personal device you build yourself, not something to hand out.
+    imap_user: std::string::String,
+    imap_pass: std::string::String,
+    imap_host: std::string::String,
+    imap_port: u16,
+
+    smtp_user: std::string::String,
+    smtp_pass: std::string::String,
+    /// Envelope/header "From" address. Some providers require this to
+    /// match smtp_user (or an alias of it) or they'll reject the send.
+    smtp_from: std::string::String,
+    smtp_host: std::string::String,
+    smtp_port: u16,
+}
+
+///// Mail helpers (parsing only, no self needed) /////
+
+/// Parses the message count out of a SELECT response's "* <n> EXISTS"
+/// untagged line.
+fn parse_exists(select_response: &[std::string::String]) -> Option<u32> {
+    select_response.iter().find_map(|line| {
+        let mut tokens = line.split_whitespace();
+        if tokens.next()? != "*" {
+            return None;
+        }
+        let n: u32 = tokens.next()?.parse().ok()?;
+        if tokens.next()?.eq_ignore_ascii_case("EXISTS") { Some(n) } else { None }
+    })
+}
+
+/// Parses the sequence number out of a FETCH response's leading
+/// "* <n> FETCH ..." text.
+fn parse_seq_num(text: &str) -> Option<u32> {
+    let mut tokens = text.split_whitespace();
+    if tokens.next()? != "*" {
+        return None;
+    }
+    tokens.next()?.parse::<u32>().ok()
+}
+
+/// Pulls the Subject: header value (with RFC 2822 line-folding
+/// continuation lines joined back in) out of a header-fields fetch
+/// response. Does not decode RFC 2047 encoded-words (e.g.
+/// "=?UTF-8?B?...?="), so non-ASCII subjects will show up encoded.
+fn extract_subject(header_text: &str) -> std::string::String {
+    let lines: Vec<&str> = header_text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line.len() >= 8 && line[..8].eq_ignore_ascii_case("Subject:") {
+            let mut subject = line[8..].trim().to_string();
+            let mut j = i + 1;
+            while j < lines.len() && (lines[j].starts_with(' ') || lines[j].starts_with('\t')) {
+                subject.push(' ');
+                subject.push_str(lines[j].trim());
+                j += 1;
+            }
+            return subject;
+        }
+    }
+    std::string::String::from("(no subject)")
+}
+
+/// Flattens a FETCH response's chunks into one lossy-UTF8 string. Fine
+/// for header-fields fetches (ASCII/mostly-ASCII); for full bodies with
+/// binary attachments, work with the ImapChunk::Literal bytes directly
+/// instead of going through this.
+fn flatten_chunks(chunks: &[ImapChunk]) -> std::string::String {
+    chunks.iter().map(|c| std::string::String::from_utf8_lossy(c.as_bytes()).into_owned()).collect()
+}
+
+/// Splits a raw RFC 5322 message into headers/body at the first blank
+/// line and returns the body half. Returns an empty string if no
+/// blank-line boundary is found (malformed or headers-only message).
+fn split_body(raw_text: &str) -> &str {
+    if let Some(pos) = raw_text.find("\r\n\r\n") {
+        &raw_text[pos + 4..]
+    } else if let Some(pos) = raw_text.find("\n\n") {
+        &raw_text[pos + 2..]
+    } else {
+        ""
+    }
 }
 
 impl Edlin {
@@ -291,6 +380,205 @@ impl Edlin {
             Ok(())
     }
 
+    ///// Mail commands /////
+
+    /// "ms" / "ms N" -- connects to the IMAP server and loads the N most
+    /// recent messages' subjects into self.data, one per line, newest
+    /// first (self.data[0] is the most recent -- matches "mr 1" below).
+    /// Marks nothing as read: uses BODY.PEEK[] so listing subjects has no
+    /// side effects on the mailbox.
+    fn imap_list_subjects(&mut self, count: usize) -> std::string::String {
+        log::info!("--> list subjects");
+        let mut client = match ImapClient::connect(&self.imap_host, self.imap_port) {
+            Ok(c) => c,
+            Err(e) => return format!("IMAP connect failed: {}", e),
+        };
+        log::info!("--> connect ok");
+        if let Err(e) = client.login(&self.imap_user, &self.imap_pass) {
+            return format!("IMAP login failed: {}", e);
+        }
+        log::info!("--> login ok");
+        let select_resp = match client.select("INBOX") {
+            Ok(r) => r,
+            Err(e) => return format!("IMAP SELECT failed: {}", e),
+        };
+        log::info!("--> select ok");
+        let total = parse_exists(&select_resp).unwrap_or(0);
+        if total == 0 {
+            let _ = client.logout();
+            self.data.clear();
+            self.line_cursor = 0;
+            return std::string::String::from("Mailbox is empty.");
+        }
+        log::info!("--> total ok, {}" , total);
+
+        let n = (count.max(1) as u32).min(total);
+        let start = if total > n { total - n + 1 } else { 1 };
+        let range = format!("{}:{}", start, total);
+
+        let responses = match client.fetch(&range, "BODY.PEEK[HEADER.FIELDS (SUBJECT)]") {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = client.logout();
+                return format!("IMAP FETCH failed: {}", e);
+            }
+        };
+        let _ = client.logout();
+
+        let mut items: Vec<(u32, std::string::String)> = Vec::new();
+        for chunks in responses.iter() {
+            let seq = chunks
+                .first()
+                .and_then(|c| match c {
+                    ImapChunk::Text(t) => parse_seq_num(&std::string::String::from_utf8_lossy(t)),
+                    ImapChunk::Literal(_) => None,
+                })
+                .unwrap_or(0);
+            let subject = extract_subject(&flatten_chunks(chunks));
+            items.push((seq, subject));
+        }
+        items.sort_by(|a, b| b.0.cmp(&a.0)); // descending: most recent first
+
+        self.data.clear();
+        for (_, subject) in items.iter() {
+            self.data.push(subject.clone());
+        }
+        self.line_cursor = 0;
+        format!("Loaded {} subject(s).", self.data.len())
+    }
+
+    /// Connects to the IMAP server, selects INBOX, and fetches the raw
+    /// bytes of message # (1 = most recent, 2 = second most recent, etc.)
+    /// via BODY.PEEK[] (doesn't mark \Seen). Shared by "mr" (full
+    /// message) and "mz" (body only).
+    ///
+    /// Returns (total messages in mailbox, raw message bytes) on success,
+    /// or a user-facing error string.
+    fn imap_fetch_raw(&mut self, recency_index: usize) -> Result<(u32, Vec<u8>), std::string::String> {
+        if recency_index == 0 {
+            return Err(std::string::String::from("Message number must be 1 or greater."));
+        }
+        let mut client =
+            ImapClient::connect(&self.imap_host, self.imap_port).map_err(|e| format!("IMAP connect failed: {}", e))?;
+        client.login(&self.imap_user, &self.imap_pass).map_err(|e| format!("IMAP login failed: {}", e))?;
+        let select_resp = client.select("INBOX").map_err(|e| format!("IMAP SELECT failed: {}", e))?;
+        let total = parse_exists(&select_resp).unwrap_or(0);
+        if total == 0 {
+            let _ = client.logout();
+            return Err(std::string::String::from("Mailbox is empty."));
+        }
+        if recency_index as u32 > total {
+            let _ = client.logout();
+            return Err(format!("Only {} message(s) in mailbox.", total));
+        }
+        let seq = total - (recency_index as u32 - 1);
+
+        let responses = match client.fetch(&seq.to_string(), "BODY.PEEK[]") {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = client.logout();
+                return Err(format!("IMAP FETCH failed: {}", e));
+            }
+        };
+        let _ = client.logout();
+
+        // Reassemble the raw message from the literal chunk(s); a
+        // BODY.PEEK[] fetch returns the whole message as one literal.
+        let mut raw = Vec::new();
+        for chunks in responses.iter() {
+            for chunk in chunks {
+                if let ImapChunk::Literal(bytes) = chunk {
+                    raw.extend_from_slice(bytes);
+                }
+            }
+        }
+        Ok((total, raw))
+    }
+
+    /// "mr #" -- connects to the IMAP server and loads message # (1 =
+    /// most recent, 2 = second most recent, etc.) into self.data, one
+    /// line per line of the raw message (headers included).
+    fn imap_read_message(&mut self, recency_index: usize) -> std::string::String {
+        match self.imap_fetch_raw(recency_index) {
+            Ok((total, raw)) => {
+                let text = std::string::String::from_utf8_lossy(&raw).into_owned();
+                self.data.clear();
+                for line in text.lines() {
+                    self.data.push(line.to_string());
+                }
+                self.line_cursor = 0;
+                format!("Loaded message {} of {} ({} lines).", recency_index, total, self.data.len())
+            }
+            Err(e) => e,
+        }
+    }
+
+    /// "mz #" -- like "mr #", but skips the RFC 5322 headers: only the
+    /// text after the first blank line is loaded into self.data.
+    ///
+    /// This is a plain header/body split, not a MIME parser. For a
+    /// multipart or otherwise MIME-encoded message, "body" here is
+    /// whatever raw bytes follow the top-level header block -- MIME
+    /// boundaries, part headers, and quoted-printable/base64-encoded
+    /// parts included verbatim. Picking out a single readable text/plain
+    /// part from a multipart message is a bigger job (MIME parsing +
+    /// transfer-decoding) and isn't done here.
+    fn imap_read_body(&mut self, recency_index: usize) -> std::string::String {
+        match self.imap_fetch_raw(recency_index) {
+            Ok((total, raw)) => {
+                let text = std::string::String::from_utf8_lossy(&raw).into_owned();
+                let body = split_body(&text);
+                self.data.clear();
+                for line in body.lines() {
+                    self.data.push(line.to_string());
+                }
+                self.line_cursor = 0;
+                format!("Loaded body of message {} of {} ({} lines).", recency_index, total, self.data.len())
+            }
+            Err(e) => e,
+        }
+    }
+
+    /// "mt user@host.name" -- connects to the SMTP server and sends
+    /// self.data as a message: line 0 is the subject, the rest is the
+    /// body.
+    fn smtp_send(&mut self, to_addr: &str) -> std::string::String {
+        if self.data.is_empty() {
+            return std::string::String::from("Nothing to send: buffer is empty.");
+        }
+        let subject = self.data[0].clone();
+        let body_text = self.data[1..].join("\r\n");
+
+        // NOTE: no Date: or Message-ID: header -- some servers/spam
+        // filters may downgrade or reject mail without them. The device
+        // would need an RTC-backed clock wired in to generate a
+        // compliant Date: header; left as a follow-up.
+        let message = format!(
+            "From: {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}",
+            self.smtp_from, to_addr, subject, body_text
+        );
+
+        let mut client = match SmtpClient::connect(&self.smtp_host, self.smtp_port) {
+            Ok(c) => c,
+            Err(e) => return format!("SMTP connect failed: {}", e),
+        };
+        // EHLO wants the client's own identity, not the server's; use the
+        // domain half of the From address as a reasonable stand-in since
+        // this device doesn't have a real FQDN of its own.
+        let ehlo_domain = self.smtp_from.split('@').nth(1).unwrap_or(self.smtp_host.as_str()).to_string();
+        if let Err(e) = client.ehlo(&ehlo_domain) {
+            return format!("SMTP EHLO failed: {}", e);
+        }
+        if let Err(e) = client.auth_login(&self.smtp_user, &self.smtp_pass) {
+            return format!("SMTP auth failed: {}", e);
+        }
+        if let Err(e) = client.send(&self.smtp_from, &[to_addr], &message) {
+            return format!("SMTP send failed: {}", e);
+        }
+        let _ = client.quit();
+        format!("Sent to {}.", to_addr)
+    }
+
     pub fn process(&mut self, line:&std::string::String) -> Vec<std::string::String> {
 
         match self.mode {
@@ -369,6 +657,35 @@ impl Edlin {
                     return vec![format!("{}", result)];
                 }
 
+                // "ms"/"mr"/"mz"/"mt" (mail) must be checked before the
+                // loose ends_with/contains checks further below
+                // (v/l/n/p/i/d/#), since an argument like an email
+                // address or arbitrary message count could otherwise
+                // trip one of those by accident.
+                let lower_line = line.to_lowercase();
+                if lower_line.starts_with("ms") {
+                    let arg = line.get(2..).unwrap_or("").trim();
+                    let count = if arg.is_empty() { 10usize } else { arg.parse::<usize>().unwrap_or(10) };
+                    return vec![self.imap_list_subjects(count)];
+                }
+                if lower_line.starts_with("mr") {
+                    let arg = line.get(2..).unwrap_or("").trim();
+                    let index = arg.parse::<usize>().unwrap_or(0);
+                    return vec![self.imap_read_message(index)];
+                }
+                if lower_line.starts_with("mz") {
+                    let arg = line.get(2..).unwrap_or("").trim();
+                    let index = arg.parse::<usize>().unwrap_or(0);
+                    return vec![self.imap_read_body(index)];
+                }
+                if lower_line.starts_with("mt") {
+                    let to_addr = line.get(2..).unwrap_or("").trim().to_string();
+                    if to_addr.is_empty() {
+                        return vec![std::string::String::from("Please enter a recipient address after mt.")];
+                    }
+                    return vec![self.smtp_send(&to_addr)];
+                }
+
                 if line.ends_with("#") {
                     let mut len_for_wrap = 35;
                     if !line.starts_with("#") {
@@ -431,7 +748,7 @@ impl Edlin {
                 }
                 if line.to_lowercase().starts_with("?"){
                     //return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
-                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness", self.line_cursor, self.data.len())];
+                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)", self.line_cursor, self.data.len())];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     self.mode = EdlinMode::Inserting;
@@ -596,6 +913,18 @@ impl CmdEnv {
             current_backlight_setting: 254,
             gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
             com: com::Com::new(&xns).unwrap(),
+
+            ///// EDIT THESE before building your own firmware.
+            imap_user: std::string::String::from("precursor_pakl_net"),
+            imap_pass: std::string::String::from("sdkfljl234324#"),
+            imap_host: std::string::String::from("mail.de.opalstack.com"),
+            imap_port: 993, // implicit TLS (IMAPS); see ImapClient::connect
+
+            smtp_user: std::string::String::from("precursor_pakl_net"),
+            smtp_pass: std::string::String::from("sdkfljl234324#"),
+            smtp_from: std::string::String::from("pre@pakl.net"),
+            smtp_host: std::string::String::from("smtp.de.opalstack.com"),
+            smtp_port: 465, // implicit TLS (SMTPS); see SmtpClient::connect
         };
         //edlin.data.push(std::string::String::from("Hello world."));
         //edlin.data.push(std::string::String::from("This is a test."));

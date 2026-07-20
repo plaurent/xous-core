@@ -7,12 +7,17 @@
 //! for SMTPS, 993 for IMAPS) and STARTTLS (587 for SMTP submission, 143
 //! for IMAP — negotiate TLS after a short plaintext exchange).
 //!
+//! Untrusted certificate chains are handled the same way `xtls.rs` handles
+//! them for HTTPS: `Tls::probe_port()` fetches the offered chain on the
+//! actual port being connected to (not always 443 — mail servers routinely
+//! present a different cert there, or nothing at all), and `Tls::trust_modal()`
+//! shows it to the user via a GAM modal so they can choose to trust it and
+//! save it to the pddb. No separate UI is needed in callers of this crate;
+//! [`connect_tls`] and the `*::connect_starttls` methods drive that flow
+//! automatically and retry once the user has made a choice.
+//!
 //! # Known gaps
 //!
-//! - `Tls::probe()` (in the `tls` crate) hardcodes port 443, so the
-//!   cert-probe-and-trust recovery path (see [`connect_tls`]) probes the
-//!   wrong port for mail servers whose cert differs from what's on 443.
-//!   A `probe_port(host, port)` variant in `tls` would fix this.
 //! - [`ImapClient::fetch`] returns raw [`ImapChunk`]s (correctly framed
 //!   around `{n}` literals) rather than a parsed FETCH response. Splitting
 //!   those into per-attribute values (FLAGS vs BODY[...] vs ENVELOPE)
@@ -79,14 +84,20 @@ fn wrap_tls(host: &str, mut sock: TcpStream, root_store: RootCertStore) -> Resul
     }
 }
 
-/// Probes the untrusted chain and prompts the user to trust it (same UX
-/// as xtls.rs). Returns true if the caller should retry the connection.
+/// Probes the untrusted chain *on the port we're actually connecting to*
+/// and prompts the user to trust it (same UX as xtls.rs). Returns true if
+/// the caller should retry the connection.
 ///
-/// NOTE: Tls::probe() hardcodes port 443 — see the module-level docs.
-fn retry_after_probe(tls: &Tls, host: &str) -> bool {
-    match tls.probe(host) {
+/// Probing port 443 (Tls::probe()'s default) would ask the wrong
+/// question here: a mail host's cert on 993/465/587/143 has no
+/// guaranteed relationship to whatever's on 443, if anything is even
+/// listening there. Using Tls::probe_port() instead makes sure the chain
+/// shown to the user, and the trust anchor saved, actually matches the
+/// connection that's failing.
+fn retry_after_probe(tls: &Tls, host: &str, port: u16) -> bool {
+    match tls.probe_port(host, port) {
         Ok(certs) if !certs.is_empty() => {
-            log::info!("mail: untrusted cert chain for {host}, prompting user to trust");
+            log::info!("mail: untrusted cert chain for {host}:{port}, prompting user to trust");
             tls.trust_modal(certs);
             true
         }
@@ -103,7 +114,7 @@ pub fn connect_tls(host: &str, port: u16) -> io::Result<TlsStream> {
         match wrap_tls(host, sock, tls.root_store()) {
             Ok(stream) => return Ok(stream),
             Err(TlsWrapError::InvalidCertificate) => {
-                if retry_after_probe(&tls, host) {
+                if retry_after_probe(&tls, host, port) {
                     continue;
                 }
                 return Err(io::Error::new(io::ErrorKind::Other, "untrusted certificate chain"));
@@ -225,7 +236,7 @@ impl SmtpClient {
                     return Ok(client);
                 }
                 Err(TlsWrapError::InvalidCertificate) => {
-                    if retry_after_probe(&tls, host) {
+                    if retry_after_probe(&tls, host, port) {
                         continue;
                     }
                     return Err(io::Error::new(io::ErrorKind::Other, "untrusted certificate chain"));
@@ -408,7 +419,7 @@ impl ImapClient {
                     return Ok(client);
                 }
                 Err(TlsWrapError::InvalidCertificate) => {
-                    if retry_after_probe(&tls, host) {
+                    if retry_after_probe(&tls, host, port) {
                         continue;
                     }
                     return Err(io::Error::new(io::ErrorKind::Other, "untrusted certificate chain"));
