@@ -101,6 +101,7 @@ members = [
   "libs/chat",
   "libs/flatipc",
   "libs/flatipc-derive",
+  "libs/mail",
   "libs/perflib",
   "libs/tls",
   "libs/userprefs",

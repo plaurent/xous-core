@@ -3736,6 +3736,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "log 0.4.22",
+ "rustls",
+ "tls",
+]
+
+[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
