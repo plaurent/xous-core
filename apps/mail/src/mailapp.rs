@@ -38,8 +38,8 @@ pub const MAIL_DIALOGUE_KEY: &str = "dialogue";
 const DEFAULT_IMAP_PORT: u16 = 993;
 const DEFAULT_SMTP_PORT: u16 = 465;
 
-/// How many recent messages F1 lists by default.
-const INBOX_COUNT: usize = 15;
+/// How many messages the F1 inbox lists per page.
+const PAGE_SIZE: usize = 10;
 
 /// Persistent status-bar hint listing the function keys.
 const STATUS_HINT: &str = "F1 Inbox   F2 Compose   F3 Settings   F4 Reply";
@@ -542,38 +542,87 @@ impl MailApp {
         // chain isn't trusted yet) is presented while the app is interactive.
         let (host, port) = (self.imap_host.clone(), self.imap_port);
         self.ensure_trusted(&host, port);
-        chat.set_busy_state(true);
-        chat.set_status_text("Fetching inbox...");
-        let listing = self.imap_list(INBOX_COUNT);
-        chat.set_busy_state(false);
-        chat.set_status_idle_text(STATUS_HINT);
 
-        match listing {
-            Ok(entries) => {
-                if entries.is_empty() {
+        // Page through the mailbox PAGE_SIZE messages at a time. The picker
+        // gets "Previous 10" / "Next 10" rows in addition to the messages;
+        // picking one navigates and re-fetches, picking a message opens it.
+        const PREV_LABEL: &str = "<< Previous 10";
+        const NEXT_LABEL: &str = "Next 10 >>";
+        let mut page = 0usize;
+        loop {
+            chat.set_busy_state(true);
+            chat.set_status_text("Fetching inbox...");
+            let result = self.imap_list_page(page, PAGE_SIZE);
+            chat.set_busy_state(false);
+            chat.set_status_idle_text(STATUS_HINT);
+
+            let (total, entries) = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    self.notify(&e);
+                    return;
+                }
+            };
+            if total == 0 {
+                self.notify("Mailbox is empty.");
+                return;
+            }
+            if entries.is_empty() {
+                // Ran off the end (shouldn't normally happen since we only
+                // offer Next when there's more); step back a page.
+                if page == 0 {
                     self.notify("Mailbox is empty.");
                     return;
                 }
-                self.inbox = entries;
-                // Build one label per message: "From — Subject", truncated
-                // so it stays readable on the narrow LCD.
-                let mut labels: Vec<String> = Vec::with_capacity(self.inbox.len());
-                for e in &self.inbox {
-                    labels.push(format!("{} - {}", truncate(&e.from, 22), truncate(&e.subject, 34)));
-                }
-                for label in &labels {
-                    self.modals.add_list_item(label).ok();
-                }
-                let chosen = match self.modals.get_radiobutton("Inbox") {
-                    Ok(c) => c,
-                    Err(_) => return, // dismissed
-                };
-                if let Some(idx) = labels.iter().position(|l| l == &chosen) {
-                    let recency = self.inbox[idx].recency;
-                    self.open_message(chat, recency);
-                }
+                page -= 1;
+                continue;
             }
-            Err(e) => self.notify(&e),
+            self.inbox = entries;
+
+            // "From - Subject" per message, truncated for the narrow LCD.
+            let msg_labels: Vec<String> = self
+                .inbox
+                .iter()
+                .map(|e| format!("{} - {}", truncate(&e.from, 22), truncate(&e.subject, 34)))
+                .collect();
+
+            // Absolute recency range shown on this page (1 = newest).
+            let first_recency = page * PAGE_SIZE + 1;
+            let last_recency = first_recency + self.inbox.len() - 1;
+            let has_prev = page > 0;
+            let has_next = (last_recency as u32) < total;
+
+            // Display order: Previous (top), messages, Next (bottom).
+            if has_prev {
+                self.modals.add_list_item(PREV_LABEL).ok();
+            }
+            for label in &msg_labels {
+                self.modals.add_list_item(label).ok();
+            }
+            if has_next {
+                self.modals.add_list_item(NEXT_LABEL).ok();
+            }
+
+            let title = format!("Inbox {}-{} of {}", first_recency, last_recency, total);
+            let chosen = match self.modals.get_radiobutton(&title) {
+                Ok(c) => c,
+                Err(_) => return, // dismissed
+            };
+
+            if chosen == NEXT_LABEL {
+                page += 1;
+                continue;
+            }
+            if chosen == PREV_LABEL {
+                page = page.saturating_sub(1);
+                continue;
+            }
+            // Otherwise a message was picked: map its label back to a recency.
+            if let Some(idx) = msg_labels.iter().position(|l| l == &chosen) {
+                let recency = self.inbox[idx].recency;
+                self.open_message(chat, recency);
+            }
+            return;
         }
     }
 
@@ -1007,16 +1056,23 @@ impl MailApp {
 
     // ---- IMAP / SMTP operations ---------------------------------------
 
-    /// Connects, selects INBOX, and returns the `count` most recent
-    /// messages' From + Subject, newest first (recency index 1 = newest).
+    /// Connects, selects INBOX, and returns one page of messages' From +
+    /// Subject. `page` is 0-based; each page holds up to `page_size`
+    /// messages ordered newest-first. Each entry's `recency` is its absolute
+    /// position in the mailbox (1 = newest), so `imap_fetch_raw` can re-fetch
+    /// it regardless of which page it came from.
+    ///
+    /// Returns `(total_messages_in_mailbox, page_entries)`. An empty entries
+    /// vec with a non-zero total means the requested page is past the end.
     /// Uses BODY.PEEK so listing has no side effects on the mailbox.
-    fn imap_list(&mut self, count: usize) -> Result<Vec<InboxEntry>, String> {
+    fn imap_list_page(&mut self, page: usize, page_size: usize) -> Result<(u32, Vec<InboxEntry>), String> {
         log::info!(
-            "--> IMAP connect {}:{} user='{}' pass={} chars",
+            "--> IMAP connect {}:{} user='{}' pass={} chars (inbox page {})",
             self.imap_host,
             self.imap_port,
             self.imap_user,
-            self.imap_pass.chars().count()
+            self.imap_pass.chars().count(),
+            page
         );
         let mut client = ImapClient::connect(&self.imap_host, self.imap_port).map_err(|e| {
             log::info!("--> IMAP connect error: {}", e);
@@ -1032,12 +1088,28 @@ impl MailApp {
         let total = parse_exists(&select_resp).unwrap_or(0);
         if total == 0 {
             let _ = client.logout();
-            return Ok(Vec::new());
+            return Ok((0, Vec::new()));
         }
 
-        let n = (count.max(1) as u32).min(total);
-        let start = if total > n { total - n + 1 } else { 1 };
-        let range = format!("{}:{}", start, total);
+        // Map the 0-based page to an absolute recency window (1 = newest),
+        // then to IMAP sequence numbers (seq = total - (recency - 1)).
+        let first_recency = (page * page_size + 1) as u32;
+        if first_recency > total {
+            let _ = client.logout();
+            return Ok((total, Vec::new())); // past the end of the mailbox
+        }
+        let last_recency = (first_recency + page_size as u32 - 1).min(total);
+        let high_seq = total - (first_recency - 1); // newest message on the page
+        let low_seq = total - (last_recency - 1); // oldest message on the page
+        let range = format!("{}:{}", low_seq, high_seq);
+        log::info!(
+            "--> IMAP fetch page {} range {} (recency {}..{} of {})",
+            page,
+            range,
+            first_recency,
+            last_recency,
+            total
+        );
 
         let responses = client
             .fetch(&range, "BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)]")
@@ -1061,17 +1133,16 @@ impl MailApp {
         }
         items.sort_by(|a, b| b.0.cmp(&a.0)); // descending: most recent first
 
-        // Assign recency indices post-sort (1 = newest), matching what
-        // imap_fetch_raw expects.
+        // Recency is derived directly from the sequence number, so it's the
+        // absolute mailbox position no matter which page we fetched.
         let entries = items
             .into_iter()
-            .enumerate()
-            .map(|(i, (_, mut e))| {
-                e.recency = i + 1;
+            .map(|(seq, mut e)| {
+                e.recency = (total - seq + 1) as usize;
                 e
             })
             .collect();
-        Ok(entries)
+        Ok((total, entries))
     }
 
     /// Connects, selects INBOX, and fetches the raw bytes of message
