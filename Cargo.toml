@@ -78,6 +78,7 @@ members = [
   "apps/mtxcli",
   "apps/repl",
   "apps/edlin",
+  "apps/mail",
   "apps/vault",
   "apps/vault/tools/vaultbackup-rs",
   "apps/transientdisk",

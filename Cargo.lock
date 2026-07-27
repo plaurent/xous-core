@@ -3748,6 +3748,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mailapp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chat",
+ "gam",
+ "log 0.4.22",
+ "mail",
+ "modals",
+ "num-derive 0.4.2",
+ "num-traits",
+ "tls",
+ "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous-api-log",
+ "xous-api-names",
+ "xous-api-ticktimer",
+ "xous-ipc 0.10.10 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
