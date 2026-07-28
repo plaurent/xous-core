@@ -57,11 +57,34 @@ const PAGE_SIZE: usize = 10;
 /// from that height since the fonts are proportional and GAM exposes no
 /// width hint.
 const MODAL_Y_MAX_PX: usize = 350;
-const MODAL_WIDTH_PX: usize = 320;
-/// Modal lines NOT available to body text: the "page i/N" title line plus
-/// the modal margins. Kept conservative so a page's text never overflows
-/// (it can't scroll within a page -- Down moves to the next page instead).
-const MODAL_RESERVED_LINES: usize = 6;
+/// Usable text width inside the modal, in pixels. Tuned down from an initial
+/// 320: at 320 a full content line overran the real text area by ~2-3
+/// characters, so the modal re-wrapped the tail onto a second line and
+/// wasted vertical space. 285 drops the wrap width by ~4 chars at the Large
+/// font (page_cols 35 -> 31), clearing the overrun plus a small margin. This
+/// is the effective wrap width, so keep it a little under the true content
+/// width to leave that margin.
+const MODAL_WIDTH_PX: usize = 285;
+/// Lines held back from the *content* budget (`page_lines`): the "page i/N"
+/// title plus enough slack that a page's real text -- even when the modal's
+/// proportional font wraps a few lines wider than our character estimate --
+/// still fits under the modal's clamp height (see `paginate` / `PAD_EXTRA`).
+///
+/// The modal clamps *text* to `MODAL_Y_MAX - 2*line` (~12 lines at the Large
+/// font), and the reader is a plain notification with no nav buttons, so we
+/// only really need to reserve the title line + a small wrap margin. This
+/// was 7 (a leftover from the earlier button-based pager) then 5; 3 fills
+/// nearly the whole clamp with text. This is close to the limit -- if the
+/// bottom line ever clips (e.g. on a page with several wrapping lines),
+/// raise it back toward 4-5.
+const MODAL_RESERVED_LINES: usize = 4;
+
+/// Extra blank lines appended to every page (beyond the modal's max height)
+/// so the modal *always* renders at its clamped maximum height. The modal
+/// auto-sizes to content and doesn't clear the screen when it shrinks, so
+/// forcing a constant (max) height is what stops a shorter page leaving the
+/// previous page's residue behind. See `paginate`.
+const PAD_EXTRA: usize = 4;
 
 /// Persistent status-bar hint listing the function keys.
 const STATUS_HINT: &str = "F1 Inbox   F2 Compose   F3 Settings   F4 Reply";
@@ -505,10 +528,12 @@ pub struct MailApp {
 
     /// Message-pager page geometry, computed once from the runtime glyph
     /// height so each page fits the modal at the configured font size.
-    /// `page_cols` = characters per wrapped line, `page_lines` = body lines
-    /// per page.
+    /// `page_cols` = characters per wrapped line, `page_lines` = content
+    /// lines per page, `pad_lines` = fixed line count each multi-page page is
+    /// padded to so every page renders at the same (max) modal height.
     page_cols: usize,
     page_lines: usize,
+    pad_lines: usize,
 }
 
 impl MailApp {
@@ -518,8 +543,8 @@ impl MailApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(1_700_000_000);
-        let (page_cols, page_lines) = compute_page_geometry(xns);
-        log::info!("mail: pager geometry {} cols x {} lines", page_cols, page_lines);
+        let (page_cols, page_lines, pad_lines) = compute_page_geometry(xns);
+        log::info!("mail: pager geometry {} cols x {} lines (pad to {})", page_cols, page_lines, pad_lines);
         let mut app = MailApp {
             modals,
             imap_user: String::new(),
@@ -537,6 +562,7 @@ impl MailApp {
             next_ts: seed,
             page_cols,
             page_lines,
+            pad_lines,
         };
         app.load_config();
         app
@@ -695,7 +721,7 @@ impl MailApp {
     /// scroll state to carry over.
     fn page_message(&mut self, from: &str, subject: &str, body: &str) {
         let full = format!("From: {}\nSubject: {}\n\n{}", from, subject, body);
-        let pages = paginate(&full, self.page_cols, self.page_lines);
+        let pages = paginate(&full, self.page_cols, self.page_lines, self.pad_lines);
         let n = pages.len();
         let mut idx = 0usize;
 
@@ -1360,7 +1386,11 @@ impl MailApp {
 /// empirically: text was reaching the full modal width at ~0.37x), which
 /// leaves a small margin so an occasional wide line doesn't force the modal
 /// to re-wrap (which would add a line and risk a vertical clip).
-fn compute_page_geometry(xns: &xous_names::XousNames) -> (usize, usize) {
+/// Returns `(page_cols, page_lines, pad_lines)`: characters per wrapped
+/// line, content lines per page, and the fixed line count every multi-page
+/// page is padded to (which exceeds the modal's max height, forcing a
+/// constant clamped height -- see `paginate`).
+fn compute_page_geometry(xns: &xous_names::XousNames) -> (usize, usize, usize) {
     let line_px = gam::Gam::new(xns)
         .ok()
         .and_then(|g| g.glyph_height_hint(gam::SYSTEM_STYLE).ok())
@@ -1369,11 +1399,14 @@ fn compute_page_geometry(xns: &xous_names::XousNames) -> (usize, usize) {
 
     let total_lines = (MODAL_Y_MAX_PX / line_px).max(1);
     let page_lines = total_lines.saturating_sub(MODAL_RESERVED_LINES).max(3);
+    // Pad past the top of the modal so every page overflows and clamps to the
+    // same max height.
+    let pad_lines = total_lines + PAD_EXTRA;
 
     let avg_glyph_px = (line_px * 40 / 100).max(1);
     let page_cols = (MODAL_WIDTH_PX / avg_glyph_px).max(8);
 
-    (page_cols, page_lines)
+    (page_cols, page_lines, pad_lines)
 }
 
 /// The reader's dynamic-notification title: "page i/N" when there's more
@@ -1384,15 +1417,42 @@ fn page_title(idx: usize, n: usize) -> Option<String> {
 
 /// Word-wraps `text` to at most `cols` characters per line (preserving
 /// existing line breaks and blank lines; hard-splitting any single word
-/// longer than `cols`), then groups the wrapped lines into pages of at most
-/// `lines_per_page` lines. Always returns at least one page.
-fn paginate(text: &str, cols: usize, lines_per_page: usize) -> Vec<String> {
+/// longer than `cols`), then groups the wrapped lines into pages of
+/// `lines_per_page` content lines.
+///
+/// When there is more than one page, every page is padded with blank " "
+/// lines out to `pad_to` lines. `pad_to` is chosen (see
+/// `compute_page_geometry`) to exceed the modal's max height, so *every*
+/// page overflows and the modal clamps it to the same maximum height. This
+/// is what keeps the reader a fixed size: the modal auto-sizes to content
+/// and doesn't clear the screen when it shrinks, so a shorter page would
+/// otherwise leave the previous page's residue behind -- and because the
+/// proportional font wraps some lines wider than our character estimate,
+/// even equal content-line counts render at different heights. Overflowing
+/// every page removes both problems. The extra blank lines are simply
+/// clipped, and content (kept under the clamp by `page_lines`) stays fully
+/// visible at the top. A single-page message isn't padded -- there's
+/// nothing to shrink from.
+fn paginate(text: &str, cols: usize, lines_per_page: usize, pad_to: usize) -> Vec<String> {
     let wrapped = wrap_lines(text, cols);
+    let lpp = lines_per_page.max(1);
     if wrapped.is_empty() {
         return vec![String::new()];
     }
-    let lpp = lines_per_page.max(1);
-    wrapped.chunks(lpp).map(|chunk| chunk.join("\n")).collect()
+    let chunks: Vec<&[String]> = wrapped.chunks(lpp).collect();
+    let pad = chunks.len() > 1;
+    chunks
+        .iter()
+        .map(|chunk| {
+            let mut lines: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
+            if pad {
+                while lines.len() < pad_to {
+                    lines.push(" ");
+                }
+            }
+            lines.join("\n")
+        })
+        .collect()
 }
 
 /// Greedy word-wrap to `cols` chars, one output entry per visual line.
