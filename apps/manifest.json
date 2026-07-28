@@ -135,8 +135,7 @@
                 "en": "Mail",
                 "en-tts": "Mail"
             }
-        },
-        "submenu": 1
+        }
     },
     "vault": {
         "context_name": "Key Vault",
