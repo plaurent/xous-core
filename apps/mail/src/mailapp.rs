@@ -31,7 +31,14 @@ pub const MAIL_DICT: &str = "mail";
 /// pddb key (within [`MAIL_DICT`]) holding the "key=value" account config.
 const MAIL_CONFIG_KEY: &str = "config";
 /// pddb key holding the Chat UI dialogue (the rendered message view).
-pub const MAIL_DIALOGUE_KEY: &str = "dialogue";
+///
+/// NOTE: this is intentionally NOT "dialogue". An earlier build briefly
+/// persisted a dialogue to "mail:dialogue", and in this tree the chat
+/// library crashes (kernel "failed to fill whole buffer") when it later
+/// reads a *non-empty* saved dialogue back. We never trigger a save now, so
+/// this key stays empty (0 bytes) and reads back safely; using a fresh name
+/// also abandons the poisoned "mail:dialogue" key so startup can't hit it.
+pub const MAIL_DIALOGUE_KEY: &str = "view";
 
 /// Default implicit-TLS ports (IMAPS / SMTPS). See `ImapClient::connect` /
 /// `SmtpClient::connect` in libs/mail.
@@ -639,17 +646,49 @@ impl MailApp {
 
         match result {
             Ok((from, subject, body)) => {
-                let ts = self.tick();
-                let text = format!("From: {}\nSubject: {}\n\n{}", from, subject, body);
-                // Author shown to the left; use a short sender tag.
-                let author = truncate(&from, 20);
-                chat.post_add(&author, ts, &text, None).ok();
-                chat.redraw();
+                self.post_message(chat, &from, &subject, &body);
                 // Remember it so F4 (reply) can pre-fill from it.
                 self.open_msg = Some(OpenMessage { from, subject, body });
             }
             Err(e) => self.notify(&e),
         }
+    }
+
+    /// Renders a message into the Chat view. A single tall post would be
+    /// clipped (the Chat view scrolls *between* posts, not *within* one), so
+    /// the body is split into screen-sized parts, each its own post. Parts
+    /// are posted newest-first so part 1 (with the From/Subject header) is
+    /// the newest post and is the one shown when the view opens; pressing ↑
+    /// then walks forward through the remaining parts (each labelled).
+    fn post_message(&mut self, chat: &Chat, from: &str, subject: &str, body: &str) {
+        let author = truncate(from, 20);
+        let chunks = chunk_body(body);
+        let n = chunks.len();
+
+        let mut parts: Vec<String> = Vec::with_capacity(n);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let mut text = String::new();
+            if i == 0 {
+                text.push_str(&format!("From: {}\nSubject: {}\n", from, subject));
+            }
+            if n > 1 {
+                // "↑ for more" points at the older/next part, which sits
+                // above this one and is reached with the Up key.
+                let more = if i + 1 < n { "   (↑ for more)" } else { "" };
+                text.push_str(&format!("── part {}/{} ──{}\n", i + 1, n, more));
+            }
+            text.push('\n');
+            text.push_str(chunk);
+            parts.push(text);
+        }
+
+        // Post newest-last (i.e. part N first, part 1 last) so part 1 ends up
+        // as the most-recent post and is displayed first.
+        for part in parts.iter().rev() {
+            let ts = self.tick();
+            chat.post_add(&author, ts, part, None).ok();
+        }
+        chat.redraw();
     }
 
     // ---- F2: compose --------------------------------------------------
@@ -1261,6 +1300,58 @@ impl MailApp {
     fn notify(&self, msg: &str) {
         self.modals.show_notification(msg, None).ok();
     }
+}
+
+/// Roughly how many characters of body text fit in one on-screen post
+/// (~10 wrapped lines). Kept conservative so a part, plus its 1-2 header
+/// lines, never exceeds the content area and gets clipped.
+const CHUNK_CHARS: usize = 350;
+
+/// Splits an email body into chunks that each fit on screen, so the Chat
+/// view can scroll between them (it can't scroll within a single tall
+/// post). Existing line breaks are preserved where possible; a
+/// pathologically long single line (e.g. an unwrapped URL-laden paragraph)
+/// is hard-wrapped so no chunk can overflow.
+fn chunk_body(body: &str) -> Vec<String> {
+    // 1. Normalize into lines no longer than the chunk budget.
+    let mut lines: Vec<String> = Vec::new();
+    for raw in body.lines() {
+        if raw.chars().count() <= CHUNK_CHARS {
+            lines.push(raw.to_string());
+        } else {
+            let mut buf = String::new();
+            let mut count = 0;
+            for ch in raw.chars() {
+                buf.push(ch);
+                count += 1;
+                if count >= CHUNK_CHARS {
+                    lines.push(std::mem::take(&mut buf));
+                    count = 0;
+                }
+            }
+            if !buf.is_empty() {
+                lines.push(buf);
+            }
+        }
+    }
+
+    // 2. Pack those lines into chunks under the character budget.
+    let mut chunks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for line in lines {
+        if !cur.is_empty() && cur.chars().count() + line.chars().count() + 1 > CHUNK_CHARS {
+            chunks.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push('\n');
+        }
+        cur.push_str(&line);
+    }
+    // Always return at least one chunk (possibly empty, for an empty body).
+    if !cur.is_empty() || chunks.is_empty() {
+        chunks.push(cur);
+    }
+    chunks
 }
 
 /// A run of asterisks the same length (in characters) as `s`. Used to
