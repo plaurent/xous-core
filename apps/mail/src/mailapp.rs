@@ -76,7 +76,7 @@ const MODAL_WIDTH_PX: usize = 285;
 /// nearly the whole clamp with text. This is close to the limit -- if the
 /// bottom line ever clips (e.g. on a page with several wrapping lines),
 /// raise it back toward 4-5.
-const MODAL_RESERVED_LINES: usize = 4;
+const MODAL_RESERVED_LINES: usize = 5;
 
 /// Extra blank lines appended to every page (beyond the modal's max height)
 /// so the modal *always* renders at its clamped maximum height. The modal
@@ -567,6 +567,12 @@ impl MailApp {
             })
             .expect("couldn't register Ux context for mail")
             .unwrap();
+
+        // Put the IME into "menu mode" so the F1-F4 keys act as menu
+        // selects (delivered to us as raw keys) instead of picking the
+        // predictor slots and *typing out* their labels ("INBOX", ...). This
+        // is what apps/vault does for its FIDO/123/*** legend.
+        gam.toggle_menu_mode(token).expect("couldn't toggle menu mode");
 
         let content = gam.request_content_canvas(token).expect("couldn't get content canvas");
         let screensize = gam.get_canvas_bounds(content).expect("couldn't get content canvas bounds");
