@@ -643,7 +643,11 @@ impl MailApp {
         tv.margin = Point::new(0, 0);
         write!(
             tv.text,
+<<<<<<< HEAD
             "Mail\n\nF1  INBOX   - list & read messages\nF2  WRITE   - compose a new message\nF3  CONFIG  - IMAP/SMTP account settings\nF4  REPLY   - reply to the open message\n\nNo account yet? Start under F3 (CONFIG).\nThe labels above also show under the F-keys."
+=======
+            "Mail\n\nF1  INBOX   - list & read messages\nF2  WRITE   - compose a new message\nF3  CONFIG  - IMAP/SMTP account settings\nF4  REPLY   - reply to the open message\n\nNo account yet? Start under F3 (CONFIG).\nThe labels above also show under the F-keys.\n\nWhile reading an email:\n - down/space (next page)\n - up (prev page) \n - backspace/enter (exit reading)"
+>>>>>>> feat/mail-lib-and-app
         )
         .ok();
         self.gam.post_textview(&mut tv).ok();
@@ -785,7 +789,11 @@ impl MailApp {
     /// fit the modal), then shown one page at a time in a `dynamic_notification`
     /// whose keystrokes are delivered to us (rather than any key dismissing):
     ///
+<<<<<<< HEAD
     ///   * Down  -> next page
+=======
+    ///   * Down or Space -> next page
+>>>>>>> feat/mail-lib-and-app
     ///   * Up    -> previous page
     ///   * Enter or Backspace -> close the reader
     ///   * anything else -> ignored (stays on the page)
@@ -807,8 +815,14 @@ impl MailApp {
         loop {
             match modals::dynamic_notification_blocking_listener(token, conn) {
                 Ok(Some(key)) => match key {
+<<<<<<< HEAD
                     // Down / Up: page, clamped at the ends (no wrap).
                     '\u{2193}' => {
+=======
+                    // Down or Space: next page; Up: previous page.
+                    // Clamped at the ends (no wrap).
+                    '\u{2193}' | ' ' => {
+>>>>>>> feat/mail-lib-and-app
                         if idx + 1 < n {
                             idx += 1;
                             self.modals
