@@ -48,6 +48,21 @@ const DEFAULT_SMTP_PORT: u16 = 465;
 /// How many messages the F1 inbox lists per page.
 const PAGE_SIZE: usize = 10;
 
+/// Geometry for sizing the message-reader pager so a page never overflows
+/// the modal (overflow clips the text and pushes the nav buttons
+/// off-screen). The modal content area is at most `MODAL_Y_MAX_PX` tall
+/// (matches gam::api::MODAL_Y_MAX) on a screen `MODAL_WIDTH_PX` wide. The
+/// glyph *height* is queried at runtime (SYSTEM_STYLE — currently Large,
+/// 24px), so page sizing tracks the configured font size; width is derived
+/// from that height since the fonts are proportional and GAM exposes no
+/// width hint.
+const MODAL_Y_MAX_PX: usize = 350;
+const MODAL_WIDTH_PX: usize = 320;
+/// Modal lines NOT available to body text: the "page i/N" title line plus
+/// the modal margins. Kept conservative so a page's text never overflows
+/// (it can't scroll within a page -- Down moves to the next page instead).
+const MODAL_RESERVED_LINES: usize = 6;
+
 /// Persistent status-bar hint listing the function keys.
 const STATUS_HINT: &str = "F1 Inbox   F2 Compose   F3 Settings   F4 Reply";
 
@@ -487,6 +502,13 @@ pub struct MailApp {
     /// a fixed epoch if the RTC isn't set) and bumped per post so ordering
     /// stays stable even within the same second.
     next_ts: u64,
+
+    /// Message-pager page geometry, computed once from the runtime glyph
+    /// height so each page fits the modal at the configured font size.
+    /// `page_cols` = characters per wrapped line, `page_lines` = body lines
+    /// per page.
+    page_cols: usize,
+    page_lines: usize,
 }
 
 impl MailApp {
@@ -496,6 +518,8 @@ impl MailApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(1_700_000_000);
+        let (page_cols, page_lines) = compute_page_geometry(xns);
+        log::info!("mail: pager geometry {} cols x {} lines", page_cols, page_lines);
         let mut app = MailApp {
             modals,
             imap_user: String::new(),
@@ -511,6 +535,8 @@ impl MailApp {
             open_msg: None,
             trusted: HashSet::new(),
             next_ts: seed,
+            page_cols,
+            page_lines,
         };
         app.load_config();
         app
@@ -633,8 +659,8 @@ impl MailApp {
         }
     }
 
-    /// Fetch, decode and display message `recency` (1 = most recent) as a
-    /// post in the Chat UI's scrolling view.
+    /// Fetch and decode message `recency` (1 = most recent), then display it
+    /// in a self-managed modal pager (see `page_message`).
     fn open_message(&mut self, chat: &Chat, recency: usize) {
         let (host, port) = (self.imap_host.clone(), self.imap_port);
         self.ensure_trusted(&host, port);
@@ -646,7 +672,7 @@ impl MailApp {
 
         match result {
             Ok((from, subject, body)) => {
-                self.post_message(chat, &from, &subject, &body);
+                self.page_message(&from, &subject, &body);
                 // Remember it so F4 (reply) can pre-fill from it.
                 self.open_msg = Some(OpenMessage { from, subject, body });
             }
@@ -654,41 +680,60 @@ impl MailApp {
         }
     }
 
-    /// Renders a message into the Chat view. A single tall post would be
-    /// clipped (the Chat view scrolls *between* posts, not *within* one), so
-    /// the body is split into screen-sized parts, each its own post. Parts
-    /// are posted newest-first so part 1 (with the From/Subject header) is
-    /// the newest post and is the one shown when the view opens; pressing ↑
-    /// then walks forward through the remaining parts (each labelled).
-    fn post_message(&mut self, chat: &Chat, from: &str, subject: &str, body: &str) {
-        let author = truncate(from, 20);
-        let chunks = chunk_body(body);
-        let n = chunks.len();
+    /// Displays a message in a modal pager with per-key navigation. The
+    /// From/Subject header and body are word-wrapped and split into
+    /// fixed-size pages (see `paginate`, sized by `page_cols`/`page_lines` to
+    /// fit the modal), then shown one page at a time in a `dynamic_notification`
+    /// whose keystrokes are delivered to us (rather than any key dismissing):
+    ///
+    ///   * Down  -> next page
+    ///   * Up    -> previous page
+    ///   * Enter or Backspace -> close the reader
+    ///   * anything else -> ignored (stays on the page)
+    ///
+    /// Every open starts at page 1 (top of the message) -- there's no shared
+    /// scroll state to carry over.
+    fn page_message(&mut self, from: &str, subject: &str, body: &str) {
+        let full = format!("From: {}\nSubject: {}\n\n{}", from, subject, body);
+        let pages = paginate(&full, self.page_cols, self.page_lines);
+        let n = pages.len();
+        let mut idx = 0usize;
 
-        let mut parts: Vec<String> = Vec::with_capacity(n);
-        for (i, chunk) in chunks.iter().enumerate() {
-            let mut text = String::new();
-            if i == 0 {
-                text.push_str(&format!("From: {}\nSubject: {}\n", from, subject));
-            }
-            if n > 1 {
-                // "↑ for more" points at the older/next part, which sits
-                // above this one and is reached with the Up key.
-                let more = if i + 1 < n { "   (↑ for more)" } else { "" };
-                text.push_str(&format!("── part {}/{} ──{}\n", i + 1, n, more));
-            }
-            text.push('\n');
-            text.push_str(chunk);
-            parts.push(text);
-        }
+        self.modals.dynamic_notification(page_title(idx, n).as_deref(), Some(pages[idx].as_str())).ok();
 
-        // Post newest-last (i.e. part N first, part 1 last) so part 1 ends up
-        // as the most-recent post and is displayed first.
-        for part in parts.iter().rev() {
-            let ts = self.tick();
-            chat.post_add(&author, ts, part, None).ok();
+        // The blocking listener returns one key per call and re-arms while
+        // the notification stays open (see apps/vault for the same idiom).
+        let token = self.modals.token();
+        let conn = self.modals.conn();
+        loop {
+            match modals::dynamic_notification_blocking_listener(token, conn) {
+                Ok(Some(key)) => match key {
+                    // Down / Up: page, clamped at the ends (no wrap).
+                    '\u{2193}' => {
+                        if idx + 1 < n {
+                            idx += 1;
+                            self.modals
+                                .dynamic_notification_update(page_title(idx, n).as_deref(), Some(pages[idx].as_str()))
+                                .ok();
+                        }
+                    }
+                    '\u{2191}' => {
+                        if idx > 0 {
+                            idx -= 1;
+                            self.modals
+                                .dynamic_notification_update(page_title(idx, n).as_deref(), Some(pages[idx].as_str()))
+                                .ok();
+                        }
+                    }
+                    // Enter ('∴' or CR/LF) or Backspace/Delete: close.
+                    '\u{2234}' | '\u{d}' | '\n' | '\u{8}' | '\u{7f}' => break,
+                    _ => {} // ignore other keys; stay on the current page
+                },
+                Ok(None) => break, // modal closed / unblocked with no key
+                Err(_) => break,
+            }
         }
-        chat.redraw();
+        self.modals.dynamic_notification_close().ok();
     }
 
     // ---- F2: compose --------------------------------------------------
@@ -1302,56 +1347,94 @@ impl MailApp {
     }
 }
 
-/// Roughly how many characters of body text fit in one on-screen post
-/// (~10 wrapped lines). Kept conservative so a part, plus its 1-2 header
-/// lines, never exceeds the content area and gets clipped.
-const CHUNK_CHARS: usize = 350;
+/// Computes the message-pager page geometry from the runtime glyph height,
+/// so pages fit the modal at whatever font size is configured (this build's
+/// SYSTEM_STYLE is Large = 24px). Returns `(cols, lines)`.
+///
+/// Vertical (the dimension that actually clips): the modal is at most
+/// `MODAL_Y_MAX_PX` tall, i.e. `MODAL_Y_MAX_PX / line_px` lines; we hold
+/// back `MODAL_RESERVED_LINES` for the "page i/N" title line and margins.
+/// Horizontal: GAM exposes no glyph-width hint and the fonts are
+/// proportional, so we estimate the *average* advance width as ~0.40x the
+/// glyph height. That's deliberately a touch wider than reality (measured
+/// empirically: text was reaching the full modal width at ~0.37x), which
+/// leaves a small margin so an occasional wide line doesn't force the modal
+/// to re-wrap (which would add a line and risk a vertical clip).
+fn compute_page_geometry(xns: &xous_names::XousNames) -> (usize, usize) {
+    let line_px = gam::Gam::new(xns)
+        .ok()
+        .and_then(|g| g.glyph_height_hint(gam::SYSTEM_STYLE).ok())
+        .unwrap_or(24)
+        .max(1);
 
-/// Splits an email body into chunks that each fit on screen, so the Chat
-/// view can scroll between them (it can't scroll within a single tall
-/// post). Existing line breaks are preserved where possible; a
-/// pathologically long single line (e.g. an unwrapped URL-laden paragraph)
-/// is hard-wrapped so no chunk can overflow.
-fn chunk_body(body: &str) -> Vec<String> {
-    // 1. Normalize into lines no longer than the chunk budget.
-    let mut lines: Vec<String> = Vec::new();
-    for raw in body.lines() {
-        if raw.chars().count() <= CHUNK_CHARS {
-            lines.push(raw.to_string());
-        } else {
-            let mut buf = String::new();
-            let mut count = 0;
-            for ch in raw.chars() {
-                buf.push(ch);
-                count += 1;
-                if count >= CHUNK_CHARS {
-                    lines.push(std::mem::take(&mut buf));
-                    count = 0;
+    let total_lines = (MODAL_Y_MAX_PX / line_px).max(1);
+    let page_lines = total_lines.saturating_sub(MODAL_RESERVED_LINES).max(3);
+
+    let avg_glyph_px = (line_px * 40 / 100).max(1);
+    let page_cols = (MODAL_WIDTH_PX / avg_glyph_px).max(8);
+
+    (page_cols, page_lines)
+}
+
+/// The reader's dynamic-notification title: "page i/N" when there's more
+/// than one page, or `None` for a single-page message.
+fn page_title(idx: usize, n: usize) -> Option<String> {
+    if n > 1 { Some(format!("page {}/{}", idx + 1, n)) } else { None }
+}
+
+/// Word-wraps `text` to at most `cols` characters per line (preserving
+/// existing line breaks and blank lines; hard-splitting any single word
+/// longer than `cols`), then groups the wrapped lines into pages of at most
+/// `lines_per_page` lines. Always returns at least one page.
+fn paginate(text: &str, cols: usize, lines_per_page: usize) -> Vec<String> {
+    let wrapped = wrap_lines(text, cols);
+    if wrapped.is_empty() {
+        return vec![String::new()];
+    }
+    let lpp = lines_per_page.max(1);
+    wrapped.chunks(lpp).map(|chunk| chunk.join("\n")).collect()
+}
+
+/// Greedy word-wrap to `cols` chars, one output entry per visual line.
+fn wrap_lines(text: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(1);
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        if raw.is_empty() {
+            out.push(String::new()); // preserve paragraph spacing
+            continue;
+        }
+        let mut cur = String::new();
+        for word in raw.split(' ') {
+            // Hard-split a word that can't fit on a line by itself.
+            if word.chars().count() > cols {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
                 }
+                let mut rest = word;
+                while rest.chars().count() > cols {
+                    let split_at = rest.char_indices().nth(cols).map(|(i, _)| i).unwrap_or(rest.len());
+                    out.push(rest[..split_at].to_string());
+                    rest = &rest[split_at..];
+                }
+                cur = rest.to_string();
+                continue;
             }
-            if !buf.is_empty() {
-                lines.push(buf);
+            let projected =
+                if cur.is_empty() { word.chars().count() } else { cur.chars().count() + 1 + word.chars().count() };
+            if !cur.is_empty() && projected > cols {
+                out.push(std::mem::take(&mut cur));
+                cur = word.to_string();
+            } else {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
+                cur.push_str(word);
             }
         }
+        out.push(cur);
     }
-
-    // 2. Pack those lines into chunks under the character budget.
-    let mut chunks: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for line in lines {
-        if !cur.is_empty() && cur.chars().count() + line.chars().count() + 1 > CHUNK_CHARS {
-            chunks.push(std::mem::take(&mut cur));
-        }
-        if !cur.is_empty() {
-            cur.push('\n');
-        }
-        cur.push_str(&line);
-    }
-    // Always return at least one chunk (possibly empty, for an empty body).
-    if !cur.is_empty() || chunks.is_empty() {
-        chunks.push(cur);
-    }
-    chunks
+    out
 }
 
 /// A run of asterisks the same length (in characters) as `s`. Used to
