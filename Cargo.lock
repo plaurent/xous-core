@@ -3752,13 +3752,14 @@ name = "mailapp"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chat",
  "gam",
+ "ime-plugin-api",
  "log 0.4.22",
  "mail",
  "modals",
  "num-derive 0.4.2",
  "num-traits",
+ "pddb",
  "tls",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",

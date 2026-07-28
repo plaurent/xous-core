@@ -14,9 +14,9 @@ authors = ["pakl <patryk@pakl.net>"]
 edition = "2021"
 description = "Graphical IMAP/SMTP mail client (GAM app)"
 
-# Dependency versions kept in lockstep with the other chat-lib apps
-# (apps/chat-test, apps/mtxchat) so the shared `chat`/`modals`/`gam`
-# crates resolve to a single version across the workspace.
+# Dependency versions kept in lockstep with the other GAM apps
+# (apps/vault, apps/chat-test) so the shared `gam`/`modals` crates resolve
+# to a single version across the workspace.
 [dependencies]
 log = "0.4.14"
 num-derive = { version = "0.4.2", default-features = false }
@@ -28,10 +28,18 @@ ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.70" }
 xous-names = { package = "xous-api-names", version = "0.9.71" }
 gam = { path = "../../services/gam" }
 
-# UI shell (F1-F4 events, scrolling post view, status line) and the
-# modal forms/pickers used for compose and settings.
-chat = { path = "../../libs/chat" }
+# The app runs its own thin GAM shell (own UxRegistration + content canvas +
+# F-key handling), like apps/vault, rather than the `chat` library -- so we
+# can supply our own F-key legend labels. `ime-plugin-api` is the predictor
+# interface our icontray (src/icontray.rs) implements to draw those labels.
+ime-plugin-api = { path = "../../services/ime-plugin-api" }
+
+# Modal forms/pickers used for the inbox, reader, compose and settings.
 modals = { path = "../../services/modals" }
+
+# pddb: we call try_mount() at startup (the chat library used to do this for
+# us) so account config and TLS trust anchors can be read/written.
+pddb = { path = "../../services/pddb" }
 
 # The synchronous SMTP/IMAP client. This is the "mail-related code" the
 # edlin app was built on; the higher-level MIME/RFC-2047 parsing and

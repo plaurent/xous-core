@@ -3,29 +3,28 @@
 /// GAM/xous-names server name for this app. Must be unique, < 64 chars.
 pub(crate) const SERVER_NAME_MAIL: &str = "_Mail IMAP/SMTP client_";
 
-/// Opcodes the Chat UI dispatches back to this app's server. The numeric
-/// values matter only in that they must be distinct; `FromPrimitive` maps
-/// the incoming message id back to a variant.
+/// F-key raw-key char codes, as delivered by the keyboard/GAM to a
+/// `rawkeys`-registered app (same values the chat library decoded).
+pub(crate) const F1: char = '\u{0011}';
+pub(crate) const F2: char = '\u{0012}';
+pub(crate) const F3: char = '\u{0013}';
+pub(crate) const F4: char = '\u{0014}';
+
+/// Opcodes the GAM dispatches to this app's server (the `*_id` fields of our
+/// `UxRegistration`), plus Quit.
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
 pub enum MailOp {
-    /// A Chat UI event (Focus, F1..F4, arrows, ...). The scalar arg is a
-    /// `chat::Event` discriminant.
-    Event = 0,
-    /// An app-menu item was clicked (payload is a `MenuOp`).
-    Menu,
-    /// The user committed a Post in the Chat UI input box. Unused here
-    /// (compose happens through a modal form under F2) but wired up so the
-    /// Chat UI has a valid opcode to send to.
-    Post,
-    /// A raw keystroke forwarded by the Chat UI. Unused.
+    /// GAM asks us to redraw our content canvas.
+    Redraw = 0,
+    /// A raw keystroke arrived (we decode F1..F4 from it).
     Rawkeys,
+    /// A committed input line from the IME. Unused (we take no free-text
+    /// input in the home screen), but registered so our UxRegistration
+    /// mirrors the chat library's working shape (predictor + gotinput +
+    /// rawkeys). Drained and ignored.
+    Line,
+    /// Focus gained/lost.
+    ChangeFocus,
     /// Exit the application.
     Quit,
-}
-
-/// App-menu actions handled by this app (as opposed to the Chat UI). Only
-/// a no-op "close" entry today, matching the sigchat reference.
-#[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
-pub enum MenuOp {
-    Noop,
 }

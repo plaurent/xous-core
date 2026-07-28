@@ -4,17 +4,22 @@
 //! edlin app used). The MIME / RFC-2047 / quoted-printable parsing and the
 //! connect-list-read-send orchestration are carried over from edlin's
 //! `cmds.rs`, but the command-line surface is replaced with graphical GAM
-//! screens driven by the `chat` UI shell and the `modals` service:
+//! screens. The app runs its own thin GAM shell (own `UxRegistration` +
+//! content canvas + F-key legend via `crate::icontray`, like apps/vault) --
+//! it does NOT use the `chat` library -- and drives every screen with the
+//! `modals` service:
 //!
 //!   * F1 (`inbox`)    — list recent subjects + senders, pick one to read.
 //!   * F2 (`compose`)  — a To/Subject/Body form, then SMTP send.
 //!   * F3 (`settings`) — IMAP/SMTP server, user and password forms, saved
 //!                       to the pddb.
+//!   * F4 (`reply`)    — pre-filled reply to the open message.
 //!
 //! Account settings are persisted the same way edlin persisted its "mail"
 //! file: as a pddb-backed key (encrypted at rest on real hardware) holding
 //! "key=value" lines. See [`MailApp::save_config`] / [`MailApp::load_config`].
 
+use core::fmt::Write as _; // for write!() into a TextView; aliased so it doesn't clash with std::io::Write
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -22,23 +27,17 @@ use std::path::PathBuf;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use chat::Chat;
+use gam::{DrawStyle, Gid, GlyphStyle, PixelColor, Point, Rectangle, TextBounds, TextView, UxRegistration};
 use mail::{ImapChunk, ImapClient, SmtpClient};
 use modals::Modals;
+use num_traits::ToPrimitive; // for MailOp::*.to_u32() in the UxRegistration
 
-/// pddb dict for this app. Also used as the Chat UI's dialogue dict.
+use crate::api::MailOp;
+
+/// pddb dict for this app (account settings live here).
 pub const MAIL_DICT: &str = "mail";
 /// pddb key (within [`MAIL_DICT`]) holding the "key=value" account config.
 const MAIL_CONFIG_KEY: &str = "config";
-/// pddb key holding the Chat UI dialogue (the rendered message view).
-///
-/// NOTE: this is intentionally NOT "dialogue". An earlier build briefly
-/// persisted a dialogue to "mail:dialogue", and in this tree the chat
-/// library crashes (kernel "failed to fill whole buffer") when it later
-/// reads a *non-empty* saved dialogue back. We never trigger a save now, so
-/// this key stays empty (0 bytes) and reads back safely; using a fresh name
-/// also abandons the poisoned "mail:dialogue" key so startup can't hit it.
-pub const MAIL_DIALOGUE_KEY: &str = "view";
 
 /// Default implicit-TLS ports (IMAPS / SMTPS). See `ImapClient::connect` /
 /// `SmtpClient::connect` in libs/mail.
@@ -85,9 +84,6 @@ const MODAL_RESERVED_LINES: usize = 4;
 /// forcing a constant (max) height is what stops a shorter page leaving the
 /// previous page's residue behind. See `paginate`.
 const PAD_EXTRA: usize = 4;
-
-/// Persistent status-bar hint listing the function keys.
-const STATUS_HINT: &str = "F1 Inbox   F2 Compose   F3 Settings   F4 Reply";
 
 // =======================================================================
 // Mail parsing helpers (no self needed).
@@ -520,11 +516,13 @@ pub struct MailApp {
     /// every connection.
     trusted: HashSet<String>,
 
-    /// Monotonically increasing timestamp handed to `chat.post_add`, which
-    /// sorts posts by timestamp. Seeded from the wall clock (falls back to
-    /// a fixed epoch if the RTC isn't set) and bumped per post so ordering
-    /// stays stable even within the same second.
-    next_ts: u64,
+    /// Our GAM shell: connection, the content canvas we draw the home
+    /// screen / transient status onto, and its size. We own these directly
+    /// (rather than delegating to the chat library) so we can supply our own
+    /// F-key legend via `crate::icontray`.
+    gam: gam::Gam,
+    content: Gid,
+    screensize: Point,
 
     /// Message-pager page geometry, computed once from the runtime glyph
     /// height so each page fits the modal at the configured font size.
@@ -537,14 +535,53 @@ pub struct MailApp {
 }
 
 impl MailApp {
-    pub fn new(xns: &xous_names::XousNames) -> Self {
+    /// Stands up the app's own GAM shell (no chat library): registers a Ux
+    /// context whose `predictor` is our icontray (so the F-key legend reads
+    /// INBOX/WRITE/CONFIG/REPLY), spawns that icontray, and grabs a content
+    /// canvas to draw the home screen on. `sid` is our server, given to the
+    /// GAM as the listener for redraw/rawkeys/focus events.
+    pub fn new(xns: &xous_names::XousNames, sid: xous::SID) -> Self {
+        // Ensure the pddb is mounted before we read account config or write
+        // TLS trust anchors. The chat library used to do this in its Ux
+        // setup; now that we run our own shell we must do it ourselves,
+        // otherwise pddb writes fail with "Uninit".
+        pddb::Pddb::new().try_mount();
+
+        let gam = gam::Gam::new(xns).expect("can't connect to GAM");
+
+        // Our F-key legend server. Spawned before registering the Ux so the
+        // predictor name resolves when the GAM connects on focus.
+        std::thread::spawn(|| crate::icontray::icontray_server());
+
+        let token = gam
+            .register_ux(UxRegistration {
+                app_name: String::from(gam::APP_NAME_MAILAPP),
+                ux_type: gam::UxType::Chat,
+                predictor: Some(String::from(crate::icontray::SERVER_NAME_ICONTRAY)),
+                listener: sid.to_array(),
+                redraw_id: MailOp::Redraw.to_u32().unwrap(),
+                gotinput_id: Some(MailOp::Line.to_u32().unwrap()),
+                audioframe_id: None,
+                rawkeys_id: Some(MailOp::Rawkeys.to_u32().unwrap()),
+                focuschange_id: Some(MailOp::ChangeFocus.to_u32().unwrap()),
+            })
+            .expect("couldn't register Ux context for mail")
+            .unwrap();
+
+        let content = gam.request_content_canvas(token).expect("couldn't get content canvas");
+        let screensize = gam.get_canvas_bounds(content).expect("couldn't get content canvas bounds");
+
+        // Enable the system main menu (the Home/menu key) while this app is
+        // in the foreground. It's a global GAM flag normally turned on by the
+        // pddb after the boot PIN; the chat library relied on that being set
+        // already. We assert it ourselves (idempotent -- same as
+        // services/cram-console) so the Home key raises the app switcher.
+        gam.allow_mainmenu().ok();
+
         let modals = Modals::new(xns).expect("can't connect to Modals server");
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(1_700_000_000);
-        let (page_cols, page_lines, pad_lines) = compute_page_geometry(xns);
+        let (page_cols, page_lines, pad_lines) = compute_page_geometry(&gam);
         log::info!("mail: pager geometry {} cols x {} lines (pad to {})", page_cols, page_lines, pad_lines);
+
         let mut app = MailApp {
             modals,
             imap_user: String::new(),
@@ -559,7 +596,9 @@ impl MailApp {
             inbox: Vec::new(),
             open_msg: None,
             trusted: HashSet::new(),
-            next_ts: seed,
+            gam,
+            content,
+            screensize,
             page_cols,
             page_lines,
             pad_lines,
@@ -568,37 +607,71 @@ impl MailApp {
         app
     }
 
-    // ---- greeting -----------------------------------------------------
+    // ---- home screen drawing ------------------------------------------
 
-    /// Posted once, on first focus: a short usage hint in the message view
-    /// plus the persistent status line.
-    pub fn greet(&mut self, chat: &Chat) {
-        let ts = self.tick();
-        chat.post_add(
-            "mail",
-            ts,
-            "Welcome to Mail.\n\nF1 - Inbox (list & read recent messages)\nF2 - Compose a new message\nF3 - Settings (IMAP/SMTP server, user, password)\nF4 - Reply to the message you're reading\n\nStart under F3 if you haven't set up an account yet.",
-            None,
-        )
-        .ok();
-        chat.set_status_idle_text(STATUS_HINT);
+    /// Clears the content canvas to the background colour.
+    fn clear(&self) {
+        self.gam
+            .draw_rectangle(
+                self.content,
+                Rectangle::new_with_style(
+                    Point::new(0, 0),
+                    self.screensize,
+                    DrawStyle { fill_color: Some(PixelColor::Light), stroke_color: None, stroke_width: 0 },
+                ),
+            )
+            .ok();
     }
 
-    fn tick(&mut self) -> u64 {
-        let t = self.next_ts;
-        self.next_ts += 1;
-        t
+    /// Draws the home screen: a title and the F-key legend. Called on focus
+    /// and after any modal flow returns.
+    pub fn redraw(&self) {
+        self.clear();
+        let mut tv = TextView::new(
+            self.content,
+            TextBounds::GrowableFromTl(Point::new(6, 6), (self.screensize.x - 12) as u16),
+        );
+        tv.style = GlyphStyle::Regular;
+        tv.draw_border = false;
+        tv.clear_area = true;
+        tv.margin = Point::new(0, 0);
+        write!(
+            tv.text,
+            "Mail\n\nF1  INBOX   - list & read messages\nF2  WRITE   - compose a new message\nF3  CONFIG  - IMAP/SMTP account settings\nF4  REPLY   - reply to the open message\n\nNo account yet? Start under F3 (CONFIG).\nThe labels above also show under the F-keys."
+        )
+        .ok();
+        self.gam.post_textview(&mut tv).ok();
+        self.gam.redraw().ok();
+    }
+
+    /// Draws a transient one-line status message (e.g. "Fetching inbox...")
+    /// centred on the canvas, before a blocking network call. It stays on
+    /// screen until the operation finishes and we `redraw()` or a modal
+    /// covers it.
+    fn status(&self, msg: &str) {
+        self.clear();
+        let mut tv = TextView::new(
+            self.content,
+            TextBounds::GrowableFromTl(Point::new(6, self.screensize.y / 3), (self.screensize.x - 12) as u16),
+        );
+        tv.style = GlyphStyle::Large;
+        tv.draw_border = false;
+        tv.clear_area = true;
+        tv.margin = Point::new(0, 0);
+        write!(tv.text, "{}", msg).ok();
+        self.gam.post_textview(&mut tv).ok();
+        self.gam.redraw().ok();
     }
 
     // ---- F1: inbox ----------------------------------------------------
 
-    pub fn inbox(&mut self, chat: &Chat) {
+    pub fn inbox(&mut self) {
         if self.imap_host.is_empty() {
-            self.notify("No IMAP server configured. Set one up under F3 (Settings) first.");
+            self.notify("No IMAP server configured. Set one up under F3 (CONFIG) first.");
             return;
         }
-        // Deal with TLS trust before going busy, so the trust modal (if the
-        // chain isn't trusted yet) is presented while the app is interactive.
+        // Deal with TLS trust first, so the trust modal (if the chain isn't
+        // trusted yet) is presented while the app is interactive.
         let (host, port) = (self.imap_host.clone(), self.imap_port);
         self.ensure_trusted(&host, port);
 
@@ -609,11 +682,8 @@ impl MailApp {
         const NEXT_LABEL: &str = "Next 10 >>";
         let mut page = 0usize;
         loop {
-            chat.set_busy_state(true);
-            chat.set_status_text("Fetching inbox...");
+            self.status("Fetching inbox...");
             let result = self.imap_list_page(page, PAGE_SIZE);
-            chat.set_busy_state(false);
-            chat.set_status_idle_text(STATUS_HINT);
 
             let (total, entries) = match result {
                 Ok(v) => v,
@@ -679,7 +749,7 @@ impl MailApp {
             // Otherwise a message was picked: map its label back to a recency.
             if let Some(idx) = msg_labels.iter().position(|l| l == &chosen) {
                 let recency = self.inbox[idx].recency;
-                self.open_message(chat, recency);
+                self.open_message(recency);
             }
             return;
         }
@@ -687,14 +757,11 @@ impl MailApp {
 
     /// Fetch and decode message `recency` (1 = most recent), then display it
     /// in a self-managed modal pager (see `page_message`).
-    fn open_message(&mut self, chat: &Chat, recency: usize) {
+    fn open_message(&mut self, recency: usize) {
         let (host, port) = (self.imap_host.clone(), self.imap_port);
         self.ensure_trusted(&host, port);
-        chat.set_busy_state(true);
-        chat.set_status_text("Loading message...");
+        self.status("Loading message...");
         let result = self.imap_read_body(recency);
-        chat.set_busy_state(false);
-        chat.set_status_idle_text(STATUS_HINT);
 
         match result {
             Ok((from, subject, body)) => {
@@ -764,9 +831,9 @@ impl MailApp {
 
     // ---- F2: compose --------------------------------------------------
 
-    pub fn compose(&mut self, chat: &Chat) {
+    pub fn compose(&mut self) {
         if self.smtp_host.is_empty() {
-            self.notify("No SMTP server configured. Set one up under F3 (Settings) first.");
+            self.notify("No SMTP server configured. Set one up under F3 (CONFIG) first.");
             return;
         }
         // Gather To / Subject / Body in one form. Body is growable so it can
@@ -788,7 +855,7 @@ impl MailApp {
         let to = content[0].content.as_str().trim().to_string();
         let subject = content[1].content.as_str().trim().to_string();
         let body = content[2].content.as_str().to_string();
-        self.send_and_report(chat, &to, &subject, &body);
+        self.send_and_report(&to, &subject, &body);
     }
 
     // ---- F4: reply ----------------------------------------------------
@@ -796,7 +863,7 @@ impl MailApp {
     /// Pre-fills a compose form as a reply to the message currently open
     /// under F1: To = the sender's address, Subject = "Re: ...", Body = a
     /// blank space to type in above the quoted original. Then sends.
-    pub fn reply(&mut self, chat: &Chat) {
+    pub fn reply(&mut self) {
         // Snapshot the open message up front so we don't hold a borrow of
         // self across the modal / send calls (which need &mut self).
         let (orig_from, orig_subject, orig_body) = match &self.open_msg {
@@ -807,7 +874,7 @@ impl MailApp {
             }
         };
         if self.smtp_host.is_empty() {
-            self.notify("No SMTP server configured. Set one up under F3 (Settings) first.");
+            self.notify("No SMTP server configured. Set one up under F3 (CONFIG) first.");
             return;
         }
 
@@ -833,31 +900,28 @@ impl MailApp {
         let to = content[0].content.as_str().trim().to_string();
         let subject = content[1].content.as_str().trim().to_string();
         let body = content[2].content.as_str().to_string();
-        self.send_and_report(chat, &to, &subject, &body);
+        self.send_and_report(&to, &subject, &body);
     }
 
     /// Shared send tail for compose (F2) and reply (F4): validates the
-    /// recipient, sends over SMTP with a busy indicator, and reports the
+    /// recipient, sends over SMTP with a status indicator, and reports the
     /// outcome in a notification.
-    fn send_and_report(&mut self, chat: &Chat, to: &str, subject: &str, body: &str) {
+    fn send_and_report(&mut self, to: &str, subject: &str, body: &str) {
         if to.is_empty() {
             self.notify("No recipient entered; nothing sent.");
             return;
         }
-        // Trust the SMTP server's chain (prompting if needed) before going busy.
+        // Trust the SMTP server's chain (prompting if needed) first.
         let (host, port) = (self.smtp_host.clone(), self.smtp_port);
         self.ensure_trusted(&host, port);
-        chat.set_busy_state(true);
-        chat.set_status_text("Sending...");
+        self.status("Sending...");
         let result = self.smtp_send(to, subject, body);
-        chat.set_busy_state(false);
-        chat.set_status_idle_text(STATUS_HINT);
         self.notify(&result);
     }
 
     // ---- F3: settings -------------------------------------------------
 
-    pub fn settings(&mut self, _chat: &Chat) {
+    pub fn settings(&mut self) {
         // Two groups so neither form is taller than the screen.
         self.modals.add_list_item("IMAP (incoming) server").ok();
         self.modals.add_list_item("SMTP (outgoing) server").ok();
@@ -1390,12 +1454,8 @@ impl MailApp {
 /// line, content lines per page, and the fixed line count every multi-page
 /// page is padded to (which exceeds the modal's max height, forcing a
 /// constant clamped height -- see `paginate`).
-fn compute_page_geometry(xns: &xous_names::XousNames) -> (usize, usize, usize) {
-    let line_px = gam::Gam::new(xns)
-        .ok()
-        .and_then(|g| g.glyph_height_hint(gam::SYSTEM_STYLE).ok())
-        .unwrap_or(24)
-        .max(1);
+fn compute_page_geometry(gam: &gam::Gam) -> (usize, usize, usize) {
+    let line_px = gam.glyph_height_hint(gam::SYSTEM_STYLE).ok().unwrap_or(24).max(1);
 
     let total_lines = (MODAL_Y_MAX_PX / line_px).max(1);
     let page_lines = total_lines.saturating_sub(MODAL_RESERVED_LINES).max(3);

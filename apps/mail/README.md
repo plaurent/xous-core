@@ -8,16 +8,29 @@ quoted-printable parsing from `edlin`'s `cmds.rs` — but replaces edlin's
 line-editor command surface with graphical screens driven by function keys
 (the same convention `apps/vault` uses):
 
-| Key | Screen   | What it does                                                       |
-|-----|----------|-------------------------------------------------------------------|
-| F1  | Inbox    | Lists the most recent messages (sender + subject) for selection; opening one fetches, decodes and displays its body. |
-| F2  | Compose  | A To / Subject / Body form, then sends via SMTP.                  |
-| F3  | Settings | IMAP and SMTP server, username, password and port forms, saved to the pddb. |
-| F4  | Reply    | Pre-fills a compose form from the message currently open under F1 (To = sender, Subject = "Re: ...", original quoted below), then sends. |
+| Key | Legend | Screen   | What it does                                             |
+|-----|--------|----------|----------------------------------------------------------|
+| F1  | INBOX  | Inbox    | Lists the most recent messages (sender + subject), 10 per page; opening one fetches, decodes and displays its body in a paged reader. |
+| F2  | WRITE  | Compose  | A To / Subject / Body form, then sends via SMTP.         |
+| F3  | CONFIG | Settings | IMAP and SMTP server, username, password and port forms, saved to the pddb. |
+| F4  | REPLY  | Reply    | Pre-fills a compose form from the message currently open under F1 (To = sender, Subject = "Re: ...", original quoted below), then sends. |
 
-The scrolling message view, status line and function-key events come from the
-`chat` UI library (the same shell the [xous Signal client](../../../xous-signal-client)
-uses); the forms and list pickers come from the `modals` service.
+## UI architecture
+
+The app runs its **own thin GAM shell** (like `apps/vault`), not the `chat`
+library:
+
+- `src/main.rs` registers our own `UxRegistration` and dispatches GAM events
+  (redraw / focus / raw keys). F1–F4 are decoded from raw keystrokes.
+- `src/icontray.rs` is our IME predictor, which supplies the four F-key
+  legend labels (`INBOX / WRITE / CONFIG / REPLY`). Owning this is the whole
+  reason we don't use the `chat` library — it hard-codes `F1..F4` with no
+  hook to override.
+- `src/mailapp.rs` holds the model and every screen. The home screen (the
+  key legend / status) is drawn directly on our content canvas; the inbox,
+  reader, compose and settings screens are all `modals` dialogs. The reader
+  is a paged `dynamic_notification` with per-key navigation (Down/Up = next/
+  previous page, Enter/Backspace = close).
 
 ## A note on the crate name
 
