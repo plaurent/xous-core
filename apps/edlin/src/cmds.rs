@@ -110,6 +110,7 @@ pub struct Edlin {
     data:Vec<std::string::String>,
     //data:Vec<String<512>>,
     mode:EdlinMode,
+    last_loaded_filename:std::string::String,
     line_cursor: usize,
     current_backlight_setting: u8,
     gam: gam::Gam,
@@ -740,7 +741,7 @@ impl Edlin {
         Ok(())
     }
 
-    fn load(&mut self, filename: std::string::String) -> Result<(), Error> {
+    fn load(&mut self, filename: &str) -> Result<(), Error> {
         self.data.clear();
         const EDLIN_DICT: &str = "edlin";
         let mut keypath = PathBuf::new();
@@ -782,7 +783,7 @@ impl Edlin {
 
     }
 
-    fn save(&mut self, filename: std::string::String) -> Result<(), Error> {
+    fn save(&mut self, filename: &str) -> Result<(), Error> {
             const EDLIN_DICT: &str = "edlin";
             let mut keypath = PathBuf::new();
             keypath.push(EDLIN_DICT);
@@ -1272,30 +1273,39 @@ impl Edlin {
                     return vec![format!("Wrapped to {} lines.", self.data.len())];
                 }
                 if line.to_lowercase().starts_with("w") {
-                    let filename = line.replacen("w ", "", 1).replacen("W ", "", 1);
+                    let filename = line.replacen("w ", "", 1).replacen("W ", "", 1).replacen("w", "", 1).replacen("W", "", 1);
                     if filename.len() > 0 {
                         let is_mail_file = filename.eq_ignore_ascii_case("mail");
 
-                        if let Err(_e) = self.save(filename) {
+                        if let Err(_e) = self.save(&filename) {
                             return vec![std::string::String::from("Failed to save file.")];
                         }
 
                         if is_mail_file {
                             let summary = self.apply_mail_config();
-                            return vec![format!("Save ok *{}: {}", self.line_cursor, summary)];
+                            return vec![format!("Save '{}' ok *{}: {}", filename, self.line_cursor, summary)];
                         }
-                        return vec![format!("Save ok *{}:", self.line_cursor)];
+                        return vec![format!("Save '{}' ok *{}", filename.clone(), self.line_cursor)];
                     } else {
-                        return vec![std::string::String::from("Please enter a filename after w.")];
+                        if self.last_loaded_filename.len() > 0 {
+                            let filename = self.last_loaded_filename.clone();
+                            if let Err(_e) = self.save(&filename) {
+                                return vec![std::string::String::from("Failed to save file.")];
+                            }
+                            return vec![format!("Save '{}' ok *{}", filename.clone(), self.line_cursor)];
+                        } else {
+                            return vec![std::string::String::from("Please enter a filename after w.")];
+                        }
                     }
                 }
                 if line.to_lowercase().starts_with("r"){
-                    let filename = line.replacen("r ", "", 1).replacen("R ", "", 1);
+                    let filename = line.replacen("r ", "", 1).replacen("R ", "", 1).replacen("r", "", 1).replacen("R", "", 1);
                     if filename.len() > 0 {
                         let is_mail_file = filename.eq_ignore_ascii_case("mail");
-                        if let Err(_e) = self.load(filename) {
+                        if let Err(_e) = self.load(&filename) {
                             return vec![std::string::String::from("Failed to load file.")];
                         }
+                        self.last_loaded_filename = filename.clone();
                         if is_mail_file {
                             if self.data.is_empty() {
                                 // load() clears self.data first and leaves
@@ -1494,6 +1504,7 @@ impl CmdEnv {
         let edlin = Edlin {
             data: Vec::new(),
             mode: EdlinMode::Command,
+            last_loaded_filename: std::string::String::new(),
             line_cursor: 0,
             current_backlight_setting: 254,
             gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
