@@ -627,6 +627,334 @@ fn decode_rfc2047(input: &str) -> std::string::String {
     out
 }
 
+///// HTML / link cleanup helpers (ported from apps/mail) /////
+
+/// Reduces an HTML body to readable plain text: drops <script>/<style>
+/// contents and comments, turns block-level tags into line breaks and
+/// inline tags into nothing, decodes the common HTML entities, then
+/// collapses the resulting whitespace so it paginates cleanly on the
+/// narrow LCD. This is a deliberately lightweight, best-effort converter
+/// (no DOM / CSS) -- enough to make an HTML-only message readable, not a
+/// full renderer.
+fn strip_html(input: &str) -> std::string::String {
+    // 1. Drop <script>/<style> element contents and HTML comments outright,
+    //    so their internals never leak into the text.
+    let without_blocks = remove_html_comments(&remove_html_element(&remove_html_element(input, "script"), "style"));
+
+    // 2. Walk the remaining markup: copy text runs, and replace each tag
+    //    with a newline (block-level tags) or nothing (inline tags).
+    let mut out = std::string::String::with_capacity(without_blocks.len());
+    let mut rest = without_blocks.as_str();
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let after = &rest[lt..];
+        match after.find('>') {
+            Some(gt) => {
+                if tag_breaks_line(&after[1..gt]) {
+                    out.push('\n');
+                }
+                rest = &after[gt + 1..];
+            }
+            None => {
+                // Unterminated '<': treat the remainder as literal text.
+                out.push_str(after);
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+
+    // 3. Decode entities, then normalize whitespace.
+    collapse_whitespace(&decode_html_entities(&out))
+}
+
+/// Removes every `<tag ...>...</tag>` element (contents included) from
+/// `input`, matching the tag name case-insensitively. An unterminated
+/// element drops everything from its start to the end. Used for `<script>`
+/// and `<style>`, whose bodies must never reach the reader as text.
+fn remove_html_element(input: &str, tag: &str) -> std::string::String {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}");
+    let mut out = std::string::String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = find_ascii_ci(rest, &open) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match find_ascii_ci(after, &close) {
+            Some(close_rel) => match after[close_rel..].find('>') {
+                Some(gt) => rest = &after[close_rel + gt + 1..],
+                None => return out, // malformed closing tag: drop the rest
+            },
+            None => return out, // unclosed element: drop the rest
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Removes HTML comments (`<!-- ... -->`). An unterminated comment drops to
+/// the end of the input.
+fn remove_html_comments(input: &str) -> std::string::String {
+    let mut out = std::string::String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        match rest[start + 4..].find("-->") {
+            Some(end_rel) => rest = &rest[start + 4 + end_rel + 3..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether a tag (its inner text, without the angle brackets -- e.g. `p`,
+/// `/div`, `br /`, `td colspan="2"`) is block-level, so removing it should
+/// leave a line break behind. Inline tags (`a`, `span`, `b`, ...) return
+/// false and simply vanish.
+fn tag_breaks_line(tag: &str) -> bool {
+    let name: std::string::String = tag
+        .trim_start_matches('/')
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect::<std::string::String>()
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "br" | "p"
+            | "div"
+            | "tr"
+            | "td"
+            | "th"
+            | "li"
+            | "ul"
+            | "ol"
+            | "dl"
+            | "dd"
+            | "dt"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "caption"
+            | "blockquote"
+            | "pre"
+            | "hr"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "section"
+            | "article"
+            | "header"
+            | "footer"
+            | "figure"
+            | "figcaption"
+            | "address"
+            | "form"
+            | "fieldset"
+    )
+}
+
+/// Decodes the HTML entities common in mail: the named ones (`&amp;`,
+/// `&lt;`, `&nbsp;`, a few typographic ones) and numeric character
+/// references (`&#39;`, `&#x2019;`). Unknown or malformed entities are left
+/// verbatim.
+fn decode_html_entities(input: &str) -> std::string::String {
+    let mut out = std::string::String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        // A real entity is short and ';'-terminated; bound the search so a
+        // stray '&' in prose doesn't swallow the rest of the line.
+        match after.find(';') {
+            Some(semi) if semi <= 12 => match decode_html_entity(&after[..semi]) {
+                Some(decoded) => {
+                    out.push_str(&decoded);
+                    rest = &after[semi + 1..];
+                }
+                None => {
+                    out.push('&');
+                    rest = after;
+                }
+            },
+            _ => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Decodes one entity body (the text between `&` and `;`). Returns None for
+/// anything unrecognized so the caller can emit it unchanged.
+fn decode_html_entity(entity: &str) -> Option<std::string::String> {
+    // Numeric character reference: &#123; or &#x1F600;
+    if let Some(num) = entity.strip_prefix('#') {
+        let code = match num.strip_prefix(['x', 'X']) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => num.parse::<u32>().ok()?,
+        };
+        return char::from_u32(code).map(|c| c.to_string());
+    }
+    let ch = match entity.to_ascii_lowercase().as_str() {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => ' ',
+        "mdash" => '\u{2014}',
+        "ndash" => '\u{2013}',
+        "hellip" => '\u{2026}',
+        "copy" => '\u{00A9}',
+        "reg" => '\u{00AE}',
+        "trade" => '\u{2122}',
+        "lsquo" | "rsquo" | "sbquo" => '\'',
+        "ldquo" | "rdquo" | "bdquo" => '"',
+        _ => return None,
+    };
+    Some(ch.to_string())
+}
+
+/// Collapses the whitespace left by tag removal: within each line, runs of
+/// spaces/tabs become a single space and the ends are trimmed; across lines,
+/// a run of blank lines is reduced to at most one, and leading/trailing
+/// blank lines are dropped. This keeps stripped HTML from paginating into a
+/// mostly-empty reader.
+fn collapse_whitespace(input: &str) -> std::string::String {
+    let mut out = std::string::String::with_capacity(input.len());
+    let mut blank_run = 0usize;
+    for raw in input.split('\n') {
+        // Squeeze intra-line whitespace to single spaces and trim the ends.
+        let mut line = std::string::String::with_capacity(raw.len());
+        let mut prev_space = false;
+        for ch in raw.chars() {
+            if ch.is_whitespace() {
+                if !prev_space {
+                    line.push(' ');
+                    prev_space = true;
+                }
+            } else {
+                line.push(ch);
+                prev_space = false;
+            }
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            // Allow at most one blank line between paragraphs.
+            blank_run += 1;
+            if blank_run == 1 && !out.is_empty() {
+                out.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Flattens Markdown-style inline links `[label](url)` to just their visible
+/// `label`, dropping the bracket/paren syntax and the URL. Only a well-formed
+/// link -- `]` immediately followed by `(`, with a non-empty label and url --
+/// is rewritten; a lone `[...]` or `(...)` is left untouched. Nested brackets
+/// aren't handled (label runs to the first `]`, url to the first `)`), which
+/// is fine for the mail-generated links this targets. Reference-style links
+/// (`[label][id]`) are not touched.
+fn flatten_markdown_links(input: &str) -> std::string::String {
+    let bytes = input.as_bytes();
+    let mut out = std::string::String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if bytes[i] == b'[' {
+            // Try to parse `[label](url)` starting here.
+            if let Some(close_rel) = input[i + 1..].find(']') {
+                let label_end = i + 1 + close_rel; // index of ']'
+                if input[label_end + 1..].starts_with('(') {
+                    let url_start = label_end + 2; // just past "]("
+                    if let Some(paren_rel) = input[url_start..].find(')') {
+                        let label = &input[i + 1..label_end];
+                        let url = &input[url_start..url_start + paren_rel];
+                        if !label.is_empty() && !url.is_empty() {
+                            out.push_str(label);
+                            i = url_start + paren_rel + 1; // past ')'
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Not a link: emit the '[' literally and move on.
+            out.push('[');
+            i += 1;
+        } else {
+            // Copy the text run up to the next '['.
+            let rel = input[i..].find('[').unwrap_or(input.len() - i);
+            out.push_str(&input[i..i + rel]);
+            i += rel;
+        }
+    }
+    out
+}
+
+/// Removes parenthesized URLs -- `(https://...)`, `(www...)`, `(mailto:...)`
+/// -- from `input`, along with one immediately-preceding space so a bare
+/// `label (https://...)` collapses cleanly to `label`. Only a `(...)` group
+/// whose trimmed contents actually look like a URL (see [`looks_like_url`])
+/// is removed; ordinary parentheticals like `(see below)` are left intact.
+fn strip_parenthesized_urls(input: &str) -> std::string::String {
+    let bytes = input.as_bytes();
+    let mut out = std::string::String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if bytes[i] == b'(' {
+            if let Some(close_rel) = input[i + 1..].find(')') {
+                let content = &input[i + 1..i + 1 + close_rel];
+                if looks_like_url(content.trim()) {
+                    // Drop a single preceding space so we don't leave a double
+                    // space or a space before punctuation behind.
+                    if out.ends_with(' ') {
+                        out.pop();
+                    }
+                    i = i + 1 + close_rel + 1; // past the ')'
+                    continue;
+                }
+            }
+            // Not a URL: emit the '(' literally and move on.
+            out.push('(');
+            i += 1;
+        } else {
+            // Copy the text run up to the next '('.
+            let rel = input[i..].find('(').unwrap_or(input.len() - i);
+            out.push_str(&input[i..i + rel]);
+            i += rel;
+        }
+    }
+    out
+}
+
+/// Whether `s` (the trimmed contents of a `(...)` group) looks like a URL:
+/// a single whitespace-free token beginning with a known scheme or `www.`.
+/// The no-whitespace rule keeps a real parenthetical phrase (which has
+/// spaces) from being mistaken for a URL.
+fn looks_like_url(s: &str) -> bool {
+    if s.is_empty() || s.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("ftp://")
+        || lower.starts_with("www.")
+}
+
 impl Edlin {
 
 
@@ -1067,6 +1395,29 @@ impl Edlin {
                     Some("quoted-printable") => decode_quoted_printable(&part_body),
                     _ => part_body,
                 };
+
+                // find_text_part prefers a text/plain alternative, but many
+                // messages are HTML-only -- in which case "body" above is raw
+                // HTML markup. Reduce it to readable plain text. A text/plain
+                // part is left untouched (there's nothing to strip); detected
+                // by the resolved part's Content-Type so we never mangle a
+                // real plaintext body that merely contains angle brackets.
+                let is_html = header_value(&part_headers, "content-type")
+                    .map(|v| v.to_lowercase().contains("text/html"))
+                    .unwrap_or(false);
+                let body = if is_html { strip_html(&body) } else { body };
+
+                // Flatten Markdown-style inline links `[label](url)` (from the
+                // sender's own text/plain alternative, or left behind after
+                // stripping HTML) down to just `label`.
+                let body = flatten_markdown_links(&body);
+
+                // Remove any leftover parenthesized URLs, e.g. the bare
+                // `label (https://...)` link style that has no `[label]` for
+                // the flatten pass to catch. Runs last so it also mops up
+                // parens exposed by the flatten step.
+                let body = strip_parenthesized_urls(&body);
+
                 self.data.clear();
                 for line in body.lines() {
                     self.data.push(line.to_string());
