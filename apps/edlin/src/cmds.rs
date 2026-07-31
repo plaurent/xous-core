@@ -1517,13 +1517,25 @@ impl Edlin {
             }
             EdlinMode::Command => {
                 if line.len() > 0 && self.is_string_numeric(line) {
-                    self.mode = EdlinMode::Editing;
-                    self.line_cursor = line.parse::<usize>().unwrap();
-                    if self.data.get(self.line_cursor).unwrap().len() > 127 {
-                        self.mode = EdlinMode::Command;
+                    // is_string_numeric() accepts any Unicode numeric (and a
+                    // long run of digits can overflow usize), so the parse can
+                    // still fail even though every char looked numeric.
+                    let idx = match line.parse::<usize>() {
+                        Ok(n) => n,
+                        Err(_) => return vec![format!("Invalid line number: '{}'.", line)],
+                    };
+                    // Selecting a line that doesn't exist (e.g. "99" in a
+                    // 3-line buffer) used to panic on the get().unwrap().
+                    let existing = match self.data.get(idx) {
+                        Some(l) => l.clone(),
+                        None => return vec![format!("No such line: {}.", idx)],
+                    };
+                    if existing.len() > 127 {
                         return vec![std::string::String::from("Line too long to edit. Try # wrapping.")];
                     }
-                    match self.gam.type_chars(self.data.get(self.line_cursor).unwrap()) {
+                    self.mode = EdlinMode::Editing;
+                    self.line_cursor = idx;
+                    match self.gam.type_chars(&existing) {
                         Ok(_) => {
                             //write!(ret, "Edit the value and press enter:").unwrap()
                         }
@@ -1557,7 +1569,12 @@ impl Edlin {
                 }
                 if line.starts_with("b") {  // set brightness
                     let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                    let number = digits.join("").parse::<u8>().unwrap();
+                    // Bare "b" (no digits) or a value over 255 won't parse as
+                    // u8 -- report it instead of panicking.
+                    let number = match digits.join("").parse::<u8>() {
+                        Ok(n) => n,
+                        Err(_) => return vec![format!("Invalid brightness: '{}'. Use e.g. b128 (0-255).", line)],
+                    };
                     self.current_backlight_setting = number;
                     self.com.set_backlight(self.current_backlight_setting, self.current_backlight_setting).unwrap();
                     return vec![format!("Brightness set to {}/255.", self.current_backlight_setting)];
@@ -1602,8 +1619,13 @@ impl Edlin {
                     let mut len_for_wrap = 35;
                     if !line.starts_with("#") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let number = digits.join("").parse::<usize>().unwrap();
-                        len_for_wrap = number;
+                        // A non-numeric wrap prefix (e.g. "x#") collects no
+                        // digits; report it rather than panic. Use a bare "#"
+                        // for the default width.
+                        match digits.join("").parse::<usize>() {
+                            Ok(number) => len_for_wrap = number,
+                            Err(_) => return vec![format!("Invalid wrap width: '{}'. Use e.g. 40# or just #.", line)],
+                        }
                     }
                     let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
                     let remove_dup_spaces_and_newlines = one_long_string.replace("  ", " ").replace("\n\n", "\n");
@@ -1697,15 +1719,20 @@ impl Edlin {
                     return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)\nr mail / w mail  load/save IMAP+SMTP creds (key=value lines)", self.line_cursor, self.data.len())];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
-                    self.mode = EdlinMode::Inserting;
                     if !line.to_lowercase().starts_with("i") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let mut line_to_insert_before = digits.join("").parse::<usize>().unwrap();
+                        // "<n>i" inserts before line n; a non-numeric prefix
+                        // collects no digits and would panic on the parse.
+                        let mut line_to_insert_before = match digits.join("").parse::<usize>() {
+                            Ok(n) => n,
+                            Err(_) => return vec![format!("Invalid line number: '{}'. Use e.g. 3i.", line)],
+                        };
                         if line_to_insert_before >= self.data.len() {
                             line_to_insert_before = self.data.len()
                         }
                         self.line_cursor = line_to_insert_before;
                     }
+                    self.mode = EdlinMode::Inserting;
                     return vec![format!("*{}:", self.line_cursor)];
                 }
                 if line.to_lowercase().ends_with("d") {
@@ -1714,40 +1741,52 @@ impl Edlin {
                     let without_d = line.to_lowercase().replace("d", "");
                     if without_d.contains(",") {
                         let pair: Vec<&str> = without_d.split(',').collect();
-                        del_start = pair[0].parse::<usize>().unwrap();
-                        del_cease = pair[1].parse::<usize>().unwrap();
+                        // A malformed range like "d3," / "d,5" / "dx,y" would
+                        // otherwise panic here -- report the bad input instead.
+                        match (pair.get(0).and_then(|s| s.trim().parse::<usize>().ok()),
+                               pair.get(1).and_then(|s| s.trim().parse::<usize>().ok())) {
+                            (Some(start), Some(cease)) => {
+                                del_start = start;
+                                del_cease = cease;
+                            }
+                            _ => return vec![format!("Invalid line range: '{}'. Use e.g. d3,5.", line)],
+                        }
                     } else if without_d.len() > 0 {
-                        del_start = without_d.parse::<usize>().unwrap();
-                        del_cease = without_d.parse::<usize>().unwrap();
+                        match without_d.parse::<usize>() {
+                            Ok(n) => {
+                                del_start = n;
+                                del_cease = n;
+                            }
+                            Err(_) => return vec![format!("Invalid line number: '{}'. Use e.g. d3.", line)],
+                        }
                     }
-                    if del_cease > self.data.len()-1 {
-                        del_cease = self.data.len()-1;
+                    // Guard the empty buffer before computing data.len()-1,
+                    // which would underflow (and panic) when there's nothing
+                    // to delete.
+                    if self.data.is_empty() {
+                        return vec![format!("Memory is empty.")];
+                    }
+                    let last = self.data.len() - 1;
+                    if del_cease > last {
+                        del_cease = last;
                     }
                     if del_start > del_cease {
                         del_start = del_cease;
                     }
-                    if self.data.len() > 0 {
-                        if del_start <= self.data.len() - 1 && del_cease <= self.data.len() {
-                            println!("Deleting {} to {}", del_start, del_cease);
-                            if del_start == del_cease {
-                                self.data.remove(del_start);
-                                if self.line_cursor > self.data.len() {
-                                    self.line_cursor = self.data.len()
-                                }
-                            }
-                            for i in (del_start..del_cease).rev() {
-                                self.data.remove(i);
-                                if self.line_cursor > self.data.len() {
-                                    self.line_cursor = self.data.len()
-                                }
-                            }
-                            return vec![format!("Deleted {} to {}", del_start, del_cease)];
-                        } else {
-                            return vec![format!("Can't delete beyond {}", self.data.len()-1)];
-                        }
-                    } else {
-                        return vec![format!("Memory is empty.")];
+                    println!("Deleting {} to {}", del_start, del_cease);
+                    // Inclusive range: "d2,5" removes lines 2,3,4 AND 5.
+                    // Remove from the top down so the lower indices we still
+                    // need don't shift underneath us. (The previous
+                    // (start..cease).rev() was exclusive of del_cease, so a
+                    // multi-line delete always dropped one line short -- the
+                    // off-by-one this fixes.)
+                    for i in (del_start..=del_cease).rev() {
+                        self.data.remove(i);
                     }
+                    if self.line_cursor > self.data.len() {
+                        self.line_cursor = self.data.len();
+                    }
+                    return vec![format!("Deleted {} to {}", del_start, del_cease)];
                 }
                 if line.contains("v") || line.contains("v") {
                     return self.data.clone()
@@ -1769,8 +1808,12 @@ impl Edlin {
                 if line.contains("n") || line.contains("N") {
                     if !line.to_lowercase().starts_with("n") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
-                        let line_to_next_from = digits.join("").parse::<usize>().unwrap();
-                        self.line_cursor = line_to_next_from;
+                        // Guard the parse: a line like "nn" collects no digits
+                        // (empty string won't parse), which would otherwise panic.
+                        match digits.join("").parse::<usize>() {
+                            Ok(line_to_next_from) => self.line_cursor = line_to_next_from,
+                            Err(_) => return vec![format!("Invalid line number: '{}'. Use e.g. n3.", line)],
+                        }
                     }
                     let num_lines_per_page = 5;
                     let mut result: Vec<std::string::String> = Vec::new();
@@ -1794,8 +1837,12 @@ impl Edlin {
                     if !line.to_lowercase().starts_with("p") && !line.eq("") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
                         if !digits.is_empty() {
-                            let line_to_next_from = digits.join("").parse::<usize>().unwrap();
-                            self.line_cursor = line_to_next_from;
+                            // Digits present but still fallible: a very long
+                            // run overflows usize. Report rather than panic.
+                            match digits.join("").parse::<usize>() {
+                                Ok(line_to_next_from) => self.line_cursor = line_to_next_from,
+                                Err(_) => return vec![format!("Invalid line number: '{}'. Use e.g. 3p.", line)],
+                            }
                         }
                     }
                     let num_lines_per_page = 5;
