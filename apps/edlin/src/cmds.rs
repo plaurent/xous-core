@@ -1806,6 +1806,11 @@ impl Edlin {
                     return result;
                 }
                 if line.contains("n") || line.contains("N") {
+                    // Nothing to page through, and data.len()-1 (below) would
+                    // underflow -- guard the empty buffer up front.
+                    if self.data.is_empty() {
+                        return vec![format!("Memory is empty.")];
+                    }
                     if !line.to_lowercase().starts_with("n") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
                         // Guard the parse: a line like "nn" collects no digits
@@ -1821,6 +1826,13 @@ impl Edlin {
                     if upto > self.data.len()  {
                         upto = self.data.len();
                     }
+                    // Clamp the cursor before slicing: an out-of-range jump
+                    // like "n99" on a short buffer would otherwise leave
+                    // line_cursor > upto and panic the [line_cursor..upto]
+                    // slice (same guard the "p" block already has).
+                    if self.line_cursor > self.data.len() {
+                        self.line_cursor = self.data.len();
+                    }
                     for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
                         result.insert(i, format!("{}: {}", self.line_cursor+i, line));
                     }
@@ -1834,6 +1846,11 @@ impl Edlin {
                     // NOTE: Duplication of some code for "n" except no line numbers are printed
                     // and all lines are concatenated.
                     // TODO remove duplication
+                    // Nothing to print, and data.len()-1 (below) would
+                    // underflow -- guard the empty buffer up front.
+                    if self.data.is_empty() {
+                        return vec![format!("Memory is empty.")];
+                    }
                     if !line.to_lowercase().starts_with("p") && !line.eq("") {
                         let digits: Vec<&str> = line.matches(char::is_numeric).collect();
                         if !digits.is_empty() {
