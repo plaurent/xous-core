@@ -1646,7 +1646,10 @@ impl Edlin {
                     return vec![format!("Wrapped to {} lines.", self.data.len())];
                 }
                 if line.to_lowercase().starts_with("w") {
-                    let filename = line.replacen("w ", "", 1).replacen("W ", "", 1).replacen("w", "", 1).replacen("W", "", 1);
+                    // Strip only the initial "w"/"W" command char (plus any
+                    // following whitespace); a plain replacen("w", ...) would
+                    // also eat a w/W inside the filename itself.
+                    let filename = line[1..].trim_start().to_string();
                     if filename.len() > 0 {
                         let is_mail_file = filename.eq_ignore_ascii_case("mail");
 
@@ -1672,7 +1675,10 @@ impl Edlin {
                     }
                 }
                 if line.to_lowercase().starts_with("r"){
-                    let filename = line.replacen("r ", "", 1).replacen("R ", "", 1).replacen("r", "", 1).replacen("R", "", 1);
+                    // Strip only the initial "r"/"R" command char (plus any
+                    // following whitespace); a plain replacen("r", ...) would
+                    // also eat an r/R inside the filename itself.
+                    let filename = line[1..].trim_start().to_string();
                     if filename.len() > 0 {
                         let is_mail_file = filename.eq_ignore_ascii_case("mail");
                         if let Err(_e) = self.load(&filename) {
@@ -1704,7 +1710,10 @@ impl Edlin {
                     }
                 }
                 if line.to_lowercase().starts_with("x"){
-                    let filename = line.replacen("x ", "", 1).replacen("X ", "", 1);
+                    // Strip only the initial "x"/"X" command char (plus any
+                    // following whitespace); a plain replacen("x", ...) would
+                    // also eat an x/X inside the filename itself.
+                    let filename = line[1..].trim_start().to_string();
                     if filename.len() > 0 {
                         if let Err(_e) = self.rm(filename) {
                             return vec![std::string::String::from("Failed to delete file.")];
