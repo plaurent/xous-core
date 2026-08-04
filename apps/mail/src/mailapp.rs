@@ -1253,8 +1253,11 @@ impl MailApp {
                                 .ok();
                         }
                     }
-                    // Enter ('∴' or CR/LF) or Backspace/Delete: close.
-                    '\u{2234}' | '\u{d}' | '\n' | '\u{8}' | '\u{7f}' => break,
+                    // Enter (CR/LF) or Backspace/Delete: close. Note we do
+                    // *not* close on '∴' (the center/Home key) so that key is
+                    // left free for the system app switcher instead of exiting
+                    // the reader.
+                    '\u{d}' | '\n' | '\u{8}' | '\u{7f}' => break,
                     _ => {} // ignore other keys; stay on the current page
                 },
                 Ok(None) => break, // modal closed / unblocked with no key
