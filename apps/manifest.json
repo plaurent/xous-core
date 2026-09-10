@@ -24,6 +24,18 @@
             }
         }
     },
+    "paklis": {
+        "context_name": "paklis game",
+        "menu_name": {
+            "appmenu.paklis": {
+                "en": "Paklis blocks game",
+                "en-tts": "Paklis blocks game",
+                "fr": "Jeu de blocs Paklis",
+                "ja": "パクリス ブロックゲーム",
+                "zh": "Paklis 方块游戏"
+            }
+        }
+    },
     "chat-test": {
         "context_name": "Chat UI test",
         "menu_name": {

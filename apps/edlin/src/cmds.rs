@@ -419,6 +419,58 @@ fn find_text_part(header_block: &str, body: &str, depth: u8) -> (std::string::St
     fallback.unwrap_or_else(|| (header_block.to_string(), body.to_string()))
 }
 
+/// Given a message's top-level header block and body, resolve the readable
+/// text body: walk to the text/plain (or fallback) leaf part, transfer-decode
+/// it, strip HTML if that's all the sender provided, and clean up links.
+///
+/// Returns the readable body plus a few diagnostics for status output:
+/// (body, top_content_type, part_content_type, part_cte).
+fn extract_readable_body(
+    top_headers: &str,
+    top_body: &str,
+) -> (std::string::String, std::string::String, std::string::String, std::string::String) {
+    let top_content_type =
+        header_value(top_headers, "content-type").unwrap_or_else(|| std::string::String::from("(none)"));
+    // Most real-world mail today is multipart/alternative (text/plain +
+    // text/html) even for plain-looking messages -- walk down to the
+    // text/plain leaf part rather than assuming the message is single-part.
+    let (part_headers, part_body) = find_text_part(top_headers, top_body, 4);
+    let part_content_type =
+        header_value(&part_headers, "content-type").unwrap_or_else(|| std::string::String::from("(none)"));
+    // Decode using *that part's own* Content-Transfer-Encoding, not the
+    // top-level message's -- a multipart envelope's top-level CTE is usually
+    // absent/7bit; the encoding that actually applies to this text lives on
+    // the part header.
+    let cte = header_value(&part_headers, "content-transfer-encoding").map(|v| v.to_lowercase());
+    let cte_display = cte.clone().unwrap_or_else(|| std::string::String::from("(none)"));
+    let body = match cte.as_deref() {
+        Some("quoted-printable") => decode_quoted_printable(&part_body),
+        _ => part_body,
+    };
+
+    // find_text_part prefers a text/plain alternative, but many messages are
+    // HTML-only -- in which case "body" above is raw HTML markup. Reduce it to
+    // readable plain text. A text/plain part is left untouched (there's
+    // nothing to strip); detected by the resolved part's Content-Type so we
+    // never mangle a real plaintext body that merely contains angle brackets.
+    let is_html = header_value(&part_headers, "content-type")
+        .map(|v| v.to_lowercase().contains("text/html"))
+        .unwrap_or(false);
+    let body = if is_html { strip_html(&body) } else { body };
+
+    // Flatten Markdown-style inline links `[label](url)` (from the sender's
+    // own text/plain alternative, or left behind after stripping HTML) down
+    // to just `label`.
+    let body = flatten_markdown_links(&body);
+
+    // Remove any leftover parenthesized URLs, e.g. the bare `label
+    // (https://...)` link style that has no `[label]` for the flatten pass to
+    // catch. Runs last so it also mops up parens exposed by the flatten step.
+    let body = strip_parenthesized_urls(&body);
+
+    (body, top_content_type, part_content_type, cte_display)
+}
+
 fn hex_digit(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -1344,14 +1396,35 @@ impl Edlin {
     }
 
     /// "mr #" -- connects to the IMAP server and loads message # (1 =
-    /// most recent, 2 = second most recent, etc.) into self.data, one
-    /// line per line of the raw message (headers included).
+    /// most recent, 2 = second most recent, etc.) into self.data.
+    ///
+    /// Like "mz #", but keeps a minimal header preamble: only the "From:"
+    /// and "Subject:" lines are carried through (decoded), followed by a
+    /// blank line and the readable message body. The lengthy remainder of
+    /// the RFC 5322 header block (Received:, DKIM-Signature:, X-* etc.) is
+    /// dropped so the reader isn't buried under transport headers.
     fn imap_read_message(&mut self, recency_index: usize) -> std::string::String {
         match self.imap_fetch_raw(recency_index) {
             Ok((total, raw)) => {
                 let text = std::string::String::from_utf8_lossy(&raw).into_owned();
+                let (top_headers, top_body) = split_headers_body(&text);
+
+                // From/Subject come from the *real* top-level header block,
+                // so the line-anchored header_value parser is correct here.
+                let from = header_value(top_headers, "from")
+                    .map(|v| decode_rfc2047(&v))
+                    .unwrap_or_else(|| std::string::String::from("(unknown sender)"));
+                let subject = header_value(top_headers, "subject")
+                    .map(|v| decode_rfc2047(&v))
+                    .unwrap_or_else(|| std::string::String::from("(no subject)"));
+
+                let (body, _, _, _) = extract_readable_body(top_headers, top_body);
+
                 self.data.clear();
-                for line in text.lines() {
+                self.data.push(format!("From: {}", from));
+                self.data.push(format!("Subject: {}", subject));
+                self.data.push(std::string::String::new());
+                for line in body.lines() {
                     self.data.push(line.to_string());
                 }
                 self.line_cursor = 0;
@@ -1376,47 +1449,8 @@ impl Edlin {
             Ok((total, raw)) => {
                 let text = std::string::String::from_utf8_lossy(&raw).into_owned();
                 let (top_headers, top_body) = split_headers_body(&text);
-                let top_content_type =
-                    header_value(top_headers, "content-type").unwrap_or_else(|| std::string::String::from("(none)"));
-                // Most real-world mail today is multipart/alternative
-                // (text/plain + text/html) even for plain-looking
-                // messages -- walk down to the text/plain leaf part
-                // rather than assuming the message is single-part.
-                let (part_headers, part_body) = find_text_part(top_headers, top_body, 4);
-                let part_content_type = header_value(&part_headers, "content-type")
-                    .unwrap_or_else(|| std::string::String::from("(none)"));
-                // Decode using *that part's own* Content-Transfer-Encoding,
-                // not the top-level message's -- a multipart envelope's
-                // top-level CTE is usually absent/7bit; the encoding that
-                // actually applies to this text lives on the part header.
-                let cte = header_value(&part_headers, "content-transfer-encoding").map(|v| v.to_lowercase());
-                let cte_display = cte.clone().unwrap_or_else(|| std::string::String::from("(none)"));
-                let body = match cte.as_deref() {
-                    Some("quoted-printable") => decode_quoted_printable(&part_body),
-                    _ => part_body,
-                };
-
-                // find_text_part prefers a text/plain alternative, but many
-                // messages are HTML-only -- in which case "body" above is raw
-                // HTML markup. Reduce it to readable plain text. A text/plain
-                // part is left untouched (there's nothing to strip); detected
-                // by the resolved part's Content-Type so we never mangle a
-                // real plaintext body that merely contains angle brackets.
-                let is_html = header_value(&part_headers, "content-type")
-                    .map(|v| v.to_lowercase().contains("text/html"))
-                    .unwrap_or(false);
-                let body = if is_html { strip_html(&body) } else { body };
-
-                // Flatten Markdown-style inline links `[label](url)` (from the
-                // sender's own text/plain alternative, or left behind after
-                // stripping HTML) down to just `label`.
-                let body = flatten_markdown_links(&body);
-
-                // Remove any leftover parenthesized URLs, e.g. the bare
-                // `label (https://...)` link style that has no `[label]` for
-                // the flatten pass to catch. Runs last so it also mops up
-                // parens exposed by the flatten step.
-                let body = strip_parenthesized_urls(&body);
+                let (body, top_content_type, part_content_type, cte_display) =
+                    extract_readable_body(top_headers, top_body);
 
                 self.data.clear();
                 for line in body.lines() {
@@ -1725,7 +1759,7 @@ impl Edlin {
                 }
                 if line.to_lowercase().starts_with("?"){
                     //return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
-                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)\nr mail / w mail  load/save IMAP+SMTP creds (key=value lines)", self.line_cursor, self.data.len())];
+                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all (or 3l / 0,3l for range)\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)\nr mail / w mail  load/save IMAP+SMTP creds (key=value lines)", self.line_cursor, self.data.len())];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     if !line.to_lowercase().starts_with("i") {
@@ -1803,13 +1837,52 @@ impl Edlin {
                 if line.contains("*") {
                     return self.ls();
                 }
-                if line.contains("l") || line.contains("L") {
+                if line.to_lowercase().ends_with("l") {
+                    // Bare "l" lists the whole buffer (the historic behavior);
+                    // a prefix narrows it, mirroring the "d" delete command:
+                    // "3l" lists just line 3, "0,3l" lists lines 0 through 3.
+                    if self.data.is_empty() {
+                        return vec![format!("Memory is empty.")];
+                    }
+                    let last = self.data.len() - 1;
+                    let mut list_start = 0;
+                    let mut list_cease = last;
+                    let without_l = line.to_lowercase().replace("l", "");
+                    if without_l.contains(",") {
+                        let pair: Vec<&str> = without_l.split(',').collect();
+                        // A malformed range like "3,l" / ",5l" / "x,yl" would
+                        // otherwise panic here -- report the bad input instead.
+                        match (pair.get(0).and_then(|s| s.trim().parse::<usize>().ok()),
+                               pair.get(1).and_then(|s| s.trim().parse::<usize>().ok())) {
+                            (Some(start), Some(cease)) => {
+                                list_start = start;
+                                list_cease = cease;
+                            }
+                            _ => return vec![format!("Invalid line range: '{}'. Use e.g. 0,3l.", line)],
+                        }
+                    } else if without_l.len() > 0 {
+                        match without_l.parse::<usize>() {
+                            Ok(n) => {
+                                list_start = n;
+                                list_cease = n;
+                            }
+                            Err(_) => return vec![format!("Invalid line number: '{}'. Use e.g. 3l.", line)],
+                        }
+                    }
+                    // Clamp to the buffer so an out-of-range prefix like "0,99l"
+                    // lists what exists rather than panicking the slice.
+                    if list_cease > last {
+                        list_cease = last;
+                    }
+                    if list_start > list_cease {
+                        list_start = list_cease;
+                    }
                     let mut result: Vec<std::string::String> = Vec::new();
-                    for (i, line) in self.data.iter().enumerate() {
+                    for i in list_start..=list_cease {
                         if i == self.line_cursor {
-                            result.insert(i, format!("*{}: {}", i, line));
+                            result.push(format!("*{}: {}", i, self.data[i]));
                         } else {
-                            result.insert(i, format!(" {}: {}", i, line));
+                            result.push(format!(" {}: {}", i, self.data[i]));
                         }
                     }
                     return result;
