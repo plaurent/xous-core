@@ -2,8 +2,9 @@
 //!
 //! Instead of advancing the chip one ~1 MHz cycle at a time, `clock(n)` advances
 //! all state by up to `MAX_STEP` chip cycles at once. `n` is kept small enough
-//! (<= 16) that at most one oscillator MSB wrap and one noise-LFSR clock can occur
-//! per step, which keeps the batched arithmetic exact for the events that matter.
+//! that at most one oscillator MSB (bit-23) transition occurs per step (so hard
+//! sync/ring stay exact), while noise-LFSR (bit-19) edges — which can happen
+//! several times per step — are counted exactly and clocked in a short loop.
 //!
 //! Everything in the hot path (`clock`, `output`) is integer-only: no floats and
 //! no 64-bit multiply/divide, so it stays cheap on RV32IMAC. The one place floats
@@ -14,8 +15,12 @@
 //! but reproduce the essential character of classic tunes well at an 8 kHz output.
 
 /// Largest number of chip cycles a single `clock()` step may advance. Chosen so
-/// `freq(<=0xFFFF) * MAX_STEP < 2^20`, bounding MSB/noise events to one per step.
-pub const MAX_STEP: u32 = 16;
+/// `freq(<=0xFFFF) * MAX_STEP < 2^23`, which bounds hard-sync/ring MSB (bit-23)
+/// events to at most one per step. Noise (bit-19) can rise several times per step
+/// at this size; `clock()` counts those edges exactly rather than sub-stepping.
+/// At 128 a whole 8 kHz output sample (~123 chip cycles) is one `clock()` call,
+/// versus ~8 calls at the old value of 16 — a big cut in per-call overhead.
+pub const MAX_STEP: u32 = 128;
 
 /// reSID rate-counter periods indexed by the 4-bit attack/decay/release value.
 #[rustfmt::skip]
@@ -294,10 +299,17 @@ impl Sid {
             let voice = &mut self.voices[v];
             voice.clock_env(n);
             if !voice.test() {
-                let adv = voice.freq * n;
-                let na = (voice.acc + adv) & 0xff_ffff;
-                // Noise LFSR clocks on the rising edge of accumulator bit 19.
-                if (voice.acc & 0x08_0000) == 0 && (na & 0x08_0000) != 0 {
+                let a0 = voice.acc;
+                let adv = voice.freq * n; // < 2^23 for n <= MAX_STEP
+                let na = (a0 + adv) & 0xff_ffff;
+                // The noise LFSR clocks on every rising edge of accumulator bit 19,
+                // i.e. each time the accumulator passes a value ≡ 0x80000 (mod
+                // 0x100000). Count those edges over the step exactly (a0 + adv <
+                // 2^25 fits in i32) and clock the LFSR that many times.
+                let lo = a0 as i32 - 0x8_0000;
+                let hi = (a0 + adv) as i32 - 0x8_0000;
+                let edges = hi.div_euclid(0x10_0000) - lo.div_euclid(0x10_0000);
+                for _ in 0..edges {
                     Self::clock_noise(voice);
                 }
                 voice.acc = na;
