@@ -36,6 +36,18 @@
             }
         }
     },
+    "sidplayer": {
+        "context_name": "sidplayer",
+        "menu_name": {
+            "appmenu.sidplayer": {
+                "en": "SID Music Player",
+                "en-tts": "SID Music Player",
+                "fr": "SID Music Player *EN*",
+                "ja": "SID Music Player *EN*",
+                "zh": "SID Music Player *EN*"
+            }
+        }
+    },
     "chat-test": {
         "context_name": "Chat UI test",
         "menu_name": {

@@ -6422,6 +6422,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sidplayer"
+version = "0.1.0"
+dependencies = [
+ "codec",
+ "gam",
+ "log 0.4.22",
+ "num-derive 0.4.2",
+ "num-traits",
+ "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous-api-log",
+ "xous-api-names",
+ "xous-api-ticktimer",
+ "xous-ipc 0.10.10 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "signature"
 version = "1.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

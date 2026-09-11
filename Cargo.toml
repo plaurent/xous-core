@@ -74,6 +74,7 @@ members = [
   "apps/app-loader/spawn",
   "apps/ball",
   "apps/paklis",
+  "apps/sidplayer",
   "apps/hello",
   "apps/mtxchat",
   "apps/mtxcli",
