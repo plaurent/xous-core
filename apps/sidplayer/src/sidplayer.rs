@@ -12,6 +12,35 @@ use num_traits::ToPrimitive;
 /// The embedded tune. Rob Hubbard's "Commando" (1985, Elite).
 static COMMANDO_SID: &[u8] = include_bytes!("commando.sid");
 
+/// Where to route the audio. The codec drives the speaker and the headphones in
+/// parallel with no hardware auto-switching, and the speaker path has ~+12 dB more
+/// driver gain than the headphone path, so the speaker swamps the headphones unless
+/// we explicitly mute it. Each mode mutes the unused path and sets a sensible gain
+/// on the active one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputMode {
+    Headphones,
+    Speaker,
+    Both,
+}
+
+impl OutputMode {
+    fn next(self) -> Self {
+        match self {
+            OutputMode::Headphones => OutputMode::Speaker,
+            OutputMode::Speaker => OutputMode::Both,
+            OutputMode::Both => OutputMode::Headphones,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            OutputMode::Headphones => "Headphones",
+            OutputMode::Speaker => "Speaker",
+            OutputMode::Both => "Both",
+        }
+    }
+}
+
 pub(crate) struct SidPlayer {
     gam: gam::Gam,
     _token: [u32; 4],
@@ -26,7 +55,11 @@ pub(crate) struct SidPlayer {
     playing: bool,
     hooked: bool,
     frames_played: u32,
+    underruns: u32,
     status: String,
+    output: OutputMode,
+    /// headphone analog gain in dB (0 = loudest, more negative = quieter)
+    hp_gain_db: f32,
 }
 
 impl SidPlayer {
@@ -68,7 +101,34 @@ impl SidPlayer {
             playing: false,
             hooked: false,
             frames_played: 0,
-            status: String::from("Press Space or center to play"),
+            underruns: 0,
+            status: String::from("Space/center: play   o: output   up/dn: volume"),
+            output: OutputMode::Headphones,
+            hp_gain_db: 0.0,
+        }
+    }
+
+    /// Push the current output-mode routing and gains to the codec. Muting the
+    /// unused path is what actually makes headphone-only playback work, since the
+    /// codec otherwise drives both outputs at once.
+    fn apply_output(&mut self) {
+        match self.output {
+            OutputMode::Headphones => {
+                self.codec.set_speaker_volume(VolumeOps::Mute, None).ok();
+                self.codec
+                    .set_headphone_volume(VolumeOps::Set, Some(self.hp_gain_db))
+                    .ok();
+            }
+            OutputMode::Speaker => {
+                self.codec.set_speaker_volume(VolumeOps::RestoreDefault, None).ok();
+                self.codec.set_headphone_volume(VolumeOps::Mute, None).ok();
+            }
+            OutputMode::Both => {
+                self.codec.set_speaker_volume(VolumeOps::RestoreDefault, None).ok();
+                self.codec
+                    .set_headphone_volume(VolumeOps::Set, Some(self.hp_gain_db))
+                    .ok();
+            }
         }
     }
 
@@ -102,11 +162,11 @@ impl SidPlayer {
         );
         self.player = Some(Player::new(&psid, song0));
         self.frames_played = 0;
+        self.underruns = 0;
 
         self.codec.setup_8k_stream().expect("couldn't set up 8k stream");
         self.ticktimer.sleep_ms(50).unwrap();
-        self.codec.set_speaker_volume(VolumeOps::RestoreDefault, None).unwrap();
-        self.codec.set_headphone_volume(VolumeOps::RestoreDefault, None).unwrap();
+        self.apply_output();
 
         if !self.hooked {
             self.codec
@@ -143,7 +203,15 @@ impl SidPlayer {
         };
 
         let mut frames: FrameRing = FrameRing::new();
-        let to_push = frames.writeable_count().min(free_play);
+        let ring_max = frames.writeable_count();
+        // If the codec can accept the whole ring, its play buffer had fully
+        // drained since our last fill: an underrun (dropout) occurred. Skip the
+        // very first fill after resume, which legitimately starts from empty.
+        if self.frames_played > 0 && free_play >= ring_max {
+            self.underruns += 1;
+        }
+
+        let to_push = ring_max.min(free_play);
         for _ in 0..to_push {
             let mut frame: [u32; codec::FIFO_DEPTH] =
                 [ZERO_PCM as u32 | (ZERO_PCM as u32) << 16; codec::FIFO_DEPTH];
@@ -157,9 +225,15 @@ impl SidPlayer {
         }
         self.frames_played += to_push as u32;
         self.codec.swap_frames(&mut frames).unwrap();
+        // NOTE: never redraw here — GAM IPC is slow and blocking the fill
+        // callback drains the codec buffer and causes audible dropouts. The
+        // screen is refreshed off the critical path by the 1 s tick timer.
+    }
 
-        // Periodically refresh the on-screen elapsed time.
-        if self.frames_played % 32 == 0 {
+    /// Periodic UI refresh, driven by a low-rate timer thread — off the audio
+    /// critical path so it can never starve the codec.
+    pub(crate) fn on_tick(&mut self) {
+        if self.playing {
             self.redraw();
         }
     }
@@ -167,6 +241,27 @@ impl SidPlayer {
     pub(crate) fn key(&mut self, k: char) {
         match k {
             ' ' | '∴' | '\r' => self.toggle(),
+            'o' | 'O' => {
+                self.output = self.output.next();
+                if self.playing {
+                    self.apply_output();
+                }
+                self.redraw();
+            }
+            '↑' | '+' => {
+                self.hp_gain_db = (self.hp_gain_db + 3.0).min(0.0);
+                if self.playing {
+                    self.apply_output();
+                }
+                self.redraw();
+            }
+            '↓' | '-' => {
+                self.hp_gain_db = (self.hp_gain_db - 3.0).max(-42.0);
+                if self.playing {
+                    self.apply_output();
+                }
+                self.redraw();
+            }
             _ => {}
         }
     }
@@ -197,15 +292,33 @@ impl SidPlayer {
         self.text(4, 40, "Commando");
         self.text(4, 64, "Rob Hubbard, 1985 Elite");
 
+        // output routing + headphone volume
+        let mut outline = String::new();
+        write!(
+            outline,
+            "Output: {}   HP vol: {} dB",
+            self.output.label(),
+            self.hp_gain_db as i32
+        )
+        .ok();
+        self.text(4, 100, &outline);
+
         // elapsed time, at ~256 samples/frame / 8000 Hz = 32 ms per frame
         let mut line = String::new();
         if self.playing {
             let ms = (self.frames_played as u64 * codec::FIFO_DEPTH as u64 * 1000) / OUTPUT_RATE as u64;
-            write!(line, "{}   {}.{:01}s", self.status, ms / 1000, (ms % 1000) / 100).ok();
+            write!(
+                line,
+                "Playing   {}.{:01}s   underruns: {}",
+                ms / 1000,
+                (ms % 1000) / 100,
+                self.underruns
+            )
+            .ok();
         } else {
             write!(line, "{}", self.status).ok();
         }
-        self.text(4, 100, &line);
+        self.text(4, 136, &line);
 
         self.gam.redraw().unwrap();
     }

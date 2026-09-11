@@ -4,7 +4,7 @@ mod psid;
 mod sid;
 mod sidplayer;
 
-use num_traits::FromPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 use sidplayer::SidPlayer;
 
 /// Private name-server registration for this app's main server. Distinct from the
@@ -24,7 +24,13 @@ pub(crate) enum AppOp {
     Quit,
     /// the codec wants more audio frames (delivered via hook_frame_callback)
     AudioFrame,
+    /// low-rate UI refresh tick (from the timer thread)
+    Tick,
 }
+
+/// How often the UI refreshes while playing (ms). Kept off the audio critical
+/// path — this only redraws elapsed time / underrun count.
+const TICK_MS: usize = 1000;
 
 fn main() -> ! {
     log_server::init_wait().unwrap();
@@ -37,6 +43,25 @@ fn main() -> ! {
         .expect("can't register server");
 
     let mut app = SidPlayer::new(sid);
+
+    // Low-rate UI tick thread: pings the main loop once a second so the elapsed
+    // time and underrun counter stay current without ever touching the audio
+    // fill callback.
+    let tick_conn = xous::connect(sid).unwrap();
+    std::thread::spawn(move || {
+        let tt = ticktimer_server::Ticktimer::new().unwrap();
+        loop {
+            tt.sleep_ms(TICK_MS).unwrap();
+            if xous::send_message(
+                tick_conn,
+                xous::Message::new_scalar(AppOp::Tick.to_usize().unwrap(), 0, 0, 0, 0),
+            )
+            .is_err()
+            {
+                break;
+            }
+        }
+    });
 
     loop {
         let msg = xous::receive_message(sid).unwrap();
@@ -66,6 +91,9 @@ fn main() -> ! {
                     app.audio_frame(free_play);
                 }
             }),
+            Some(AppOp::Tick) => {
+                app.on_tick();
+            }
             Some(AppOp::Quit) => {
                 log::info!("sidplayer quitting");
                 break;
