@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 
 use crate::cpu6502::{Cpu, RegWrite};
 use crate::psid::{Clock, Psid};
-use crate::sid::{Sid, MAX_STEP};
+use crate::sid::{MAX_STEP, Sid};
 
 pub const OUTPUT_RATE: u32 = 8000;
 
@@ -143,9 +143,7 @@ impl Player {
         }
 
         // Apply due writes.
-        while self.write_idx < self.writes.len()
-            && self.writes[self.write_idx].cycle <= self.cycle_in_frame
-        {
+        while self.write_idx < self.writes.len() && self.writes[self.write_idx].cycle <= self.cycle_in_frame {
             let w = self.writes[self.write_idx];
             self.sid.write_reg(w.reg, w.val);
             self.write_idx += 1;

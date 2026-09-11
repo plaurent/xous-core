@@ -1,10 +1,12 @@
-use super::*;
-use gam::UxRegistration;
-use gam::{Gid, Point, Rectangle, TextBounds, TextView, DrawStyle, PixelColor};
-use gam::GlyphStyle;
-use xous::MessageEnvelope;
 use core::fmt::Write;
+
+use gam::GlyphStyle;
+use gam::UxRegistration;
+use gam::{DrawStyle, Gid, PixelColor, Point, Rectangle, TextBounds, TextView};
 use locales::t;
+use xous::MessageEnvelope;
+
+use super::*;
 
 #[derive(Debug)]
 struct History {
@@ -23,7 +25,7 @@ pub(crate) struct Repl {
     msg: Option<MessageEnvelope>,
 
     // record our input history
-    history: Vec::<History>,
+    history: Vec<History>,
     history_len: usize,
     content: Gid,
     gam: gam::Gam,
@@ -31,7 +33,7 @@ pub(crate) struct Repl {
     // variables that define our graphical attributes
     screensize: Point,
     bubble_width: u16,
-    margin: Point, // margin to edge of canvas
+    margin: Point,        // margin to edge of canvas
     bubble_margin: Point, // margin of text in bubbles
     bubble_radius: u16,
     bubble_space: i16, // spacing between text bubbles
@@ -42,21 +44,24 @@ pub(crate) struct Repl {
     // our security token for making changes to our record on the GAM
     token: [u32; 4],
 }
-impl Repl{
+impl Repl {
     pub(crate) fn new(xns: &xous_names::XousNames, sid: xous::SID) -> Self {
         let gam = gam::Gam::new(xns).expect("can't connect to GAM");
 
-        let token = gam.register_ux(UxRegistration {
-            app_name: String::from(gam::APP_NAME_EDLIN),
-            ux_type: gam::UxType::Chat,
-            predictor: Some(String::from(ime_plugin_shell::SERVER_NAME_IME_PLUGIN_SHELL)),
-            listener: sid.to_array(), // note disclosure of our SID to the GAM -- the secret is now shared with the GAM!
-            redraw_id: ReplOp::Redraw.to_u32().unwrap(),
-            gotinput_id: Some(ReplOp::Line.to_u32().unwrap()),
-            audioframe_id: None,
-            rawkeys_id: None,
-            focuschange_id: Some(ReplOp::ChangeFocus.to_u32().unwrap()),
-        }).expect("couldn't register Ux context for repl");
+        let token = gam
+            .register_ux(UxRegistration {
+                app_name: String::from(gam::APP_NAME_EDLIN),
+                ux_type: gam::UxType::Chat,
+                predictor: Some(String::from(ime_plugin_shell::SERVER_NAME_IME_PLUGIN_SHELL)),
+                listener: sid.to_array(), /* note disclosure of our SID to the GAM -- the secret is now
+                                           * shared with the GAM! */
+                redraw_id: ReplOp::Redraw.to_u32().unwrap(),
+                gotinput_id: Some(ReplOp::Line.to_u32().unwrap()),
+                audioframe_id: None,
+                rawkeys_id: None,
+                focuschange_id: Some(ReplOp::ChangeFocus.to_u32().unwrap()),
+            })
+            .expect("couldn't register Ux context for repl");
 
         let content = gam.request_content_canvas(token.unwrap()).expect("couldn't get content canvas");
         let screensize = gam.get_canvas_bounds(content).expect("couldn't get dimensions of content canvas");
@@ -69,7 +74,10 @@ impl Repl{
         Repl {
             input: None,
             msg: None,
-            history: vec![History{text: String::from(t!("edlinapp.greeting", locales::LANG)), is_input: false}],
+            history: vec![History {
+                text: String::from(t!("edlinapp.greeting", locales::LANG)),
+                is_input: false,
+            }],
             history_len: 10,
             content,
             gam,
@@ -91,9 +99,7 @@ impl Repl{
         Ok(())
     }
 
-    pub(crate) fn msg(&mut self, message: MessageEnvelope) {
-        self.msg = Some(message);
-    }
+    pub(crate) fn msg(&mut self, message: MessageEnvelope) { self.msg = Some(message); }
 
     fn circular_push(&mut self, item: History) {
         if self.history.len() >= self.history_len {
@@ -106,10 +112,7 @@ impl Repl{
     pub(crate) fn update(&mut self, was_callback: bool) -> Result<(), xous::Error> {
         // if we had an input string, do something
         if let Some(local) = &self.input {
-            let input_history = History {
-                text: local.to_string(),
-                is_input: true,
-            };
+            let input_history = History { text: local.to_string(), is_input: true };
             self.circular_push(input_history);
         }
 
@@ -118,7 +121,8 @@ impl Repl{
         // side effect our commands
 
         // redraw UI once upon accepting all input
-        if !was_callback { // don't need to redraw on a callback, save some cycles
+        if !was_callback {
+            // don't need to redraw on a callback, save some cycles
             self.redraw().expect("can't redraw");
         }
 
@@ -152,15 +156,18 @@ impl Repl{
     }
 
     fn clear_area(&self) {
-        self.gam.draw_rectangle(self.content,
-            Rectangle::new_with_style(Point::new(0, 0), self.screensize,
-            DrawStyle {
-                fill_color: Some(PixelColor::Light),
-                stroke_color: None,
-                stroke_width: 0
-            }
-        )).expect("can't clear content area");
+        self.gam
+            .draw_rectangle(
+                self.content,
+                Rectangle::new_with_style(
+                    Point::new(0, 0),
+                    self.screensize,
+                    DrawStyle { fill_color: Some(PixelColor::Light), stroke_color: None, stroke_width: 0 },
+                ),
+            )
+            .expect("can't clear content area");
     }
+
     pub(crate) fn redraw(&mut self) -> Result<(), xous::Error> {
         self.clear_area();
 
@@ -170,18 +177,20 @@ impl Repl{
         // iterator returns from oldest to newest
         // .rev() iterator is from newest to oldest
         for h in self.history.iter().rev() {
-            let mut bubble_tv =
-                if h.is_input {
-                    TextView::new(self.content,
+            let mut bubble_tv = if h.is_input {
+                TextView::new(
+                    self.content,
                     TextBounds::GrowableFromBr(
                         Point::new(self.screensize.x - self.margin.x, bubble_baseline),
-                        self.bubble_width))
-                } else {
-                    TextView::new(self.content,
-                        TextBounds::GrowableFromBl(
-                            Point::new(self.margin.x, bubble_baseline),
-                            self.bubble_width))
-                };
+                        self.bubble_width,
+                    ),
+                )
+            } else {
+                TextView::new(
+                    self.content,
+                    TextBounds::GrowableFromBl(Point::new(self.margin.x, bubble_baseline), self.bubble_width),
+                )
+            };
             if h.is_input {
                 bubble_tv.border_width = 1;
             } else {
@@ -190,16 +199,18 @@ impl Repl{
             bubble_tv.draw_border = true;
             bubble_tv.clear_area = true;
             bubble_tv.rounded_border = Some(self.bubble_radius);
-            bubble_tv.style = GlyphStyle::Large;  // GlyphStyle::Regular;
+            bubble_tv.style = GlyphStyle::Large; // GlyphStyle::Regular;
             bubble_tv.margin = self.bubble_margin;
-            bubble_tv.ellipsis = false; bubble_tv.insertion = None;
+            bubble_tv.ellipsis = false;
+            bubble_tv.insertion = None;
             write!(bubble_tv.text, "{}", h.text.as_str()).expect("couldn't write history text to TextView");
             self.gam.post_textview(&mut bubble_tv).expect("couldn't render bubble textview");
 
             if let Some(bounds) = bubble_tv.bounds_computed {
-                // we only subtract 1x of the margin because the bounds were computed from a "bottom right" that already counted
-                // the margin once.
-                bubble_baseline -= (bounds.br.y - bounds.tl.y) + (self.bubble_space as isize) + self.bubble_margin.y;
+                // we only subtract 1x of the margin because the bounds were computed from a "bottom right"
+                // that already counted the margin once.
+                bubble_baseline -=
+                    (bounds.br.y - bounds.tl.y) + (self.bubble_space as isize) + self.bubble_margin.y;
                 if bubble_baseline <= 0 {
                     // don't draw history that overflows the top of the screen
                     break;

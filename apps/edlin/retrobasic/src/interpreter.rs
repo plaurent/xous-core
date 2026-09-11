@@ -1,11 +1,12 @@
-use ast::AST;
-use dimsum::MultiDim;
-use error::{Error, Result};
 //use rand;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::str::FromStr;
+
+use ast::AST;
+use dimsum::MultiDim;
+use error::{Error, Result};
 use tokenid::TID;
 
 // Memory value
@@ -94,12 +95,12 @@ impl Interpreter {
         }
     }
 
-    fn print_stdout(&mut self, s:&str) {
+    fn print_stdout(&mut self, s: &str) {
         print!("{}", s);
         self.stdout_line.push_str(s);
     }
 
-    fn println_stdout(&mut self, s:&str) {
+    fn println_stdout(&mut self, s: &str) {
         println!("{}", s);
         self.stdout_line.push_str(s);
         self.stdout.push(std::string::String::from(&self.stdout_line));
@@ -107,11 +108,7 @@ impl Interpreter {
     }
 
     fn var_value(&self, id: &str) -> Option<&MV> {
-        if self.fn_vars.contains_key(id) {
-            self.fn_vars.get(id)
-        } else {
-            self.vars.get(id)
-        }
+        if self.fn_vars.contains_key(id) { self.fn_vars.get(id) } else { self.vars.get(id) }
     }
 
     fn exec(&mut self, node: &AST) -> Result<Execute> {
@@ -123,12 +120,9 @@ impl Interpreter {
             TID::DEF => self.exec_def(&node),
             TID::LET => self.exec_let(&node.children[0], &node.children[1]),
             TID::IF => self.exec_if(&node.children[0], &node.children[1]),
-            TID::FOR => self.exec_for(
-                &node.children[0],
-                &node.children[1],
-                &node.children[2],
-                &node.children[3],
-            ),
+            TID::FOR => {
+                self.exec_for(&node.children[0], &node.children[1], &node.children[2], &node.children[3])
+            }
             TID::NEXT => self.exec_next(&node.children),
             TID::PRINT => self.exec_print(&node.children),
             TID::GOTO | TID::LNUM => self.exec_goto(&node.children[0]),
@@ -144,21 +138,14 @@ impl Interpreter {
             TID::REM => Ok(Execute::Next),
             _ => {
                 debug!("Unexpected token type: {:?}", node.token.id);
-                Err(Error::RuntimeError(
-                    self.line_num,
-                    "UNEXPECTED TOKEN".to_string(),
-                ))
+                Err(Error::RuntimeError(self.line_num, "UNEXPECTED TOKEN".to_string()))
             }
         }
     }
 
     fn exec_on(&mut self, node: &AST) -> Result<Execute> {
         let v = self.into_dim(&node.children)?;
-        if (v[0] > 0) && (v[0] < v.len()) {
-            Ok(Execute::Line(v[v[0]] as u32))
-        } else {
-            Ok(Execute::Next)
-        }
+        if (v[0] > 0) && (v[0] < v.len()) { Ok(Execute::Line(v[v[0]] as u32)) } else { Ok(Execute::Next) }
     }
 
     fn exec_data(&mut self, node: &AST) -> Result<Execute> {
@@ -178,10 +165,7 @@ impl Interpreter {
         for c in &node.children {
             if self.curr_data >= self.data.len() {
                 debug!("Ran out of available DATA");
-                return Err(Error::RuntimeError(
-                    self.line_num,
-                    "OUT OF DATA".to_string(),
-                ));
+                return Err(Error::RuntimeError(self.line_num, "OUT OF DATA".to_string()));
             }
 
             let mv = self.data[self.curr_data].clone();
@@ -192,9 +176,7 @@ impl Interpreter {
         Ok(Execute::Next)
     }
 
-    fn exec_end(&self) -> Result<Execute> {
-        Ok(Execute::Stop)
-    }
+    fn exec_end(&self) -> Result<Execute> { Ok(Execute::Stop) }
 
     fn exec_goto(&mut self, ast: &AST) -> Result<Execute> {
         let n: u32 = self.eval(ast)?.to_num() as u32;
@@ -213,21 +195,14 @@ impl Interpreter {
     }
 
     fn into_dim(&mut self, nodes: &Vec<AST>) -> Result<Vec<usize>> {
-        Ok(nodes
-            .iter()
-            .map(|x| self.eval(x).unwrap_or(MV::Num(0.0)).to_num() as usize)
-            .collect())
+        Ok(nodes.iter().map(|x| self.eval(x).unwrap_or(MV::Num(0.0)).to_num() as usize).collect())
     }
 
     fn exec_dim(&mut self, nodes: &Vec<AST>) -> Result<Execute> {
         for i in 0..nodes.len() {
             let id = nodes[i].clone().token.val.unwrap();
 
-            let mv = if id.contains("$") {
-                MV::Str(String::from(""))
-            } else {
-                MV::Num(0.0)
-            };
+            let mv = if id.contains("$") { MV::Str(String::from("")) } else { MV::Num(0.0) };
 
             let dim = self.into_dim(&nodes[i].children)?;
             let v = MultiDim::<MV>::new(&dim, mv);
@@ -261,9 +236,8 @@ impl Interpreter {
             let line = self.read_line();
             let split: Vec<&str> = line.split(",").collect();
             if split.len() != (end - start) {
-                self.println_stdout(format!(
-                    "INVALID INPUT! ENTER {} COMMA-SEPARATED VALUE(S)",
-                    end - start).as_str()
+                self.println_stdout(
+                    format!("INVALID INPUT! ENTER {} COMMA-SEPARATED VALUE(S)", end - start).as_str(),
                 );
                 continue;
             }
@@ -281,7 +255,9 @@ impl Interpreter {
                                     self.do_assign(&nodes[i + start], val)?;
                                 }
                                 Err(_) => {
-                                    self.println_stdout(format!("INVALID INPUT! '{}' IS NOT A NUMBER", split[i]).as_str());
+                                    self.println_stdout(
+                                        format!("INVALID INPUT! '{}' IS NOT A NUMBER", split[i]).as_str(),
+                                    );
                                     valid = false;
                                 }
                             }
@@ -309,10 +285,7 @@ impl Interpreter {
                         Ok(_) => (),
                         Err(e) => {
                             debug!("Error setting multi-dimensional value: {:?}", e);
-                            return Err(Error::RuntimeError(
-                                self.line_num,
-                                "MULTIDIM ERROR".to_string(),
-                            ));
+                            return Err(Error::RuntimeError(self.line_num, "MULTIDIM ERROR".to_string()));
                         }
                     };
                     false
@@ -321,11 +294,7 @@ impl Interpreter {
             };
 
             if not_found {
-                let mv_def = if id.contains("$") {
-                    MV::Str(String::from(""))
-                } else {
-                    MV::Num(0.0)
-                };
+                let mv_def = if id.contains("$") { MV::Str(String::from("")) } else { MV::Num(0.0) };
                 let mut md = MultiDim::<MV>::new(&[10], mv_def);
                 md.set(&dim, mv).unwrap();
                 self.md_vars.insert(id, md);
@@ -361,27 +330,12 @@ impl Interpreter {
         Ok(Execute::NextLine)
     }
 
-    fn exec_for(
-        &mut self,
-        id_ast: &AST,
-        start_ast: &AST,
-        end_ast: &AST,
-        step_ast: &AST,
-    ) -> Result<Execute> {
+    fn exec_for(&mut self, id_ast: &AST, start_ast: &AST, end_ast: &AST, step_ast: &AST) -> Result<Execute> {
         let id = id_ast.token.val.clone().unwrap();
         let end = self.eval(&end_ast)?.to_num();
-        let step = if step_ast.token.id == TID::NONE {
-            1.0
-        } else {
-            self.eval(&step_ast)?.to_num()
-        };
+        let step = if step_ast.token.id == TID::NONE { 1.0 } else { self.eval(&step_ast)?.to_num() };
         self.exec_let(&id_ast, &start_ast)?;
-        let v = ForNext {
-            end: end,
-            step: step,
-            target: self.curr_stmt + 1,
-            id: id,
-        };
+        let v = ForNext { end, step, target: self.curr_stmt + 1, id };
         debug!("exec_for : {:?}", v);
         self.fornext.push(v);
         Ok(Execute::Next)
@@ -394,18 +348,14 @@ impl Interpreter {
             Some(mv) => mv.to_num() + frame.step,
             None => {
                 debug!("Expected id to be assigned");
-                return Err(Error::RuntimeError(
-                    self.line_num,
-                    "VARIABLE UNASSIGNED".to_string(),
-                ));
+                return Err(Error::RuntimeError(self.line_num, "VARIABLE UNASSIGNED".to_string()));
             }
         };
 
         // Update loop variable by incrementing it with step
         self.vars.insert(frame.id.clone(), MV::Num(next_val));
 
-        if ((frame.step > 0.0) && (next_val <= frame.end))
-            || ((frame.step < 0.0) && (next_val >= frame.end))
+        if ((frame.step > 0.0) && (next_val <= frame.end)) || ((frame.step < 0.0) && (next_val >= frame.end))
         {
             Ok(Execute::Stmt(frame.target))
         } else {
@@ -421,10 +371,7 @@ impl Interpreter {
         // If multiple ids specified, match each in order from the right
         if self.fornext.is_empty() {
             debug!("No for-next frames!");
-            return Err(Error::RuntimeError(
-                self.line_num,
-                "FOR-NEXT ERROR".to_string(),
-            ));
+            return Err(Error::RuntimeError(self.line_num, "FOR-NEXT ERROR".to_string()));
         }
 
         let mut curr_idx = 0;
@@ -451,10 +398,7 @@ impl Interpreter {
                     curr_idx = curr_idx + 1;
                     if curr_idx >= nodes.len() {
                         debug!("Did not find any matching ids");
-                        return Err(Error::RuntimeError(
-                            self.line_num,
-                            "FOR-NEXT ERROR".to_string(),
-                        ));
+                        return Err(Error::RuntimeError(self.line_num, "FOR-NEXT ERROR".to_string()));
                     }
                 }
             }
@@ -504,10 +448,7 @@ impl Interpreter {
                 Ok(n) => Ok(MV::Num(n)),
                 Err(e) => {
                     debug!("Failed to parse node value, {:?}", e);
-                    Err(Error::RuntimeError(
-                        self.line_num,
-                        "INVALID NUMBER".to_string(),
-                    ))
+                    Err(Error::RuntimeError(self.line_num, "INVALID NUMBER".to_string()))
                 }
             },
             TID::STR => Ok(MV::Str(node.token.val.clone().unwrap())),
@@ -558,10 +499,7 @@ impl Interpreter {
             TID::FN => self.eval_fn(&node),
             _ => {
                 debug!("Unexpected eval, got {:?}", node.token.id);
-                Err(Error::RuntimeError(
-                    self.line_num,
-                    "UNEXPECTED EVALUATION".to_string(),
-                ))
+                Err(Error::RuntimeError(self.line_num, "UNEXPECTED EVALUATION".to_string()))
             }
         }
     }
@@ -597,10 +535,7 @@ impl Interpreter {
                 Ok(mv) => Ok(mv.clone()),
                 Err(e) => {
                     debug!("Error retrieving multi-dimensional value: {:?}", e);
-                    Err(Error::RuntimeError(
-                        self.line_num,
-                        "MULTIDIM ERROR".to_string(),
-                    ))
+                    Err(Error::RuntimeError(self.line_num, "MULTIDIM ERROR".to_string()))
                 }
             },
             None => {
@@ -613,9 +548,7 @@ impl Interpreter {
         }
     }
 
-    fn eval_lnum(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num()))
-    }
+    fn eval_lnum(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num())) }
 
     fn eval_asc(&mut self, ast: &AST) -> Result<MV> {
         Ok(MV::Num(self.eval(ast)?.to_str().as_bytes()[0] as f32))
@@ -662,13 +595,9 @@ impl Interpreter {
         Ok(MV::Str(String::from(first)))
     }
 
-    fn eval_len(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_str().len() as f32))
-    }
+    fn eval_len(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_str().len() as f32)) }
 
-    fn eval_val(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num()))
-    }
+    fn eval_val(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num())) }
 
     fn eval_fstr(&mut self, ast: &AST) -> Result<MV> {
         let s = self.eval(&ast.children[0])?.to_str();
@@ -681,13 +610,9 @@ impl Interpreter {
         //Ok(MV::Num(rand::random::<f32>() * self.eval(ast)?.to_num()))
     }
 
-    fn eval_abs(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num().abs()))
-    }
+    fn eval_abs(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num().abs())) }
 
-    fn eval_sqr(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num().sqrt()))
-    }
+    fn eval_sqr(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num().sqrt())) }
 
     fn eval_sgn(&mut self, ast: &AST) -> Result<MV> {
         let n = self.eval(ast)?.to_num();
@@ -701,29 +626,17 @@ impl Interpreter {
         Ok(MV::Num(s))
     }
 
-    fn eval_sin(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num().sin()))
-    }
+    fn eval_sin(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num().sin())) }
 
-    fn eval_cos(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num().cos()))
-    }
+    fn eval_cos(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num().cos())) }
 
-    fn eval_tan(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num().tan()))
-    }
+    fn eval_tan(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num().tan())) }
 
-    fn eval_exp(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num().exp()))
-    }
+    fn eval_exp(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num().exp())) }
 
-    fn eval_atn(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(ast)?.to_num().atan()))
-    }
+    fn eval_atn(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(ast)?.to_num().atan())) }
 
-    fn eval_fint(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(self.eval(&ast)?.to_num().floor()))
-    }
+    fn eval_fint(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(self.eval(&ast)?.to_num().floor())) }
 
     fn eval_tab(&mut self, ast: &AST) -> Result<MV> {
         let n: u32 = self.eval(&ast)?.to_num() as u32;
@@ -732,11 +645,7 @@ impl Interpreter {
     }
 
     fn eval_semicolon(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        Ok(MV::Str(format!(
-            "{} {}",
-            self.eval(left)?.to_str(),
-            self.eval(right)?.to_str()
-        )))
+        Ok(MV::Str(format!("{} {}", self.eval(left)?.to_str(), self.eval(right)?.to_str())))
     }
 
     fn eval_or(&mut self, left: &AST, right: &AST) -> Result<MV> {
@@ -756,98 +665,58 @@ impl Interpreter {
     }
 
     fn eval_not(&mut self, ast: &AST) -> Result<MV> {
-        if self.eval(ast)?.to_num() != 0.0 {
-            Ok(MV::Num(0.0))
-        } else {
-            Ok(MV::Num(-1.0))
-        }
+        if self.eval(ast)?.to_num() != 0.0 { Ok(MV::Num(0.0)) } else { Ok(MV::Num(-1.0)) }
     }
 
     fn eval_eq(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        if self.eval(left)? == self.eval(right)? {
-            Ok(MV::Num(-1.0))
-        } else {
-            Ok(MV::Num(0.0))
-        }
+        if self.eval(left)? == self.eval(right)? { Ok(MV::Num(-1.0)) } else { Ok(MV::Num(0.0)) }
     }
 
     fn eval_neq(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        if self.eval(left)? != self.eval(right)? {
-            Ok(MV::Num(-1.0))
-        } else {
-            Ok(MV::Num(0.0))
-        }
+        if self.eval(left)? != self.eval(right)? { Ok(MV::Num(-1.0)) } else { Ok(MV::Num(0.0)) }
     }
 
     fn eval_lt(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        if self.eval(left)? < self.eval(right)? {
-            Ok(MV::Num(-1.0))
-        } else {
-            Ok(MV::Num(0.0))
-        }
+        if self.eval(left)? < self.eval(right)? { Ok(MV::Num(-1.0)) } else { Ok(MV::Num(0.0)) }
     }
 
     fn eval_lteq(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        if self.eval(left)? <= self.eval(right)? {
-            Ok(MV::Num(-1.0))
-        } else {
-            Ok(MV::Num(0.0))
-        }
+        if self.eval(left)? <= self.eval(right)? { Ok(MV::Num(-1.0)) } else { Ok(MV::Num(0.0)) }
     }
 
     fn eval_gt(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        if self.eval(left)? > self.eval(right)? {
-            Ok(MV::Num(-1.0))
-        } else {
-            Ok(MV::Num(0.0))
-        }
+        if self.eval(left)? > self.eval(right)? { Ok(MV::Num(-1.0)) } else { Ok(MV::Num(0.0)) }
     }
 
     fn eval_gteq(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        if self.eval(left)? >= self.eval(right)? {
-            Ok(MV::Num(-1.0))
-        } else {
-            Ok(MV::Num(0.0))
-        }
+        if self.eval(left)? >= self.eval(right)? { Ok(MV::Num(-1.0)) } else { Ok(MV::Num(0.0)) }
     }
 
     fn eval_pow(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        Ok(MV::Num(
-            self.eval(left)?.to_num().powf(self.eval(right)?.to_num()),
-        ))
+        Ok(MV::Num(self.eval(left)?.to_num().powf(self.eval(right)?.to_num())))
     }
 
-    fn eval_negate(&mut self, ast: &AST) -> Result<MV> {
-        Ok(MV::Num(-(self.eval(ast)?.to_num())))
-    }
+    fn eval_negate(&mut self, ast: &AST) -> Result<MV> { Ok(MV::Num(-(self.eval(ast)?.to_num()))) }
 
     fn eval_plus(&mut self, left: &AST, right: &AST) -> Result<MV> {
         let op1 = self.eval(left)?;
         let op2 = self.eval(right)?;
         match (op1, op2) {
             (MV::Str(ref s1), MV::Str(ref s2)) => Ok(MV::Str(format!("{}{}", s1, s2))),
-            _ => Ok(MV::Num(
-                self.eval(left)?.to_num() + (self.eval(right)?.to_num()),
-            )),
+            _ => Ok(MV::Num(self.eval(left)?.to_num() + (self.eval(right)?.to_num()))),
         }
     }
 
     fn eval_minus(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        Ok(MV::Num(
-            self.eval(left)?.to_num() - (self.eval(right)?.to_num()),
-        ))
+        Ok(MV::Num(self.eval(left)?.to_num() - (self.eval(right)?.to_num())))
     }
 
     fn eval_mult(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        Ok(MV::Num(
-            self.eval(left)?.to_num() * (self.eval(right)?.to_num()),
-        ))
+        Ok(MV::Num(self.eval(left)?.to_num() * (self.eval(right)?.to_num())))
     }
 
     fn eval_div(&mut self, left: &AST, right: &AST) -> Result<MV> {
-        Ok(MV::Num(
-            self.eval(left)?.to_num() / (self.eval(right)?.to_num()),
-        ))
+        Ok(MV::Num(self.eval(left)?.to_num() / (self.eval(right)?.to_num())))
     }
 
     // The AST passed to run must have the following format:
@@ -864,10 +733,7 @@ impl Interpreter {
     pub fn run(&mut self, ast: &AST) -> Result<()> {
         if ast.token.id != TID::ROOT {
             debug!("AST must always start with a root node!");
-            return Err(Error::RuntimeError(
-                self.line_num,
-                "INVALID PROGRAM".to_string(),
-            ));
+            return Err(Error::RuntimeError(self.line_num, "INVALID PROGRAM".to_string()));
         }
 
         debug!("Interpreter start, {} lines", ast.children.len());

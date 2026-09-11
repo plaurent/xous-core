@@ -3,11 +3,11 @@ use core::fmt::Write as _;
 use codec::*;
 use gam::menu::*;
 use gam::*;
-
-use crate::player::{Player, OUTPUT_RATE};
-use crate::psid::Psid;
-use crate::AppOp;
 use num_traits::ToPrimitive;
+
+use crate::AppOp;
+use crate::player::{OUTPUT_RATE, Player};
+use crate::psid::Psid;
 
 /// The embedded tune. Rob Hubbard's "Commando" (1985, Elite).
 static COMMANDO_SID: &[u8] = include_bytes!("commando.sid");
@@ -32,6 +32,7 @@ impl OutputMode {
             OutputMode::Both => OutputMode::Headphones,
         }
     }
+
     fn label(self) -> &'static str {
         match self {
             OutputMode::Headphones => "Headphones",
@@ -118,9 +119,7 @@ impl SidPlayer {
         match self.output {
             OutputMode::Headphones => {
                 self.codec.set_speaker_volume(VolumeOps::Mute, None).ok();
-                self.codec
-                    .set_headphone_volume(VolumeOps::Set, Some(self.hp_gain_db))
-                    .ok();
+                self.codec.set_headphone_volume(VolumeOps::Set, Some(self.hp_gain_db)).ok();
             }
             OutputMode::Speaker => {
                 self.codec.set_speaker_volume(VolumeOps::RestoreDefault, None).ok();
@@ -128,9 +127,7 @@ impl SidPlayer {
             }
             OutputMode::Both => {
                 self.codec.set_speaker_volume(VolumeOps::RestoreDefault, None).ok();
-                self.codec
-                    .set_headphone_volume(VolumeOps::Set, Some(self.hp_gain_db))
-                    .ok();
+                self.codec.set_headphone_volume(VolumeOps::Set, Some(self.hp_gain_db)).ok();
             }
         }
     }
@@ -172,9 +169,7 @@ impl SidPlayer {
         self.apply_output();
 
         if !self.hooked {
-            self.codec
-                .hook_frame_callback(AppOp::AudioFrame.to_u32().unwrap(), self.self_conn)
-                .unwrap();
+            self.codec.hook_frame_callback(AppOp::AudioFrame.to_u32().unwrap(), self.self_conn).unwrap();
             self.hooked = true;
         }
         self.codec.resume().unwrap();
@@ -319,13 +314,7 @@ impl SidPlayer {
 
         // output routing + headphone volume
         let mut outline = String::new();
-        write!(
-            outline,
-            "Output: {}   HP vol: {} dB",
-            self.output.label(),
-            self.hp_gain_db as i32
-        )
-        .ok();
+        write!(outline, "Output: {}   HP vol: {} dB", self.output.label(), self.hp_gain_db as i32).ok();
         self.text(4, 100, &outline);
 
         let mut line = String::new();

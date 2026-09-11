@@ -43,7 +43,7 @@ pub fn run_prog(prog: String) -> String {
         Ok(ast) => ast,
         Err(e) => {
             println!("{}", e);
-            return String::from(format!("Error {}", e).as_str())
+            return String::from(format!("Error {}", e).as_str());
             //std::process::exit(1);
         }
     };

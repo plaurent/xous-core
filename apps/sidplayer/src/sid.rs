@@ -38,22 +38,22 @@ enum EnvState {
 
 struct Voice {
     // register-derived parameters
-    freq: u32,     // 16-bit
-    pw: u32,       // 12-bit pulse width
-    control: u8,   // waveform + gate/sync/ring/test bits
-    attack: u8,    // 0..15
-    decay: u8,     // 0..15
-    sustain: u8,   // 0..15
-    release: u8,   // 0..15
+    freq: u32,   // 16-bit
+    pw: u32,     // 12-bit pulse width
+    control: u8, // waveform + gate/sync/ring/test bits
+    attack: u8,  // 0..15
+    decay: u8,   // 0..15
+    sustain: u8, // 0..15
+    release: u8, // 0..15
 
     // oscillator state
-    acc: u32,       // 24-bit phase accumulator
+    acc: u32,        // 24-bit phase accumulator
     noise_lfsr: u32, // 23-bit
     prev_msb: bool,  // accumulator bit23 at end of previous step (for sync source)
 
     // envelope state
     env_state: EnvState,
-    env: u8,          // 0..255
+    env: u8, // 0..255
     rate_counter: u16,
     rate_period: u16,
     exp_counter: u8,
@@ -85,21 +85,16 @@ impl Voice {
     }
 
     #[inline]
-    fn gate(&self) -> bool {
-        self.control & 0x01 != 0
-    }
+    fn gate(&self) -> bool { self.control & 0x01 != 0 }
+
     #[inline]
-    fn sync(&self) -> bool {
-        self.control & 0x02 != 0
-    }
+    fn sync(&self) -> bool { self.control & 0x02 != 0 }
+
     #[inline]
-    fn ring(&self) -> bool {
-        self.control & 0x04 != 0
-    }
+    fn ring(&self) -> bool { self.control & 0x04 != 0 }
+
     #[inline]
-    fn test(&self) -> bool {
-        self.control & 0x08 != 0
-    }
+    fn test(&self) -> bool { self.control & 0x08 != 0 }
 
     /// Advance the envelope generator by `n` cycles (batched over rate-hits).
     fn clock_env(&mut self, mut n: u32) {
@@ -199,10 +194,10 @@ impl Voice {
 pub struct Sid {
     voices: [Voice; 3],
     // filter / global
-    fc: u32,        // 11-bit cutoff
-    res: u8,        // 4-bit resonance
-    filt_mask: u8,  // which voices routed to filter (bits 0..2), bit3 = ext
-    mode_vol: u8,   // bit0-3 volume, bit4 LP, bit5 BP, bit6 HP, bit7 3off
+    fc: u32,       // 11-bit cutoff
+    res: u8,       // 4-bit resonance
+    filt_mask: u8, // which voices routed to filter (bits 0..2), bit3 = ext
+    mode_vol: u8,  // bit0-3 volume, bit4 LP, bit5 BP, bit6 HP, bit7 3off
     // Chamberlin SVF state (Q0 integers, small scale)
     f_lp: i32,
     f_bp: i32,
@@ -287,11 +282,7 @@ impl Sid {
     pub fn clock(&mut self, n: u32) {
         // Snapshot old accumulators / MSBs for sync + ring source calculation.
         let old_acc = [self.voices[0].acc, self.voices[1].acc, self.voices[2].acc];
-        let old_msb = [
-            old_acc[0] & 0x80_0000 != 0,
-            old_acc[1] & 0x80_0000 != 0,
-            old_acc[2] & 0x80_0000 != 0,
-        ];
+        let old_msb = [old_acc[0] & 0x80_0000 != 0, old_acc[1] & 0x80_0000 != 0, old_acc[2] & 0x80_0000 != 0];
 
         // Advance oscillators and envelopes.
         let mut new_acc = old_acc;
@@ -364,11 +355,7 @@ impl Sid {
         }
         // Pulse (bit 6)
         if ctrl & 0x40 != 0 {
-            let p = if voice.test() || (acc >> 12) >= voice.pw {
-                0xfff
-            } else {
-                0x000
-            };
+            let p = if voice.test() || (acc >> 12) >= voice.pw { 0xfff } else { 0x000 };
             out &= p;
             any = true;
         }

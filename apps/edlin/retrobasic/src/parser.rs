@@ -1,7 +1,8 @@
+use std::str::FromStr;
+
 use ast::AST;
 use error::{Error, Result};
 use lexer::{Lexer, Token};
-use std::str::FromStr;
 use tokenid::TID;
 
 macro_rules! ast {
@@ -24,30 +25,19 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new(l: Lexer) -> Self {
-        Parser {
-            lex: l,
-            t: Token::new(TID::NONE, None),
-            line_num: 0,
-        }
-    }
+    pub fn new(l: Lexer) -> Self { Parser { lex: l, t: Token::new(TID::NONE, None), line_num: 0 } }
 
     fn consume(&mut self) {
         self.t = self.lex.next_token();
         debug!("Parser::consume next token: {:?}", self.t);
     }
 
-    fn la(&self) -> &Token {
-        &self.t
-    }
+    fn la(&self) -> &Token { &self.t }
 
     fn match_token(&mut self, tid: TID) -> Result<AST> {
         if self.la().id != tid {
             debug!("Expected id: {:?}, got {:?}", tid, self.la().id);
-            return Err(Error::SyntaxError(
-                self.line_num,
-                "UNEXPECTED TOKEN".to_string(),
-            ));
+            return Err(Error::SyntaxError(self.line_num, "UNEXPECTED TOKEN".to_string()));
         }
         let a = AST::new(self.la().clone());
         self.consume();
@@ -64,10 +54,7 @@ impl Parser {
             }
             Err(e) => {
                 debug!("Failed to parse line num, {:?}", e);
-                Err(Error::SyntaxError(
-                    self.line_num,
-                    "INVALID LINE NUMBER".to_string(),
-                ))
+                Err(Error::SyntaxError(self.line_num, "INVALID LINE NUMBER".to_string()))
             }
         }
     }
@@ -88,12 +75,11 @@ impl Parser {
         Ok(a)
     }
 
-    fn parse_end(&mut self) -> Result<AST> {
-        self.match_token(TID::END)
-    }
+    fn parse_end(&mut self) -> Result<AST> { self.match_token(TID::END) }
 
     fn parse_let(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::LET)?
+        Ok(self
+            .match_token(TID::LET)?
             .add_child(self.parse_id()?)
             .nop(self.match_token(TID::EQ)?)
             .add_child(self.parse_expression()?)
@@ -101,7 +87,8 @@ impl Parser {
     }
 
     fn parse_input(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::INPUT)?
+        Ok(self
+            .match_token(TID::INPUT)?
             .add_optional_child(self.parse_optional_prompt()?)
             .add_children(self.parse_id_list()?)
             .finalize())
@@ -110,9 +97,7 @@ impl Parser {
     fn parse_optional_prompt(&mut self) -> Result<Option<AST>> {
         match self.la().id {
             TID::STR => {
-                let a = self.match_token(TID::STR)?
-                    .nop(self.match_token(TID::SEMICOLON)?)
-                    .finalize();
+                let a = self.match_token(TID::STR)?.nop(self.match_token(TID::SEMICOLON)?).finalize();
                 Ok(Some(a))
             }
             _ => Ok(None),
@@ -120,7 +105,8 @@ impl Parser {
     }
 
     fn parse_if(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::IF)?
+        Ok(self
+            .match_token(TID::IF)?
             .add_child(self.parse_expression()?)
             .nop(self.match_token(TID::THEN)?)
             .add_child(self.parse_then()?)
@@ -129,9 +115,9 @@ impl Parser {
 
     fn parse_then(&mut self) -> Result<AST> {
         match self.la().id {
-            TID::INT => Ok(AST::new(Token::new(TID::LNUM, None))
-                .add_child(self.match_token(TID::INT)?)
-                .finalize()),
+            TID::INT => {
+                Ok(AST::new(Token::new(TID::LNUM, None)).add_child(self.match_token(TID::INT)?).finalize())
+            }
             _ => self.parse_statement(),
         }
     }
@@ -159,7 +145,8 @@ impl Parser {
 
     // <Dim Definition> ::= ID '(' <Expression List> ')'
     fn parse_dim_definition(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::ID)?
+        Ok(self
+            .match_token(TID::ID)?
             .nop(self.match_token(TID::LBRK)?)
             .add_children(self.parse_expression_list()?)
             .nop(self.match_token(TID::RBRK)?)
@@ -168,7 +155,8 @@ impl Parser {
 
     // ON ID GOTO <Expression List>
     fn parse_on(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::ON)?
+        Ok(self
+            .match_token(TID::ON)?
             .add_child(self.parse_expression()?)
             .nop(self.match_token(TID::GOTO)?)
             .add_children(self.parse_expression_list()?)
@@ -176,50 +164,37 @@ impl Parser {
     }
 
     fn parse_goto(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::GOTO)?
-            .add_child(self.parse_expression()?)
-            .finalize())
+        Ok(self.match_token(TID::GOTO)?.add_child(self.parse_expression()?).finalize())
     }
 
     // GOSUB <Expression>
     fn parse_gosub(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::GOSUB)?
-            .add_child(self.parse_expression()?)
-            .finalize())
+        Ok(self.match_token(TID::GOSUB)?.add_child(self.parse_expression()?).finalize())
     }
 
     // RETURN
-    fn parse_return(&mut self) -> Result<AST> {
-        self.match_token(TID::RETURN)
-    }
+    fn parse_return(&mut self) -> Result<AST> { self.match_token(TID::RETURN) }
 
     // STOP
-    fn parse_stop(&mut self) -> Result<AST> {
-        self.match_token(TID::STOP)
-    }
+    fn parse_stop(&mut self) -> Result<AST> { self.match_token(TID::STOP) }
 
     // READ <ID List>
     fn parse_read(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::READ)?
-            .add_children(self.parse_id_list()?)
-            .finalize())
+        Ok(self.match_token(TID::READ)?.add_children(self.parse_id_list()?).finalize())
     }
 
     // DATA <Constant List>
     fn parse_data(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::DATA)?
-            .add_children(self.parse_constant_list()?)
-            .finalize())
+        Ok(self.match_token(TID::DATA)?.add_children(self.parse_constant_list()?).finalize())
     }
 
     // RESTORE
-    fn parse_restore(&mut self) -> Result<AST> {
-        self.match_token(TID::RESTORE)
-    }
+    fn parse_restore(&mut self) -> Result<AST> { self.match_token(TID::RESTORE) }
 
     // FOR ID '=' <Expression> TO <Expression> <Step Opt>
     fn parse_for(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::FOR)?
+        Ok(self
+            .match_token(TID::FOR)?
             .add_child(self.match_token(TID::ID)?)
             .nop(self.match_token(TID::EQ)?)
             .add_child(self.parse_expression()?)
@@ -483,7 +458,8 @@ impl Parser {
     fn parse_value(&mut self) -> Result<AST> {
         match self.la().id {
             TID::ID => self.parse_id(),
-            TID::FN => Ok(self.match_token(TID::FN)?
+            TID::FN => Ok(self
+                .match_token(TID::FN)?
                 .nop(self.match_token(TID::LBRK)?)
                 .add_children(self.parse_expression_list()?)
                 .nop(self.match_token(TID::RBRK)?)
@@ -507,7 +483,8 @@ impl Parser {
             | TID::VAL
             | TID::FSTR => {
                 let tid = self.la().id;
-                Ok(self.match_token(tid)?
+                Ok(self
+                    .match_token(tid)?
                     .nop(self.match_token(TID::LBRK)?)
                     .add_child(self.parse_expression()?)
                     .nop(self.match_token(TID::RBRK)?)
@@ -515,7 +492,8 @@ impl Parser {
             }
             TID::LEFT | TID::RIGHT => {
                 let tid = self.la().id;
-                Ok(self.match_token(tid)?
+                Ok(self
+                    .match_token(tid)?
                     .nop(self.match_token(TID::LBRK)?)
                     .add_child(self.parse_expression()?)
                     .nop(self.match_token(TID::COMMA)?)
@@ -523,16 +501,15 @@ impl Parser {
                     .nop(self.match_token(TID::RBRK)?)
                     .finalize())
             }
-            TID::MID => Ok(self.match_token(TID::MID)?
+            TID::MID => Ok(self
+                .match_token(TID::MID)?
                 .nop(self.match_token(TID::LBRK)?)
                 .add_children(self.parse_expression_list()?)
                 .nop(self.match_token(TID::RBRK)?)
                 .finalize()),
             TID::FRE | TID::POS => {
                 let tid = self.la().id;
-                Ok(self.match_token(tid)?
-                    .add_child(self.parse_value()?)
-                    .finalize())
+                Ok(self.match_token(tid)?.add_child(self.parse_value()?).finalize())
             }
             _ => self.parse_constant(),
         }
@@ -557,25 +534,19 @@ impl Parser {
             }
             _ => {
                 debug!("Expected constant, got {:?}", self.la().id);
-                Err(Error::SyntaxError(
-                    self.line_num,
-                    "INVALID CONSTANT".to_string(),
-                ))
+                Err(Error::SyntaxError(self.line_num, "INVALID CONSTANT".to_string()))
             }
         }
     }
 
-    fn parse_newline(&mut self) -> Result<AST> {
-        self.match_token(TID::NL)
-    }
+    fn parse_newline(&mut self) -> Result<AST> { self.match_token(TID::NL) }
 
-    fn parse_rem(&mut self) -> Result<AST> {
-        self.match_token(TID::REM)
-    }
+    fn parse_rem(&mut self) -> Result<AST> { self.match_token(TID::REM) }
 
     // DEF FunctionID '(' <ID List> ')' '=' <Expression>
     fn parse_def(&mut self) -> Result<AST> {
-        Ok(self.match_token(TID::DEF)?
+        Ok(self
+            .match_token(TID::DEF)?
             .add_child(self.match_token(TID::FN)?)
             .nop(self.match_token(TID::LBRK)?)
             .add_children(self.parse_id_list()?)
@@ -608,10 +579,7 @@ impl Parser {
             TID::DEF => self.parse_def(),
             _ => {
                 debug!("Unknown statement, got {:?}", self.la().id);
-                Err(Error::SyntaxError(
-                    self.line_num,
-                    "UNKNOWN STATEMENT".to_string(),
-                ))
+                Err(Error::SyntaxError(self.line_num, "UNKNOWN STATEMENT".to_string()))
             }
         }
     }

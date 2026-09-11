@@ -1,29 +1,24 @@
-use xous::{MessageEnvelope};
 use core::fmt::Write;
 use std::fs::File;
-use std::io::{Write as StdWrite, Error};
+use std::io::Read;
+use std::io::{Error, Write as StdWrite};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::io::{Read};
-use std::net::{IpAddr, TcpStream, TcpListener};
+
+use xous::MessageEnvelope;
 
 const ACCEPT: &str = "Accept";
 const ACCEPT_JSON: &str = "application/json";
 const ACCEPT_TEXTHTML: &str = "text/html";
 
-use ureq;
-
-use retrobasic;
-
-use mail::{ImapChunk, ImapClient, SmtpClient};
-
-use gam::{Gid, Point, Rectangle, TextBounds, TextView, DrawStyle, PixelColor, GlyphStyle};
+use std::collections::HashMap;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-
-
-
-use std::collections::HashMap;
+use gam::{DrawStyle, Gid, GlyphStyle, PixelColor, Point, Rectangle, TextBounds, TextView};
+use mail::{ImapChunk, ImapClient, SmtpClient};
+use retrobasic;
+use ureq;
 /////////////////////////// Common items to all commands
 pub trait ShellCmdApi<'a> {
     // // user implemented:
@@ -32,7 +27,11 @@ pub trait ShellCmdApi<'a> {
     // // returns my verb
     // fn verb(&self) -> &'static str;
     // called to process incoming messages that may have been origniated by the most recently issued command
-    fn callback(&mut self, msg: &MessageEnvelope, _env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
+    fn callback(
+        &mut self,
+        msg: &MessageEnvelope,
+        _env: &mut CommonEnv,
+    ) -> Result<Option<String>, xous::Error> {
         log::info!("received unhandled message {:?}", msg);
         Ok(None)
     }
@@ -67,7 +66,7 @@ pub struct CommonEnv {
     codec: codec::Codec,
     ticktimer: ticktimer_server::Ticktimer,
     gam: gam::Gam,
-    cb_registrations: HashMap::<u32, String>,
+    cb_registrations: HashMap<u32, String>,
     trng: Trng,
     xns: xous_names::XousNames,
 }
@@ -101,18 +100,17 @@ impl CommonEnv {
 ///// 1. add your module here, and pull its namespace into the local crate
 //mod audio;     use audio::*;
 
-
 enum EdlinMode {
     Inserting,
     Command,
-    Editing
+    Editing,
 }
 
 pub struct Edlin {
-    data:Vec<std::string::String>,
+    data: Vec<std::string::String>,
     //data:Vec<String<512>>,
-    mode:EdlinMode,
-    last_loaded_filename:std::string::String,
+    mode: EdlinMode,
+    last_loaded_filename: std::string::String,
     line_cursor: usize,
     current_backlight_setting: u8,
     gam: gam::Gam,
@@ -699,12 +697,13 @@ fn decode_rfc2047(input: &str) -> std::string::String {
 /// (no DOM / CSS) -- enough to make an HTML-only message readable, not a
 /// full renderer.
 fn strip_html(input: &str) -> std::string::String {
-    // 1. Drop <script>/<style> element contents and HTML comments outright,
-    //    so their internals never leak into the text.
-    let without_blocks = remove_html_comments(&remove_html_element(&remove_html_element(input, "script"), "style"));
+    // 1. Drop <script>/<style> element contents and HTML comments outright, so their internals never leak
+    //    into the text.
+    let without_blocks =
+        remove_html_comments(&remove_html_element(&remove_html_element(input, "script"), "style"));
 
-    // 2. Walk the remaining markup: copy text runs, and replace each tag
-    //    with a newline (block-level tags) or nothing (inline tags).
+    // 2. Walk the remaining markup: copy text runs, and replace each tag with a newline (block-level tags) or
+    //    nothing (inline tags).
     let mut out = std::string::String::with_capacity(without_blocks.len());
     let mut rest = without_blocks.as_str();
     while let Some(lt) = rest.find('<') {
@@ -1034,8 +1033,6 @@ fn looks_like_url(s: &str) -> bool {
 }
 
 impl Edlin {
-
-
     fn is_string_numeric(&mut self, str: &std::string::String) -> bool {
         for c in str.chars() {
             if !c.is_numeric() {
@@ -1044,7 +1041,6 @@ impl Edlin {
         }
         return true;
     }
-
 
     fn ls(&mut self) -> Vec<std::string::String> {
         let mut result: Vec<std::string::String> = Vec::new();
@@ -1060,14 +1056,19 @@ impl Edlin {
                 if path.ends_with("_line0") {
                     log::info!("LINE0 path '{}'", path);
                     // TODO use system path separator
-                    let row = format!("{}", std::string::String::from(path).replacen("edlin:", "", 1).replacen("edlin/", "", 1).replace("_line0", ""));
+                    let row = format!(
+                        "{}",
+                        std::string::String::from(path)
+                            .replacen("edlin:", "", 1)
+                            .replacen("edlin/", "", 1)
+                            .replace("_line0", "")
+                    );
                     result.push(row);
                 }
             }
         }
         return result;
     }
-
 
     //pub fn post_string(&mut self, url: &str, request_body: &str) -> Result<ureq::Response, ureq::Error> {
     //ureq::post(&url)
@@ -1076,9 +1077,7 @@ impl Edlin {
     //}
 
     pub fn post_json(&mut self, url: &str, data: &str) -> Result<ureq::Response, ureq::Error> {
-    ureq::post(&url)
-        .set(ACCEPT, ACCEPT_JSON)
-        .send_json(ureq::json!({
+        ureq::post(&url).set(ACCEPT, ACCEPT_JSON).send_json(ureq::json!({
             "data": data
         }))
     }
@@ -1090,12 +1089,10 @@ impl Edlin {
     //}
 
     pub fn get_texthtml(&mut self, url: &str) -> Result<ureq::Response, ureq::Error> {
-    ureq::get(&url)
-        .set(ACCEPT, ACCEPT_TEXTHTML)
-        .call()
+        ureq::get(&url).set(ACCEPT, ACCEPT_TEXTHTML).call()
     }
 
-    pub fn geturl(&mut self, url:&str) -> Option<std::string::String> {
+    pub fn geturl(&mut self, url: &str) -> Option<std::string::String> {
         let response = self.get_texthtml(url);
         match response {
             Ok(response) => {
@@ -1105,7 +1102,7 @@ impl Edlin {
                     Some("Error: could not convert response into String".to_string())
                     //None
                 }
-            },
+            }
             Err(ureq::Error::Status(_code, response)) => {
                 /* the server returned an unexpected status
                 code (such as 400, 500 etc) */
@@ -1119,7 +1116,6 @@ impl Edlin {
                 //log::info!("ERROR in handle_response: {:?}", e);
                 //None
             }
-
         }
         //return self.get_texthtml(url).unwrap().into_string().unwrap();
     }
@@ -1152,8 +1148,8 @@ impl Edlin {
         const EDLIN_DICT: &str = "edlin";
         let mut keypath = PathBuf::new();
         keypath.push(EDLIN_DICT);
-        if std::fs::metadata(&keypath).is_ok() { // keypath exists
-
+        if std::fs::metadata(&keypath).is_ok() {
+            // keypath exists
 
             self.line_cursor = 0;
 
@@ -1162,8 +1158,7 @@ impl Edlin {
                 let mut keypathline = keypath.clone();
                 keypathline.push(key);
 
-
-                if let Ok(mut file)= File::open(keypathline) {
+                if let Ok(mut file) = File::open(keypathline) {
                     let mut value = std::string::String::new();
                     file.read_to_string(&mut value)?;
 
@@ -1178,39 +1173,33 @@ impl Edlin {
                 }
                 log::info!("Loaded {} lines from files.", self.data.len());
             }
-
-
-
         } else {
             log::info!("dict '{}' does NOT exist.. nothing has been saved", EDLIN_DICT);
         }
 
         Ok(())
-
     }
 
     fn save(&mut self, filename: &str) -> Result<(), Error> {
-            const EDLIN_DICT: &str = "edlin";
-            let mut keypath = PathBuf::new();
-            keypath.push(EDLIN_DICT);
-            if std::fs::metadata(&keypath).is_ok() { // keypath exists
-                // log::info!("dict '{}' exists", MTXCLI_DICT);
-            } else {
-                log::info!("dict '{}' does NOT exist.. creating it", EDLIN_DICT);
-                std::fs::create_dir_all(&keypath)?;
-            }
+        const EDLIN_DICT: &str = "edlin";
+        let mut keypath = PathBuf::new();
+        keypath.push(EDLIN_DICT);
+        if std::fs::metadata(&keypath).is_ok() { // keypath exists
+            // log::info!("dict '{}' exists", MTXCLI_DICT);
+        } else {
+            log::info!("dict '{}' does NOT exist.. creating it", EDLIN_DICT);
+            std::fs::create_dir_all(&keypath)?;
+        }
 
+        for (i, line) in self.data.iter().enumerate() {
+            //log::info!("writing line '{}' {} ", i, line);
+            let key = format!("{}_line{}", filename, i);
+            let mut keypathline = keypath.clone();
+            keypathline.push(key);
+            File::create(keypathline)?.write_all(line.as_bytes())?;
+        }
 
-            for (i, line) in self.data.iter().enumerate() {
-                //log::info!("writing line '{}' {} ", i, line);
-                let key = format!("{}_line{}", filename, i);
-                let mut keypathline = keypath.clone();
-                keypathline.push(key);
-                File::create(keypathline)?.write_all(line.as_bytes())?;
-            }
-
-
-            Ok(())
+        Ok(())
     }
 
     ///// Mail commands /////
@@ -1331,7 +1320,7 @@ impl Edlin {
             self.line_cursor = 0;
             return std::string::String::from("Mailbox is empty.");
         }
-        log::info!("--> total ok, {}" , total);
+        log::info!("--> total ok, {}", total);
 
         let n = (count.max(1) as u32).min(total);
         let start = if total > n { total - n + 1 } else { 1 };
@@ -1462,8 +1451,8 @@ impl Edlin {
         if recency_index == 0 {
             return Err(std::string::String::from("Message number must be 1 or greater."));
         }
-        let mut client =
-            ImapClient::connect(&self.imap_host, self.imap_port).map_err(|e| format!("IMAP connect failed: {}", e))?;
+        let mut client = ImapClient::connect(&self.imap_host, self.imap_port)
+            .map_err(|e| format!("IMAP connect failed: {}", e))?;
         client.login(&self.imap_user, &self.imap_pass).map_err(|e| format!("IMAP login failed: {}", e))?;
         let select_resp = client.select("INBOX").map_err(|e| format!("IMAP SELECT failed: {}", e))?;
         let total = parse_exists(&select_resp).unwrap_or(0);
@@ -1481,19 +1470,21 @@ impl Edlin {
         // gives us the total byte count up front, so `done/total` is exact.
         // Redraw only when the whole percent changes, to avoid flooding GAM.
         let mut last_pct = usize::MAX;
-        let responses = match client.fetch_with_progress(&seq.to_string(), "BODY.PEEK[]", &mut |done, total| {
-            let pct = if total == 0 { 100 } else { (done.min(total) as u64 * 100 / total as u64) as usize };
-            if pct != last_pct {
-                last_pct = pct;
-                self.draw_progress("Downloading message...", done, total);
-            }
-        }) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = client.logout();
-                return Err(format!("IMAP FETCH failed: {}", e));
-            }
-        };
+        let responses =
+            match client.fetch_with_progress(&seq.to_string(), "BODY.PEEK[]", &mut |done, total| {
+                let pct =
+                    if total == 0 { 100 } else { (done.min(total) as u64 * 100 / total as u64) as usize };
+                if pct != last_pct {
+                    last_pct = pct;
+                    self.draw_progress("Downloading message...", done, total);
+                }
+            }) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = client.logout();
+                    return Err(format!("IMAP FETCH failed: {}", e));
+                }
+            };
         let _ = client.logout();
 
         // Reassemble the raw message from the literal chunk(s); a
@@ -1639,8 +1630,7 @@ impl Edlin {
         format!("Sent to {}.", to_addr)
     }
 
-    pub fn process(&mut self, line:&std::string::String) -> Vec<std::string::String> {
-
+    pub fn process(&mut self, line: &std::string::String) -> Vec<std::string::String> {
         match self.mode {
             EdlinMode::Inserting => {
                 if line.trim().eq(".") {
@@ -1707,7 +1697,7 @@ impl Edlin {
                     log::info!("--> posting {}", line);
                     let url = line.replace("t ", "");
 
-                    let body= self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
+                    let body = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
                     // let body = std::string::String::from("This is a test of data via json");
                     let result = self.post_json(url.as_str(), body.as_str()).expect("Post didn't work");
                     log::info!("--> posted {}", line);
@@ -1715,20 +1705,27 @@ impl Edlin {
                     log::info!("result was {}", result_string);
                     return vec![result_string];
                 }
-                if line.starts_with("b") {  // set brightness
+                if line.starts_with("b") {
+                    // set brightness
                     let digits: Vec<&str> = line.matches(char::is_numeric).collect();
                     // Bare "b" (no digits) or a value over 255 won't parse as
                     // u8 -- report it instead of panicking.
                     let number = match digits.join("").parse::<u8>() {
                         Ok(n) => n,
-                        Err(_) => return vec![format!("Invalid brightness: '{}'. Use e.g. b128 (0-255).", line)],
+                        Err(_) => {
+                            return vec![format!("Invalid brightness: '{}'. Use e.g. b128 (0-255).", line)];
+                        }
                     };
                     self.current_backlight_setting = number;
-                    self.com.set_backlight(self.current_backlight_setting, self.current_backlight_setting).unwrap();
+                    self.com
+                        .set_backlight(self.current_backlight_setting, self.current_backlight_setting)
+                        .unwrap();
                     return vec![format!("Brightness set to {}/255.", self.current_backlight_setting)];
                 }
-                if line.starts_with("z") {  // run BASIC
-                    let mut one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
+                if line.starts_with("z") {
+                    // run BASIC
+                    let mut one_long_string =
+                        self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n");
                     one_long_string.push_str("\n");
                     let result = retrobasic::run_prog(one_long_string);
                     return vec![format!("{}", result)];
@@ -1772,11 +1769,18 @@ impl Edlin {
                         // for the default width.
                         match digits.join("").parse::<usize>() {
                             Ok(number) => len_for_wrap = number,
-                            Err(_) => return vec![format!("Invalid wrap width: '{}'. Use e.g. 40# or just #.", line)],
+                            Err(_) => {
+                                return vec![format!(
+                                    "Invalid wrap width: '{}'. Use e.g. 40# or just #.",
+                                    line
+                                )];
+                            }
                         }
                     }
-                    let one_long_string = self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-                    let remove_dup_spaces_and_newlines = one_long_string.replace("  ", " ").replace("\n\n", "\n");
+                    let one_long_string =
+                        self.data.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+                    let remove_dup_spaces_and_newlines =
+                        one_long_string.replace("  ", " ").replace("\n\n", "\n");
                     let words = remove_dup_spaces_and_newlines.split(" ");
                     self.data.clear();
                     let mut line = std::string::String::new();
@@ -1807,7 +1811,10 @@ impl Edlin {
 
                         if is_mail_file {
                             let summary = self.apply_mail_config();
-                            return vec![format!("Save '{}' ok *{}: {}", filename, self.line_cursor, summary)];
+                            return vec![format!(
+                                "Save '{}' ok *{}: {}",
+                                filename, self.line_cursor, summary
+                            )];
                         }
                         return vec![format!("Save '{}' ok *{}", filename.clone(), self.line_cursor)];
                     } else {
@@ -1822,7 +1829,7 @@ impl Edlin {
                         }
                     }
                 }
-                if line.to_lowercase().starts_with("r"){
+                if line.to_lowercase().starts_with("r") {
                     // Strip only the initial "r"/"R" command char (plus any
                     // following whitespace); a plain replacen("r", ...) would
                     // also eat an r/R inside the filename itself.
@@ -1857,7 +1864,7 @@ impl Edlin {
                         return vec![std::string::String::from("Please enter a filename after r.")];
                     }
                 }
-                if line.to_lowercase().starts_with("x"){
+                if line.to_lowercase().starts_with("x") {
                     // Strip only the initial "x"/"X" command char (plus any
                     // following whitespace); a plain replacen("x", ...) would
                     // also eat an x/X inside the filename itself.
@@ -1871,9 +1878,15 @@ impl Edlin {
                         return vec![std::string::String::from("Please enter a filename after x.")];
                     }
                 }
-                if line.to_lowercase().starts_with("?"){
-                    //return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
-                    return vec![format!("Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all (or 3l / 0,3l for range)\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)\nr mail / w mail  load/save IMAP+SMTP creds (key=value lines)", self.line_cursor, self.data.len())];
+                if line.to_lowercase().starts_with("?") {
+                    //return vec![std::string::String::from("Edlin help.\ni insert\nd delete\nw write\nr
+                    // read\n* list files\nx delete file\nnumber edit/select line\nl list all\np print\nn next
+                    // n lines\n[num]# wrap text\nu get http url\nb [num] set brightness")];
+                    return vec![format!(
+                        "Edlin help. {}/{}.\ni insert\nd delete\nw write\nr read\n* list files\nx delete file\nnumber edit/select line\nl list all (or 3l / 0,3l for range)\np print\nn next n lines\n[num]# wrap text\nu get http url\nb [num] set brightness\nms [num] IMAP list num (default 10) recent subjects\nmr # IMAP load message # (1=newest)\nmz # IMAP load message # body only, no headers\nmt addr SMTP send buffer to addr (line0=subject)\nr mail / w mail  load/save IMAP+SMTP creds (key=value lines)",
+                        self.line_cursor,
+                        self.data.len()
+                    )];
                 }
                 if line.to_lowercase().starts_with("i") || line.to_lowercase().ends_with("i") {
                     if !line.to_lowercase().starts_with("i") {
@@ -1900,8 +1913,10 @@ impl Edlin {
                         let pair: Vec<&str> = without_d.split(',').collect();
                         // A malformed range like "d3," / "d,5" / "dx,y" would
                         // otherwise panic here -- report the bad input instead.
-                        match (pair.get(0).and_then(|s| s.trim().parse::<usize>().ok()),
-                               pair.get(1).and_then(|s| s.trim().parse::<usize>().ok())) {
+                        match (
+                            pair.get(0).and_then(|s| s.trim().parse::<usize>().ok()),
+                            pair.get(1).and_then(|s| s.trim().parse::<usize>().ok()),
+                        ) {
                             (Some(start), Some(cease)) => {
                                 del_start = start;
                                 del_cease = cease;
@@ -1946,7 +1961,7 @@ impl Edlin {
                     return vec![format!("Deleted {} to {}", del_start, del_cease)];
                 }
                 if line.contains("v") || line.contains("v") {
-                    return self.data.clone()
+                    return self.data.clone();
                 }
                 if line.contains("*") {
                     return self.ls();
@@ -1966,8 +1981,10 @@ impl Edlin {
                         let pair: Vec<&str> = without_l.split(',').collect();
                         // A malformed range like "3,l" / ",5l" / "x,yl" would
                         // otherwise panic here -- report the bad input instead.
-                        match (pair.get(0).and_then(|s| s.trim().parse::<usize>().ok()),
-                               pair.get(1).and_then(|s| s.trim().parse::<usize>().ok())) {
+                        match (
+                            pair.get(0).and_then(|s| s.trim().parse::<usize>().ok()),
+                            pair.get(1).and_then(|s| s.trim().parse::<usize>().ok()),
+                        ) {
                             (Some(start), Some(cease)) => {
                                 list_start = start;
                                 list_cease = cease;
@@ -2019,7 +2036,7 @@ impl Edlin {
                     let num_lines_per_page = 5;
                     let mut result: Vec<std::string::String> = Vec::new();
                     let mut upto = self.line_cursor + num_lines_per_page;
-                    if upto > self.data.len()  {
+                    if upto > self.data.len() {
                         upto = self.data.len();
                     }
                     // Clamp the cursor before slicing: an out-of-range jump
@@ -2030,11 +2047,11 @@ impl Edlin {
                         self.line_cursor = self.data.len();
                     }
                     for (i, line) in self.data[self.line_cursor..upto].iter().enumerate() {
-                        result.insert(i, format!("{}: {}", self.line_cursor+i, line));
+                        result.insert(i, format!("{}: {}", self.line_cursor + i, line));
                     }
                     self.line_cursor = self.line_cursor + num_lines_per_page;
-                    if self.line_cursor > self.data.len()-1 {
-                        self.line_cursor = self.data.len()-1;
+                    if self.line_cursor > self.data.len() - 1 {
+                        self.line_cursor = self.data.len() - 1;
                     }
                     return result;
                 }
@@ -2054,14 +2071,16 @@ impl Edlin {
                             // run overflows usize. Report rather than panic.
                             match digits.join("").parse::<usize>() {
                                 Ok(line_to_next_from) => self.line_cursor = line_to_next_from,
-                                Err(_) => return vec![format!("Invalid line number: '{}'. Use e.g. 3p.", line)],
+                                Err(_) => {
+                                    return vec![format!("Invalid line number: '{}'. Use e.g. 3p.", line)];
+                                }
                             }
                         }
                     }
                     let num_lines_per_page = 5;
                     let mut result: Vec<std::string::String> = Vec::new();
                     let mut upto = self.line_cursor + num_lines_per_page;
-                    if upto > self.data.len()  {
+                    if upto > self.data.len() {
                         upto = self.data.len();
                     }
                     if self.line_cursor > self.data.len() {
@@ -2075,20 +2094,16 @@ impl Edlin {
                     let remove_dup_spaces = one_long_string.replace("  ", " ");
 
                     self.line_cursor = self.line_cursor + num_lines_per_page;
-                    if self.line_cursor > self.data.len()-1 {
-                        self.line_cursor = self.data.len()-1;
+                    if self.line_cursor > self.data.len() - 1 {
+                        self.line_cursor = self.data.len() - 1;
                     }
-                    return vec!(remove_dup_spaces);
+                    return vec![remove_dup_spaces];
                 }
             }
         }
         return Vec::new();
     }
 }
-
-
-
-
 
 pub struct CmdEnv {
     common_env: CommonEnv,
@@ -2143,15 +2158,13 @@ impl CmdEnv {
         //edlin.data.push(std::string::String::from("This is a test."));
         //edlin.line_cursor = 2;
 
-
-
         log::info!("done creating CommonEnv");
         CmdEnv {
             common_env: common,
             lastverb: String::new(),
             ///// 3. initialize your storage, by calling new()
             //audio_cmd: Audio::new(&xns),
-            edlin: edlin,
+            edlin,
         }
     }
 
@@ -2163,42 +2176,44 @@ impl CmdEnv {
         self.edlin.screensize = screensize;
     }
 
-    pub fn dispatch(&mut self, maybe_cmdline: Option<&mut String>, maybe_callback: Option<&MessageEnvelope>) -> Result<Option<String>, xous::Error> {
+    pub fn dispatch(
+        &mut self,
+        maybe_cmdline: Option<&mut String>,
+        maybe_callback: Option<&MessageEnvelope>,
+    ) -> Result<Option<String>, xous::Error> {
         let mut ret = String::new();
 
-        let commands: &mut [& mut dyn ShellCmdApi] = &mut [
+        let commands: &mut [&mut dyn ShellCmdApi] = &mut [
             ///// 4. add your command to this array, so that it can be looked up and dispatched
             //&mut self.audio_cmd,
         ];
 
         if let Some(cmdline) = maybe_cmdline {
-
             match self.edlin.mode {
-                EdlinMode::Command => {
-                }
-                EdlinMode::Editing => {
-                }
-                EdlinMode::Inserting => {
-                }
+                EdlinMode::Command => {}
+                EdlinMode::Editing => {}
+                EdlinMode::Inserting => {}
             }
             let line = std::string::String::from(cmdline.as_str());
-            self.edlin.com.set_backlight(self.edlin.current_backlight_setting, self.edlin.current_backlight_setting).unwrap();
+            self.edlin
+                .com
+                .set_backlight(self.edlin.current_backlight_setting, self.edlin.current_backlight_setting)
+                .unwrap();
 
             let result = self.edlin.process(&line);
             //let result = self.edlin.process(&std::string::String::from(line.trim()));
 
             //for result_line in result {
-            for (i, result_line) in result.iter().enumerate() {  // self.data.iter().enumerate() {
-                if i < result.len()-1 {
+            for (i, result_line) in result.iter().enumerate() {
+                // self.data.iter().enumerate() {
+                if i < result.len() - 1 {
                     let _ = write!(ret, "{}\n", result_line);
                 } else {
                     let _ = write!(ret, "{}", result_line);
                 }
             }
 
-
             Ok(Some(ret))
-
 
             //let maybe_verb = tokenize(cmdline);
 
@@ -2240,12 +2255,8 @@ impl CmdEnv {
             let mut cmd_ret: Result<Option<String>, xous::Error> = Ok(None);
             // first check and see if we have a callback registration; if not, just map to the last verb
             let verb = match self.common_env.cb_registrations.get(&(callback.body.id() as u32)) {
-                Some(verb) => {
-                    verb
-                },
-                None => {
-                    &self.lastverb
-                }
+                Some(verb) => verb,
+                None => &self.lastverb,
             };
             // now dispatch
             let mut verbfound = false;
@@ -2256,14 +2267,9 @@ impl CmdEnv {
                     break;
                 };
             }
-            if verbfound {
-                cmd_ret
-            } else {
-                Ok(None)
-            }
+            if verbfound { cmd_ret } else { Ok(None) }
         } else {
             Ok(None)
         }
     }
 }
-

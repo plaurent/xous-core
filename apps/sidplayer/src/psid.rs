@@ -69,20 +69,13 @@ impl heapless_str {
 }
 
 impl core::fmt::Debug for heapless_str {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:?}", self.as_str())
-    }
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { write!(f, "{:?}", self.as_str()) }
 }
 
-fn be16(b: &[u8], off: usize) -> u16 {
-    ((b[off] as u16) << 8) | (b[off + 1] as u16)
-}
+fn be16(b: &[u8], off: usize) -> u16 { ((b[off] as u16) << 8) | (b[off + 1] as u16) }
 
 fn be32(b: &[u8], off: usize) -> u32 {
-    ((b[off] as u32) << 24)
-        | ((b[off + 1] as u32) << 16)
-        | ((b[off + 2] as u32) << 8)
-        | (b[off + 3] as u32)
+    ((b[off] as u32) << 24) | ((b[off + 1] as u32) << 16) | ((b[off + 2] as u32) << 8) | (b[off + 3] as u32)
 }
 
 impl<'a> Psid<'a> {

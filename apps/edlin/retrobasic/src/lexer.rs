@@ -1,4 +1,5 @@
 use std::fmt;
+
 use tokenid::TID;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -8,9 +9,7 @@ pub struct Token {
 }
 
 impl Token {
-    pub fn new(tid: TID, v: Option<String>) -> Self {
-        Token { id: tid, val: v }
-    }
+    pub fn new(tid: TID, v: Option<String>) -> Self { Token { id: tid, val: v } }
 }
 
 impl fmt::Display for Token {
@@ -38,11 +37,7 @@ pub struct Lexer {
 
 impl Lexer {
     pub fn new(s: String) -> Self {
-        let mut l = Lexer {
-            buf: s.into_bytes(),
-            curr: 0,
-            c: '\0',
-        };
+        let mut l = Lexer { buf: s.into_bytes(), curr: 0, c: '\0' };
         if l.buf.len() > 0 {
             l.c = l.buf[0] as char;
         };
@@ -51,16 +46,10 @@ impl Lexer {
 
     fn consume(&mut self) {
         self.curr = self.curr + 1;
-        self.c = if self.curr < self.buf.len() {
-            self.buf[self.curr] as char
-        } else {
-            '\0'
-        };
+        self.c = if self.curr < self.buf.len() { self.buf[self.curr] as char } else { '\0' };
     }
 
-    fn la(&self) -> char {
-        self.c
-    }
+    fn la(&self) -> char { self.c }
 
     fn newline(&mut self) -> Token {
         self.consume();
@@ -127,8 +116,10 @@ impl Lexer {
             s.push(self.la());
             last_ch = self.la();
             self.consume();
-            if !self.la().is_alphanumeric() || (TID::from(s.as_str()) != TID::NONE)
-                || last_ch.is_numeric() || (self.la().is_numeric() && (s.len() > 2))
+            if !self.la().is_alphanumeric()
+                || (TID::from(s.as_str()) != TID::NONE)
+                || last_ch.is_numeric()
+                || (self.la().is_numeric() && (s.len() > 2))
             {
                 break;
             };
@@ -167,9 +158,7 @@ impl Lexer {
             '0'..='9' | '.' => self.number(),
             '"' => self.str(),
             'a'..='z' | 'A'..='Z' => self.identifier(),
-            '=' | ':' | ';' | ',' | '*' | '/' | '+' | '-' | '^' | '<' | '>' | '(' | ')' => {
-                self.operator()
-            }
+            '=' | ':' | ';' | ',' | '*' | '/' | '+' | '-' | '^' | '<' | '>' | '(' | ')' => self.operator(),
             _ => Token::new(TID::NONE, None),
         }
     }

@@ -77,11 +77,7 @@ impl Cpu {
     #[inline]
     pub fn write(&mut self, addr: u16, val: u8) {
         if (0xd400..=0xd418).contains(&addr) {
-            self.writes.push(RegWrite {
-                cycle: self.cycle,
-                reg: (addr - 0xd400) as u8,
-                val,
-            });
+            self.writes.push(RegWrite { cycle: self.cycle, reg: (addr - 0xd400) as u8, val });
         }
         // Mirror the whole SID page write into RAM too; harmless and lets tunes
         // that read back their own shadow copies work if they live elsewhere.
@@ -99,6 +95,7 @@ impl Cpu {
         self.mem[0x0100 + self.sp as usize] = v;
         self.sp = self.sp.wrapping_sub(1);
     }
+
     #[inline]
     fn pull(&mut self) -> u8 {
         self.sp = self.sp.wrapping_add(1);
@@ -114,6 +111,7 @@ impl Cpu {
         }
         self.p |= v & FLAG_N;
     }
+
     #[inline]
     fn set_flag(&mut self, mask: u8, cond: bool) {
         if cond {
@@ -122,10 +120,9 @@ impl Cpu {
             self.p &= !mask;
         }
     }
+
     #[inline]
-    fn flag(&self, mask: u8) -> bool {
-        self.p & mask != 0
-    }
+    fn flag(&self, mask: u8) -> bool { self.p & mask != 0 }
 
     // ---- fetch ----
     #[inline]
@@ -134,6 +131,7 @@ impl Cpu {
         self.pc = self.pc.wrapping_add(1);
         v
     }
+
     #[inline]
     fn fetch16(&mut self) -> u16 {
         let lo = self.fetch() as u16;
@@ -145,21 +143,17 @@ impl Cpu {
     // Each returns the effective address; page-cross penalty is accounted where
     // relevant by the caller via `pc_crossed`.
     #[inline]
-    fn a_zp(&mut self) -> u16 {
-        self.fetch() as u16
-    }
+    fn a_zp(&mut self) -> u16 { self.fetch() as u16 }
+
     #[inline]
-    fn a_zpx(&mut self) -> u16 {
-        (self.fetch().wrapping_add(self.x)) as u16
-    }
+    fn a_zpx(&mut self) -> u16 { (self.fetch().wrapping_add(self.x)) as u16 }
+
     #[inline]
-    fn a_zpy(&mut self) -> u16 {
-        (self.fetch().wrapping_add(self.y)) as u16
-    }
+    fn a_zpy(&mut self) -> u16 { (self.fetch().wrapping_add(self.y)) as u16 }
+
     #[inline]
-    fn a_abs(&mut self) -> u16 {
-        self.fetch16()
-    }
+    fn a_abs(&mut self) -> u16 { self.fetch16() }
+
     #[inline]
     fn a_absx(&mut self, extra: &mut u32) -> u16 {
         let base = self.fetch16();
@@ -169,6 +163,7 @@ impl Cpu {
         }
         addr
     }
+
     #[inline]
     fn a_absy(&mut self, extra: &mut u32) -> u16 {
         let base = self.fetch16();
@@ -178,6 +173,7 @@ impl Cpu {
         }
         addr
     }
+
     #[inline]
     fn a_izx(&mut self) -> u16 {
         let zp = self.fetch().wrapping_add(self.x);
@@ -185,6 +181,7 @@ impl Cpu {
         let hi = self.read(zp.wrapping_add(1) as u16) as u16;
         lo | (hi << 8)
     }
+
     #[inline]
     fn a_izy(&mut self, extra: &mut u32) -> u16 {
         let zp = self.fetch();
@@ -213,10 +210,7 @@ impl Cpu {
             let bin = (a as u16).wrapping_add(val as u16).wrapping_add(if self.flag(FLAG_C) { 1 } else { 0 });
             self.set_flag(FLAG_Z, (bin & 0xff) == 0);
             self.set_flag(FLAG_N, (hi & 0x08) != 0);
-            self.set_flag(
-                FLAG_V,
-                (!(a ^ val) & (a ^ ((hi << 4) | (lo & 0x0f))) & 0x80) != 0,
-            );
+            self.set_flag(FLAG_V, (!(a ^ val) & (a ^ ((hi << 4) | (lo & 0x0f))) & 0x80) != 0);
             if hi > 9 {
                 hi += 6;
             }
@@ -246,9 +240,7 @@ impl Cpu {
             if hi < 0 {
                 hi -= 6;
             }
-            let bin = (a as u16)
-                .wrapping_sub(val as u16)
-                .wrapping_sub(carry as u16);
+            let bin = (a as u16).wrapping_sub(val as u16).wrapping_sub(carry as u16);
             let res = bin as u8;
             self.set_flag(FLAG_C, diff >= 0);
             self.set_flag(FLAG_V, ((a ^ val) & (a ^ res) & 0x80) != 0);
@@ -277,12 +269,14 @@ impl Cpu {
         self.set_zn(r);
         r
     }
+
     fn lsr(&mut self, v: u8) -> u8 {
         self.set_flag(FLAG_C, v & 0x01 != 0);
         let r = v >> 1;
         self.set_zn(r);
         r
     }
+
     fn rol(&mut self, v: u8) -> u8 {
         let c = if self.flag(FLAG_C) { 1 } else { 0 };
         self.set_flag(FLAG_C, v & 0x80 != 0);
@@ -290,6 +284,7 @@ impl Cpu {
         self.set_zn(r);
         r
     }
+
     fn ror(&mut self, v: u8) -> u8 {
         let c = if self.flag(FLAG_C) { 0x80 } else { 0 };
         self.set_flag(FLAG_C, v & 0x01 != 0);
@@ -327,165 +322,740 @@ impl Cpu {
 
         match op {
             // ---- ORA ----
-            0x09 => { let a = self.a_zp_imm(); self.a |= a; let v = self.a; self.set_zn(v); }
-            0x05 => { let ad = self.a_zp(); let m = self.read(ad); self.a |= m; let v=self.a; self.set_zn(v); }
-            0x15 => { let ad = self.a_zpx(); let m = self.read(ad); self.a |= m; let v=self.a; self.set_zn(v); }
-            0x0d => { let ad = self.a_abs(); let m = self.read(ad); self.a |= m; let v=self.a; self.set_zn(v); }
-            0x1d => { let ad = self.a_absx(&mut extra); let m = self.read(ad); self.a |= m; let v=self.a; self.set_zn(v); }
-            0x19 => { let ad = self.a_absy(&mut extra); let m = self.read(ad); self.a |= m; let v=self.a; self.set_zn(v); }
-            0x01 => { let ad = self.a_izx(); let m = self.read(ad); self.a |= m; let v=self.a; self.set_zn(v); }
-            0x11 => { let ad = self.a_izy(&mut extra); let m = self.read(ad); self.a |= m; let v=self.a; self.set_zn(v); }
+            0x09 => {
+                let a = self.a_zp_imm();
+                self.a |= a;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x05 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.a |= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x15 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                self.a |= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x0d => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.a |= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x1d => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                self.a |= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x19 => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.a |= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x01 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                self.a |= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x11 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                self.a |= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
 
             // ---- AND ----
-            0x29 => { let m = self.a_zp_imm(); self.a &= m; let v=self.a; self.set_zn(v); }
-            0x25 => { let ad = self.a_zp(); let m = self.read(ad); self.a &= m; let v=self.a; self.set_zn(v); }
-            0x35 => { let ad = self.a_zpx(); let m = self.read(ad); self.a &= m; let v=self.a; self.set_zn(v); }
-            0x2d => { let ad = self.a_abs(); let m = self.read(ad); self.a &= m; let v=self.a; self.set_zn(v); }
-            0x3d => { let ad = self.a_absx(&mut extra); let m = self.read(ad); self.a &= m; let v=self.a; self.set_zn(v); }
-            0x39 => { let ad = self.a_absy(&mut extra); let m = self.read(ad); self.a &= m; let v=self.a; self.set_zn(v); }
-            0x21 => { let ad = self.a_izx(); let m = self.read(ad); self.a &= m; let v=self.a; self.set_zn(v); }
-            0x31 => { let ad = self.a_izy(&mut extra); let m = self.read(ad); self.a &= m; let v=self.a; self.set_zn(v); }
+            0x29 => {
+                let m = self.a_zp_imm();
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x25 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x35 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x2d => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x3d => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x39 => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x21 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x31 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                self.a &= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
 
             // ---- EOR ----
-            0x49 => { let m = self.a_zp_imm(); self.a ^= m; let v=self.a; self.set_zn(v); }
-            0x45 => { let ad = self.a_zp(); let m = self.read(ad); self.a ^= m; let v=self.a; self.set_zn(v); }
-            0x55 => { let ad = self.a_zpx(); let m = self.read(ad); self.a ^= m; let v=self.a; self.set_zn(v); }
-            0x4d => { let ad = self.a_abs(); let m = self.read(ad); self.a ^= m; let v=self.a; self.set_zn(v); }
-            0x5d => { let ad = self.a_absx(&mut extra); let m = self.read(ad); self.a ^= m; let v=self.a; self.set_zn(v); }
-            0x59 => { let ad = self.a_absy(&mut extra); let m = self.read(ad); self.a ^= m; let v=self.a; self.set_zn(v); }
-            0x41 => { let ad = self.a_izx(); let m = self.read(ad); self.a ^= m; let v=self.a; self.set_zn(v); }
-            0x51 => { let ad = self.a_izy(&mut extra); let m = self.read(ad); self.a ^= m; let v=self.a; self.set_zn(v); }
+            0x49 => {
+                let m = self.a_zp_imm();
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x45 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x55 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x4d => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x5d => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x59 => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x41 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
+            0x51 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                self.a ^= m;
+                let v = self.a;
+                self.set_zn(v);
+            }
 
             // ---- ADC ----
-            0x69 => { let m = self.a_zp_imm(); self.adc(m); }
-            0x65 => { let ad = self.a_zp(); let m=self.read(ad); self.adc(m); }
-            0x75 => { let ad = self.a_zpx(); let m=self.read(ad); self.adc(m); }
-            0x6d => { let ad = self.a_abs(); let m=self.read(ad); self.adc(m); }
-            0x7d => { let ad = self.a_absx(&mut extra); let m=self.read(ad); self.adc(m); }
-            0x79 => { let ad = self.a_absy(&mut extra); let m=self.read(ad); self.adc(m); }
-            0x61 => { let ad = self.a_izx(); let m=self.read(ad); self.adc(m); }
-            0x71 => { let ad = self.a_izy(&mut extra); let m=self.read(ad); self.adc(m); }
+            0x69 => {
+                let m = self.a_zp_imm();
+                self.adc(m);
+            }
+            0x65 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.adc(m);
+            }
+            0x75 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                self.adc(m);
+            }
+            0x6d => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.adc(m);
+            }
+            0x7d => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                self.adc(m);
+            }
+            0x79 => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.adc(m);
+            }
+            0x61 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                self.adc(m);
+            }
+            0x71 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                self.adc(m);
+            }
 
             // ---- SBC ----
-            0xe9 | 0xeb => { let m = self.a_zp_imm(); self.sbc(m); }
-            0xe5 => { let ad = self.a_zp(); let m=self.read(ad); self.sbc(m); }
-            0xf5 => { let ad = self.a_zpx(); let m=self.read(ad); self.sbc(m); }
-            0xed => { let ad = self.a_abs(); let m=self.read(ad); self.sbc(m); }
-            0xfd => { let ad = self.a_absx(&mut extra); let m=self.read(ad); self.sbc(m); }
-            0xf9 => { let ad = self.a_absy(&mut extra); let m=self.read(ad); self.sbc(m); }
-            0xe1 => { let ad = self.a_izx(); let m=self.read(ad); self.sbc(m); }
-            0xf1 => { let ad = self.a_izy(&mut extra); let m=self.read(ad); self.sbc(m); }
+            0xe9 | 0xeb => {
+                let m = self.a_zp_imm();
+                self.sbc(m);
+            }
+            0xe5 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.sbc(m);
+            }
+            0xf5 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                self.sbc(m);
+            }
+            0xed => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.sbc(m);
+            }
+            0xfd => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                self.sbc(m);
+            }
+            0xf9 => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.sbc(m);
+            }
+            0xe1 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                self.sbc(m);
+            }
+            0xf1 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                self.sbc(m);
+            }
 
             // ---- CMP ----
-            0xc9 => { let m = self.a_zp_imm(); let a=self.a; self.cmp_reg(a,m); }
-            0xc5 => { let ad=self.a_zp(); let m=self.read(ad); let a=self.a; self.cmp_reg(a,m); }
-            0xd5 => { let ad=self.a_zpx(); let m=self.read(ad); let a=self.a; self.cmp_reg(a,m); }
-            0xcd => { let ad=self.a_abs(); let m=self.read(ad); let a=self.a; self.cmp_reg(a,m); }
-            0xdd => { let ad=self.a_absx(&mut extra); let m=self.read(ad); let a=self.a; self.cmp_reg(a,m); }
-            0xd9 => { let ad=self.a_absy(&mut extra); let m=self.read(ad); let a=self.a; self.cmp_reg(a,m); }
-            0xc1 => { let ad=self.a_izx(); let m=self.read(ad); let a=self.a; self.cmp_reg(a,m); }
-            0xd1 => { let ad=self.a_izy(&mut extra); let m=self.read(ad); let a=self.a; self.cmp_reg(a,m); }
+            0xc9 => {
+                let m = self.a_zp_imm();
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
+            0xc5 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
+            0xd5 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
+            0xcd => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
+            0xdd => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
+            0xd9 => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
+            0xc1 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
+            0xd1 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                let a = self.a;
+                self.cmp_reg(a, m);
+            }
 
             // ---- CPX / CPY ----
-            0xe0 => { let m=self.a_zp_imm(); let x=self.x; self.cmp_reg(x,m); }
-            0xe4 => { let ad=self.a_zp(); let m=self.read(ad); let x=self.x; self.cmp_reg(x,m); }
-            0xec => { let ad=self.a_abs(); let m=self.read(ad); let x=self.x; self.cmp_reg(x,m); }
-            0xc0 => { let m=self.a_zp_imm(); let y=self.y; self.cmp_reg(y,m); }
-            0xc4 => { let ad=self.a_zp(); let m=self.read(ad); let y=self.y; self.cmp_reg(y,m); }
-            0xcc => { let ad=self.a_abs(); let m=self.read(ad); let y=self.y; self.cmp_reg(y,m); }
+            0xe0 => {
+                let m = self.a_zp_imm();
+                let x = self.x;
+                self.cmp_reg(x, m);
+            }
+            0xe4 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                let x = self.x;
+                self.cmp_reg(x, m);
+            }
+            0xec => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                let x = self.x;
+                self.cmp_reg(x, m);
+            }
+            0xc0 => {
+                let m = self.a_zp_imm();
+                let y = self.y;
+                self.cmp_reg(y, m);
+            }
+            0xc4 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                let y = self.y;
+                self.cmp_reg(y, m);
+            }
+            0xcc => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                let y = self.y;
+                self.cmp_reg(y, m);
+            }
 
             // ---- LDA ----
-            0xa9 => { let m=self.a_zp_imm(); self.a=m; self.set_zn(m); }
-            0xa5 => { let ad=self.a_zp(); let m=self.read(ad); self.a=m; self.set_zn(m); }
-            0xb5 => { let ad=self.a_zpx(); let m=self.read(ad); self.a=m; self.set_zn(m); }
-            0xad => { let ad=self.a_abs(); let m=self.read(ad); self.a=m; self.set_zn(m); }
-            0xbd => { let ad=self.a_absx(&mut extra); let m=self.read(ad); self.a=m; self.set_zn(m); }
-            0xb9 => { let ad=self.a_absy(&mut extra); let m=self.read(ad); self.a=m; self.set_zn(m); }
-            0xa1 => { let ad=self.a_izx(); let m=self.read(ad); self.a=m; self.set_zn(m); }
-            0xb1 => { let ad=self.a_izy(&mut extra); let m=self.read(ad); self.a=m; self.set_zn(m); }
+            0xa9 => {
+                let m = self.a_zp_imm();
+                self.a = m;
+                self.set_zn(m);
+            }
+            0xa5 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.a = m;
+                self.set_zn(m);
+            }
+            0xb5 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                self.a = m;
+                self.set_zn(m);
+            }
+            0xad => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.a = m;
+                self.set_zn(m);
+            }
+            0xbd => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                self.a = m;
+                self.set_zn(m);
+            }
+            0xb9 => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.a = m;
+                self.set_zn(m);
+            }
+            0xa1 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                self.a = m;
+                self.set_zn(m);
+            }
+            0xb1 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                self.a = m;
+                self.set_zn(m);
+            }
 
             // ---- LDX ----
-            0xa2 => { let m=self.a_zp_imm(); self.x=m; self.set_zn(m); }
-            0xa6 => { let ad=self.a_zp(); let m=self.read(ad); self.x=m; self.set_zn(m); }
-            0xb6 => { let ad=self.a_zpy(); let m=self.read(ad); self.x=m; self.set_zn(m); }
-            0xae => { let ad=self.a_abs(); let m=self.read(ad); self.x=m; self.set_zn(m); }
-            0xbe => { let ad=self.a_absy(&mut extra); let m=self.read(ad); self.x=m; self.set_zn(m); }
+            0xa2 => {
+                let m = self.a_zp_imm();
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xa6 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xb6 => {
+                let ad = self.a_zpy();
+                let m = self.read(ad);
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xae => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xbe => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.x = m;
+                self.set_zn(m);
+            }
 
             // ---- LDY ----
-            0xa0 => { let m=self.a_zp_imm(); self.y=m; self.set_zn(m); }
-            0xa4 => { let ad=self.a_zp(); let m=self.read(ad); self.y=m; self.set_zn(m); }
-            0xb4 => { let ad=self.a_zpx(); let m=self.read(ad); self.y=m; self.set_zn(m); }
-            0xac => { let ad=self.a_abs(); let m=self.read(ad); self.y=m; self.set_zn(m); }
-            0xbc => { let ad=self.a_absx(&mut extra); let m=self.read(ad); self.y=m; self.set_zn(m); }
+            0xa0 => {
+                let m = self.a_zp_imm();
+                self.y = m;
+                self.set_zn(m);
+            }
+            0xa4 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.y = m;
+                self.set_zn(m);
+            }
+            0xb4 => {
+                let ad = self.a_zpx();
+                let m = self.read(ad);
+                self.y = m;
+                self.set_zn(m);
+            }
+            0xac => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.y = m;
+                self.set_zn(m);
+            }
+            0xbc => {
+                let ad = self.a_absx(&mut extra);
+                let m = self.read(ad);
+                self.y = m;
+                self.set_zn(m);
+            }
 
             // ---- STA ----
-            0x85 => { let ad=self.a_zp(); let a=self.a; self.write(ad,a); }
-            0x95 => { let ad=self.a_zpx(); let a=self.a; self.write(ad,a); }
-            0x8d => { let ad=self.a_abs(); let a=self.a; self.write(ad,a); }
-            0x9d => { let ad=self.a_absx(&mut extra); let a=self.a; self.write(ad,a); }
-            0x99 => { let ad=self.a_absy(&mut extra); let a=self.a; self.write(ad,a); }
-            0x81 => { let ad=self.a_izx(); let a=self.a; self.write(ad,a); }
-            0x91 => { let ad=self.a_izy(&mut extra); let a=self.a; self.write(ad,a); }
+            0x85 => {
+                let ad = self.a_zp();
+                let a = self.a;
+                self.write(ad, a);
+            }
+            0x95 => {
+                let ad = self.a_zpx();
+                let a = self.a;
+                self.write(ad, a);
+            }
+            0x8d => {
+                let ad = self.a_abs();
+                let a = self.a;
+                self.write(ad, a);
+            }
+            0x9d => {
+                let ad = self.a_absx(&mut extra);
+                let a = self.a;
+                self.write(ad, a);
+            }
+            0x99 => {
+                let ad = self.a_absy(&mut extra);
+                let a = self.a;
+                self.write(ad, a);
+            }
+            0x81 => {
+                let ad = self.a_izx();
+                let a = self.a;
+                self.write(ad, a);
+            }
+            0x91 => {
+                let ad = self.a_izy(&mut extra);
+                let a = self.a;
+                self.write(ad, a);
+            }
 
             // ---- STX / STY ----
-            0x86 => { let ad=self.a_zp(); let x=self.x; self.write(ad,x); }
-            0x96 => { let ad=self.a_zpy(); let x=self.x; self.write(ad,x); }
-            0x8e => { let ad=self.a_abs(); let x=self.x; self.write(ad,x); }
-            0x84 => { let ad=self.a_zp(); let y=self.y; self.write(ad,y); }
-            0x94 => { let ad=self.a_zpx(); let y=self.y; self.write(ad,y); }
-            0x8c => { let ad=self.a_abs(); let y=self.y; self.write(ad,y); }
+            0x86 => {
+                let ad = self.a_zp();
+                let x = self.x;
+                self.write(ad, x);
+            }
+            0x96 => {
+                let ad = self.a_zpy();
+                let x = self.x;
+                self.write(ad, x);
+            }
+            0x8e => {
+                let ad = self.a_abs();
+                let x = self.x;
+                self.write(ad, x);
+            }
+            0x84 => {
+                let ad = self.a_zp();
+                let y = self.y;
+                self.write(ad, y);
+            }
+            0x94 => {
+                let ad = self.a_zpx();
+                let y = self.y;
+                self.write(ad, y);
+            }
+            0x8c => {
+                let ad = self.a_abs();
+                let y = self.y;
+                self.write(ad, y);
+            }
 
             // ---- transfers ----
-            0xaa => { let v=self.a; self.x=v; self.set_zn(v); }
-            0xa8 => { let v=self.a; self.y=v; self.set_zn(v); }
-            0x8a => { let v=self.x; self.a=v; self.set_zn(v); }
-            0x98 => { let v=self.y; self.a=v; self.set_zn(v); }
-            0xba => { let v=self.sp; self.x=v; self.set_zn(v); }
-            0x9a => { self.sp=self.x; }
+            0xaa => {
+                let v = self.a;
+                self.x = v;
+                self.set_zn(v);
+            }
+            0xa8 => {
+                let v = self.a;
+                self.y = v;
+                self.set_zn(v);
+            }
+            0x8a => {
+                let v = self.x;
+                self.a = v;
+                self.set_zn(v);
+            }
+            0x98 => {
+                let v = self.y;
+                self.a = v;
+                self.set_zn(v);
+            }
+            0xba => {
+                let v = self.sp;
+                self.x = v;
+                self.set_zn(v);
+            }
+            0x9a => {
+                self.sp = self.x;
+            }
 
             // ---- inc/dec regs ----
-            0xe8 => { self.x=self.x.wrapping_add(1); let v=self.x; self.set_zn(v); }
-            0xca => { self.x=self.x.wrapping_sub(1); let v=self.x; self.set_zn(v); }
-            0xc8 => { self.y=self.y.wrapping_add(1); let v=self.y; self.set_zn(v); }
-            0x88 => { self.y=self.y.wrapping_sub(1); let v=self.y; self.set_zn(v); }
+            0xe8 => {
+                self.x = self.x.wrapping_add(1);
+                let v = self.x;
+                self.set_zn(v);
+            }
+            0xca => {
+                self.x = self.x.wrapping_sub(1);
+                let v = self.x;
+                self.set_zn(v);
+            }
+            0xc8 => {
+                self.y = self.y.wrapping_add(1);
+                let v = self.y;
+                self.set_zn(v);
+            }
+            0x88 => {
+                self.y = self.y.wrapping_sub(1);
+                let v = self.y;
+                self.set_zn(v);
+            }
 
             // ---- inc/dec mem ----
-            0xe6 => { let ad=self.a_zp(); self.rmw(ad,|c,v|{let r=v.wrapping_add(1); c.set_zn(r); r}); }
-            0xf6 => { let ad=self.a_zpx(); self.rmw(ad,|c,v|{let r=v.wrapping_add(1); c.set_zn(r); r}); }
-            0xee => { let ad=self.a_abs(); self.rmw(ad,|c,v|{let r=v.wrapping_add(1); c.set_zn(r); r}); }
-            0xfe => { let ad=self.a_absx(&mut extra); self.rmw(ad,|c,v|{let r=v.wrapping_add(1); c.set_zn(r); r}); }
-            0xc6 => { let ad=self.a_zp(); self.rmw(ad,|c,v|{let r=v.wrapping_sub(1); c.set_zn(r); r}); }
-            0xd6 => { let ad=self.a_zpx(); self.rmw(ad,|c,v|{let r=v.wrapping_sub(1); c.set_zn(r); r}); }
-            0xce => { let ad=self.a_abs(); self.rmw(ad,|c,v|{let r=v.wrapping_sub(1); c.set_zn(r); r}); }
-            0xde => { let ad=self.a_absx(&mut extra); self.rmw(ad,|c,v|{let r=v.wrapping_sub(1); c.set_zn(r); r}); }
+            0xe6 => {
+                let ad = self.a_zp();
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_add(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
+            0xf6 => {
+                let ad = self.a_zpx();
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_add(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
+            0xee => {
+                let ad = self.a_abs();
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_add(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
+            0xfe => {
+                let ad = self.a_absx(&mut extra);
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_add(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
+            0xc6 => {
+                let ad = self.a_zp();
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_sub(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
+            0xd6 => {
+                let ad = self.a_zpx();
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_sub(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
+            0xce => {
+                let ad = self.a_abs();
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_sub(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
+            0xde => {
+                let ad = self.a_absx(&mut extra);
+                self.rmw(ad, |c, v| {
+                    let r = v.wrapping_sub(1);
+                    c.set_zn(r);
+                    r
+                });
+            }
 
             // ---- shifts on A ----
-            0x0a => { let v=self.a; let r=self.asl(v); self.a=r; }
-            0x4a => { let v=self.a; let r=self.lsr(v); self.a=r; }
-            0x2a => { let v=self.a; let r=self.rol(v); self.a=r; }
-            0x6a => { let v=self.a; let r=self.ror(v); self.a=r; }
+            0x0a => {
+                let v = self.a;
+                let r = self.asl(v);
+                self.a = r;
+            }
+            0x4a => {
+                let v = self.a;
+                let r = self.lsr(v);
+                self.a = r;
+            }
+            0x2a => {
+                let v = self.a;
+                let r = self.rol(v);
+                self.a = r;
+            }
+            0x6a => {
+                let v = self.a;
+                let r = self.ror(v);
+                self.a = r;
+            }
 
             // ---- shifts on mem ----
-            0x06 => { let ad=self.a_zp(); self.rmw(ad,|c,v|c.asl(v)); }
-            0x16 => { let ad=self.a_zpx(); self.rmw(ad,|c,v|c.asl(v)); }
-            0x0e => { let ad=self.a_abs(); self.rmw(ad,|c,v|c.asl(v)); }
-            0x1e => { let ad=self.a_absx(&mut extra); self.rmw(ad,|c,v|c.asl(v)); }
-            0x46 => { let ad=self.a_zp(); self.rmw(ad,|c,v|c.lsr(v)); }
-            0x56 => { let ad=self.a_zpx(); self.rmw(ad,|c,v|c.lsr(v)); }
-            0x4e => { let ad=self.a_abs(); self.rmw(ad,|c,v|c.lsr(v)); }
-            0x5e => { let ad=self.a_absx(&mut extra); self.rmw(ad,|c,v|c.lsr(v)); }
-            0x26 => { let ad=self.a_zp(); self.rmw(ad,|c,v|c.rol(v)); }
-            0x36 => { let ad=self.a_zpx(); self.rmw(ad,|c,v|c.rol(v)); }
-            0x2e => { let ad=self.a_abs(); self.rmw(ad,|c,v|c.rol(v)); }
-            0x3e => { let ad=self.a_absx(&mut extra); self.rmw(ad,|c,v|c.rol(v)); }
-            0x66 => { let ad=self.a_zp(); self.rmw(ad,|c,v|c.ror(v)); }
-            0x76 => { let ad=self.a_zpx(); self.rmw(ad,|c,v|c.ror(v)); }
-            0x6e => { let ad=self.a_abs(); self.rmw(ad,|c,v|c.ror(v)); }
-            0x7e => { let ad=self.a_absx(&mut extra); self.rmw(ad,|c,v|c.ror(v)); }
+            0x06 => {
+                let ad = self.a_zp();
+                self.rmw(ad, |c, v| c.asl(v));
+            }
+            0x16 => {
+                let ad = self.a_zpx();
+                self.rmw(ad, |c, v| c.asl(v));
+            }
+            0x0e => {
+                let ad = self.a_abs();
+                self.rmw(ad, |c, v| c.asl(v));
+            }
+            0x1e => {
+                let ad = self.a_absx(&mut extra);
+                self.rmw(ad, |c, v| c.asl(v));
+            }
+            0x46 => {
+                let ad = self.a_zp();
+                self.rmw(ad, |c, v| c.lsr(v));
+            }
+            0x56 => {
+                let ad = self.a_zpx();
+                self.rmw(ad, |c, v| c.lsr(v));
+            }
+            0x4e => {
+                let ad = self.a_abs();
+                self.rmw(ad, |c, v| c.lsr(v));
+            }
+            0x5e => {
+                let ad = self.a_absx(&mut extra);
+                self.rmw(ad, |c, v| c.lsr(v));
+            }
+            0x26 => {
+                let ad = self.a_zp();
+                self.rmw(ad, |c, v| c.rol(v));
+            }
+            0x36 => {
+                let ad = self.a_zpx();
+                self.rmw(ad, |c, v| c.rol(v));
+            }
+            0x2e => {
+                let ad = self.a_abs();
+                self.rmw(ad, |c, v| c.rol(v));
+            }
+            0x3e => {
+                let ad = self.a_absx(&mut extra);
+                self.rmw(ad, |c, v| c.rol(v));
+            }
+            0x66 => {
+                let ad = self.a_zp();
+                self.rmw(ad, |c, v| c.ror(v));
+            }
+            0x76 => {
+                let ad = self.a_zpx();
+                self.rmw(ad, |c, v| c.ror(v));
+            }
+            0x6e => {
+                let ad = self.a_abs();
+                self.rmw(ad, |c, v| c.ror(v));
+            }
+            0x7e => {
+                let ad = self.a_absx(&mut extra);
+                self.rmw(ad, |c, v| c.ror(v));
+            }
 
             // ---- BIT ----
-            0x24 => { let ad=self.a_zp(); let m=self.read(ad); self.bit(m); }
-            0x2c => { let ad=self.a_abs(); let m=self.read(ad); self.bit(m); }
+            0x24 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.bit(m);
+            }
+            0x2c => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.bit(m);
+            }
 
             // ---- flags ----
             0x18 => self.set_flag(FLAG_C, false),
@@ -497,58 +1067,98 @@ impl Cpu {
             0xf8 => self.set_flag(FLAG_D, true),
 
             // ---- branches ----
-            0x10 => { let c=!self.flag(FLAG_N); self.branch(c,&mut extra); }
-            0x30 => { let c=self.flag(FLAG_N); self.branch(c,&mut extra); }
-            0x50 => { let c=!self.flag(FLAG_V); self.branch(c,&mut extra); }
-            0x70 => { let c=self.flag(FLAG_V); self.branch(c,&mut extra); }
-            0x90 => { let c=!self.flag(FLAG_C); self.branch(c,&mut extra); }
-            0xb0 => { let c=self.flag(FLAG_C); self.branch(c,&mut extra); }
-            0xd0 => { let c=!self.flag(FLAG_Z); self.branch(c,&mut extra); }
-            0xf0 => { let c=self.flag(FLAG_Z); self.branch(c,&mut extra); }
+            0x10 => {
+                let c = !self.flag(FLAG_N);
+                self.branch(c, &mut extra);
+            }
+            0x30 => {
+                let c = self.flag(FLAG_N);
+                self.branch(c, &mut extra);
+            }
+            0x50 => {
+                let c = !self.flag(FLAG_V);
+                self.branch(c, &mut extra);
+            }
+            0x70 => {
+                let c = self.flag(FLAG_V);
+                self.branch(c, &mut extra);
+            }
+            0x90 => {
+                let c = !self.flag(FLAG_C);
+                self.branch(c, &mut extra);
+            }
+            0xb0 => {
+                let c = self.flag(FLAG_C);
+                self.branch(c, &mut extra);
+            }
+            0xd0 => {
+                let c = !self.flag(FLAG_Z);
+                self.branch(c, &mut extra);
+            }
+            0xf0 => {
+                let c = self.flag(FLAG_Z);
+                self.branch(c, &mut extra);
+            }
 
             // ---- jumps / subroutines ----
-            0x4c => { let ad=self.a_abs(); self.pc=ad; }
+            0x4c => {
+                let ad = self.a_abs();
+                self.pc = ad;
+            }
             0x6c => {
                 // JMP (indirect) with the NMOS page-wrap bug
-                let ptr=self.fetch16();
-                let lo=self.read(ptr) as u16;
-                let hi=self.read((ptr & 0xff00) | ((ptr.wrapping_add(1)) & 0x00ff)) as u16;
-                self.pc = lo | (hi<<8);
+                let ptr = self.fetch16();
+                let lo = self.read(ptr) as u16;
+                let hi = self.read((ptr & 0xff00) | ((ptr.wrapping_add(1)) & 0x00ff)) as u16;
+                self.pc = lo | (hi << 8);
             }
             0x20 => {
-                let ad=self.a_abs();
-                let ret=self.pc.wrapping_sub(1);
-                self.push((ret>>8) as u8);
+                let ad = self.a_abs();
+                let ret = self.pc.wrapping_sub(1);
+                self.push((ret >> 8) as u8);
                 self.push((ret & 0xff) as u8);
-                self.pc=ad;
+                self.pc = ad;
             }
             0x60 => {
-                let lo=self.pull() as u16;
-                let hi=self.pull() as u16;
-                self.pc=((lo|(hi<<8)).wrapping_add(1));
+                let lo = self.pull() as u16;
+                let hi = self.pull() as u16;
+                self.pc = ((lo | (hi << 8)).wrapping_add(1));
             }
             0x40 => {
                 // RTI
                 self.p = (self.pull() & !FLAG_B) | FLAG_U;
-                let lo=self.pull() as u16;
-                let hi=self.pull() as u16;
-                self.pc=lo|(hi<<8);
+                let lo = self.pull() as u16;
+                let hi = self.pull() as u16;
+                self.pc = lo | (hi << 8);
             }
             0x00 => {
                 // BRK: treat as a soft interrupt; push and set I. Rarely used in tunes.
-                let ret=self.pc.wrapping_add(1);
-                self.push((ret>>8) as u8);
+                let ret = self.pc.wrapping_add(1);
+                self.push((ret >> 8) as u8);
                 self.push((ret & 0xff) as u8);
                 self.push(self.p | FLAG_B | FLAG_U);
                 self.set_flag(FLAG_I, true);
-                self.pc=self.read16(0xfffe);
+                self.pc = self.read16(0xfffe);
             }
 
             // ---- stack ops ----
-            0x48 => { let a=self.a; self.push(a); }
-            0x68 => { let v=self.pull(); self.a=v; self.set_zn(v); }
-            0x08 => { let p=self.p | FLAG_B | FLAG_U; self.push(p); }
-            0x28 => { let v=self.pull(); self.p=(v & !FLAG_B)|FLAG_U; }
+            0x48 => {
+                let a = self.a;
+                self.push(a);
+            }
+            0x68 => {
+                let v = self.pull();
+                self.a = v;
+                self.set_zn(v);
+            }
+            0x08 => {
+                let p = self.p | FLAG_B | FLAG_U;
+                self.push(p);
+            }
+            0x28 => {
+                let v = self.pull();
+                self.p = (v & !FLAG_B) | FLAG_U;
+            }
 
             // ---- NOP ----
             0xea => {}
@@ -556,79 +1166,267 @@ impl Cpu {
             // ================= common undocumented opcodes =================
             // multi-byte NOPs (must consume operand bytes to stay in sync)
             0x1a | 0x3a | 0x5a | 0x7a | 0xda | 0xfa => {}
-            0x80 | 0x82 | 0x89 | 0xc2 | 0xe2 => { let _=self.a_zp_imm(); }
-            0x04 | 0x44 | 0x64 => { let _=self.a_zp(); }
-            0x14 | 0x34 | 0x54 | 0x74 | 0xd4 | 0xf4 => { let _=self.a_zpx(); }
-            0x0c => { let _=self.a_abs(); }
-            0x1c | 0x3c | 0x5c | 0x7c | 0xdc | 0xfc => { let _=self.a_absx(&mut extra); }
+            0x80 | 0x82 | 0x89 | 0xc2 | 0xe2 => {
+                let _ = self.a_zp_imm();
+            }
+            0x04 | 0x44 | 0x64 => {
+                let _ = self.a_zp();
+            }
+            0x14 | 0x34 | 0x54 | 0x74 | 0xd4 | 0xf4 => {
+                let _ = self.a_zpx();
+            }
+            0x0c => {
+                let _ = self.a_abs();
+            }
+            0x1c | 0x3c | 0x5c | 0x7c | 0xdc | 0xfc => {
+                let _ = self.a_absx(&mut extra);
+            }
 
             // LAX
-            0xa7 => { let ad=self.a_zp(); let m=self.read(ad); self.a=m; self.x=m; self.set_zn(m); }
-            0xb7 => { let ad=self.a_zpy(); let m=self.read(ad); self.a=m; self.x=m; self.set_zn(m); }
-            0xaf => { let ad=self.a_abs(); let m=self.read(ad); self.a=m; self.x=m; self.set_zn(m); }
-            0xbf => { let ad=self.a_absy(&mut extra); let m=self.read(ad); self.a=m; self.x=m; self.set_zn(m); }
-            0xa3 => { let ad=self.a_izx(); let m=self.read(ad); self.a=m; self.x=m; self.set_zn(m); }
-            0xb3 => { let ad=self.a_izy(&mut extra); let m=self.read(ad); self.a=m; self.x=m; self.set_zn(m); }
+            0xa7 => {
+                let ad = self.a_zp();
+                let m = self.read(ad);
+                self.a = m;
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xb7 => {
+                let ad = self.a_zpy();
+                let m = self.read(ad);
+                self.a = m;
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xaf => {
+                let ad = self.a_abs();
+                let m = self.read(ad);
+                self.a = m;
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xbf => {
+                let ad = self.a_absy(&mut extra);
+                let m = self.read(ad);
+                self.a = m;
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xa3 => {
+                let ad = self.a_izx();
+                let m = self.read(ad);
+                self.a = m;
+                self.x = m;
+                self.set_zn(m);
+            }
+            0xb3 => {
+                let ad = self.a_izy(&mut extra);
+                let m = self.read(ad);
+                self.a = m;
+                self.x = m;
+                self.set_zn(m);
+            }
 
             // SAX
-            0x87 => { let ad=self.a_zp(); let v=self.a & self.x; self.write(ad,v); }
-            0x97 => { let ad=self.a_zpy(); let v=self.a & self.x; self.write(ad,v); }
-            0x8f => { let ad=self.a_abs(); let v=self.a & self.x; self.write(ad,v); }
-            0x83 => { let ad=self.a_izx(); let v=self.a & self.x; self.write(ad,v); }
+            0x87 => {
+                let ad = self.a_zp();
+                let v = self.a & self.x;
+                self.write(ad, v);
+            }
+            0x97 => {
+                let ad = self.a_zpy();
+                let v = self.a & self.x;
+                self.write(ad, v);
+            }
+            0x8f => {
+                let ad = self.a_abs();
+                let v = self.a & self.x;
+                self.write(ad, v);
+            }
+            0x83 => {
+                let ad = self.a_izx();
+                let v = self.a & self.x;
+                self.write(ad, v);
+            }
 
             // DCP (DEC + CMP)
-            0xc7 => { let ad=self.a_zp(); self.dcp(ad); }
-            0xd7 => { let ad=self.a_zpx(); self.dcp(ad); }
-            0xcf => { let ad=self.a_abs(); self.dcp(ad); }
-            0xdf => { let ad=self.a_absx(&mut extra); self.dcp(ad); }
-            0xdb => { let ad=self.a_absy(&mut extra); self.dcp(ad); }
-            0xc3 => { let ad=self.a_izx(); self.dcp(ad); }
-            0xd3 => { let ad=self.a_izy(&mut extra); self.dcp(ad); }
+            0xc7 => {
+                let ad = self.a_zp();
+                self.dcp(ad);
+            }
+            0xd7 => {
+                let ad = self.a_zpx();
+                self.dcp(ad);
+            }
+            0xcf => {
+                let ad = self.a_abs();
+                self.dcp(ad);
+            }
+            0xdf => {
+                let ad = self.a_absx(&mut extra);
+                self.dcp(ad);
+            }
+            0xdb => {
+                let ad = self.a_absy(&mut extra);
+                self.dcp(ad);
+            }
+            0xc3 => {
+                let ad = self.a_izx();
+                self.dcp(ad);
+            }
+            0xd3 => {
+                let ad = self.a_izy(&mut extra);
+                self.dcp(ad);
+            }
 
             // ISC (INC + SBC)
-            0xe7 => { let ad=self.a_zp(); self.isc(ad); }
-            0xf7 => { let ad=self.a_zpx(); self.isc(ad); }
-            0xef => { let ad=self.a_abs(); self.isc(ad); }
-            0xff => { let ad=self.a_absx(&mut extra); self.isc(ad); }
-            0xfb => { let ad=self.a_absy(&mut extra); self.isc(ad); }
-            0xe3 => { let ad=self.a_izx(); self.isc(ad); }
-            0xf3 => { let ad=self.a_izy(&mut extra); self.isc(ad); }
+            0xe7 => {
+                let ad = self.a_zp();
+                self.isc(ad);
+            }
+            0xf7 => {
+                let ad = self.a_zpx();
+                self.isc(ad);
+            }
+            0xef => {
+                let ad = self.a_abs();
+                self.isc(ad);
+            }
+            0xff => {
+                let ad = self.a_absx(&mut extra);
+                self.isc(ad);
+            }
+            0xfb => {
+                let ad = self.a_absy(&mut extra);
+                self.isc(ad);
+            }
+            0xe3 => {
+                let ad = self.a_izx();
+                self.isc(ad);
+            }
+            0xf3 => {
+                let ad = self.a_izy(&mut extra);
+                self.isc(ad);
+            }
 
             // SLO (ASL + ORA)
-            0x07 => { let ad=self.a_zp(); self.slo(ad); }
-            0x17 => { let ad=self.a_zpx(); self.slo(ad); }
-            0x0f => { let ad=self.a_abs(); self.slo(ad); }
-            0x1f => { let ad=self.a_absx(&mut extra); self.slo(ad); }
-            0x1b => { let ad=self.a_absy(&mut extra); self.slo(ad); }
-            0x03 => { let ad=self.a_izx(); self.slo(ad); }
-            0x13 => { let ad=self.a_izy(&mut extra); self.slo(ad); }
+            0x07 => {
+                let ad = self.a_zp();
+                self.slo(ad);
+            }
+            0x17 => {
+                let ad = self.a_zpx();
+                self.slo(ad);
+            }
+            0x0f => {
+                let ad = self.a_abs();
+                self.slo(ad);
+            }
+            0x1f => {
+                let ad = self.a_absx(&mut extra);
+                self.slo(ad);
+            }
+            0x1b => {
+                let ad = self.a_absy(&mut extra);
+                self.slo(ad);
+            }
+            0x03 => {
+                let ad = self.a_izx();
+                self.slo(ad);
+            }
+            0x13 => {
+                let ad = self.a_izy(&mut extra);
+                self.slo(ad);
+            }
 
             // RLA (ROL + AND)
-            0x27 => { let ad=self.a_zp(); self.rla(ad); }
-            0x37 => { let ad=self.a_zpx(); self.rla(ad); }
-            0x2f => { let ad=self.a_abs(); self.rla(ad); }
-            0x3f => { let ad=self.a_absx(&mut extra); self.rla(ad); }
-            0x3b => { let ad=self.a_absy(&mut extra); self.rla(ad); }
-            0x23 => { let ad=self.a_izx(); self.rla(ad); }
-            0x33 => { let ad=self.a_izy(&mut extra); self.rla(ad); }
+            0x27 => {
+                let ad = self.a_zp();
+                self.rla(ad);
+            }
+            0x37 => {
+                let ad = self.a_zpx();
+                self.rla(ad);
+            }
+            0x2f => {
+                let ad = self.a_abs();
+                self.rla(ad);
+            }
+            0x3f => {
+                let ad = self.a_absx(&mut extra);
+                self.rla(ad);
+            }
+            0x3b => {
+                let ad = self.a_absy(&mut extra);
+                self.rla(ad);
+            }
+            0x23 => {
+                let ad = self.a_izx();
+                self.rla(ad);
+            }
+            0x33 => {
+                let ad = self.a_izy(&mut extra);
+                self.rla(ad);
+            }
 
             // SRE (LSR + EOR)
-            0x47 => { let ad=self.a_zp(); self.sre(ad); }
-            0x57 => { let ad=self.a_zpx(); self.sre(ad); }
-            0x4f => { let ad=self.a_abs(); self.sre(ad); }
-            0x5f => { let ad=self.a_absx(&mut extra); self.sre(ad); }
-            0x5b => { let ad=self.a_absy(&mut extra); self.sre(ad); }
-            0x43 => { let ad=self.a_izx(); self.sre(ad); }
-            0x53 => { let ad=self.a_izy(&mut extra); self.sre(ad); }
+            0x47 => {
+                let ad = self.a_zp();
+                self.sre(ad);
+            }
+            0x57 => {
+                let ad = self.a_zpx();
+                self.sre(ad);
+            }
+            0x4f => {
+                let ad = self.a_abs();
+                self.sre(ad);
+            }
+            0x5f => {
+                let ad = self.a_absx(&mut extra);
+                self.sre(ad);
+            }
+            0x5b => {
+                let ad = self.a_absy(&mut extra);
+                self.sre(ad);
+            }
+            0x43 => {
+                let ad = self.a_izx();
+                self.sre(ad);
+            }
+            0x53 => {
+                let ad = self.a_izy(&mut extra);
+                self.sre(ad);
+            }
 
             // RRA (ROR + ADC)
-            0x67 => { let ad=self.a_zp(); self.rra(ad); }
-            0x77 => { let ad=self.a_zpx(); self.rra(ad); }
-            0x6f => { let ad=self.a_abs(); self.rra(ad); }
-            0x7f => { let ad=self.a_absx(&mut extra); self.rra(ad); }
-            0x7b => { let ad=self.a_absy(&mut extra); self.rra(ad); }
-            0x63 => { let ad=self.a_izx(); self.rra(ad); }
-            0x73 => { let ad=self.a_izy(&mut extra); self.rra(ad); }
+            0x67 => {
+                let ad = self.a_zp();
+                self.rra(ad);
+            }
+            0x77 => {
+                let ad = self.a_zpx();
+                self.rra(ad);
+            }
+            0x6f => {
+                let ad = self.a_abs();
+                self.rra(ad);
+            }
+            0x7f => {
+                let ad = self.a_absx(&mut extra);
+                self.rra(ad);
+            }
+            0x7b => {
+                let ad = self.a_absy(&mut extra);
+                self.rra(ad);
+            }
+            0x63 => {
+                let ad = self.a_izx();
+                self.rra(ad);
+            }
+            0x73 => {
+                let ad = self.a_izy(&mut extra);
+                self.rra(ad);
+            }
 
             // Anything else: consume as a 1-byte NOP (KIL/JAM etc. treated leniently).
             _ => {}
@@ -641,9 +1439,7 @@ impl Cpu {
 
     // immediate operand fetch (named oddly to reuse in many arms)
     #[inline]
-    fn a_zp_imm(&mut self) -> u8 {
-        self.fetch()
-    }
+    fn a_zp_imm(&mut self) -> u8 { self.fetch() }
 
     fn bit(&mut self, m: u8) {
         self.set_flag(FLAG_Z, (self.a & m) == 0);
@@ -657,11 +1453,13 @@ impl Cpu {
         let a = self.a;
         self.cmp_reg(a, v);
     }
+
     fn isc(&mut self, ad: u16) {
         let v = self.read(ad).wrapping_add(1);
         self.write(ad, v);
         self.sbc(v);
     }
+
     fn slo(&mut self, ad: u16) {
         let v = self.read(ad);
         let r = self.asl(v);
@@ -670,6 +1468,7 @@ impl Cpu {
         let a = self.a;
         self.set_zn(a);
     }
+
     fn rla(&mut self, ad: u16) {
         let v = self.read(ad);
         let r = self.rol(v);
@@ -678,6 +1477,7 @@ impl Cpu {
         let a = self.a;
         self.set_zn(a);
     }
+
     fn sre(&mut self, ad: u16) {
         let v = self.read(ad);
         let r = self.lsr(v);
@@ -686,6 +1486,7 @@ impl Cpu {
         let a = self.a;
         self.set_zn(a);
     }
+
     fn rra(&mut self, ad: u16) {
         let v = self.read(ad);
         let r = self.ror(v);

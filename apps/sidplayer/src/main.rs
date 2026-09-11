@@ -32,9 +32,7 @@ fn main() -> ! {
     log::info!("sidplayer PID is {}", xous::process::id());
 
     let xns = xous_names::XousNames::new().unwrap();
-    let sid = xns
-        .register_name(SIDPLAYER_SERVER_NAME, None)
-        .expect("can't register server");
+    let sid = xns.register_name(SIDPLAYER_SERVER_NAME, None).expect("can't register server");
 
     let mut app = SidPlayer::new(sid);
 

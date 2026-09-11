@@ -1,5 +1,6 @@
-use lexer::Token;
 use std::fmt;
+
+use lexer::Token;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct AST {
@@ -24,23 +25,13 @@ fn fmt_node(node: &AST) -> String {
 }
 
 impl fmt::Display for AST {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", fmt_node(&self))
-    }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{}", fmt_node(&self)) }
 }
 
 impl AST {
-    pub fn new(token: Token) -> Self {
-        AST {
-            line_num: None,
-            token: token,
-            children: Vec::new(),
-        }
-    }
+    pub fn new(token: Token) -> Self { AST { line_num: None, token, children: Vec::new() } }
 
-    pub fn set_linenum(&mut self, line_num: u32) {
-        self.line_num = Some(line_num)
-    }
+    pub fn set_linenum(&mut self, line_num: u32) { self.line_num = Some(line_num) }
 
     pub fn add_child(&mut self, child: AST) -> &mut Self {
         self.children.push(child);
@@ -63,16 +54,10 @@ impl AST {
         self
     }
 
-    pub fn nop(&mut self, _: AST) -> &mut Self {
-        self
-    }
+    pub fn nop(&mut self, _: AST) -> &mut Self { self }
 
     pub fn finalize(&self) -> Self {
-        AST {
-            line_num: self.line_num.clone(),
-            token: self.token.clone(),
-            children: self.children.clone(),
-        }
+        AST { line_num: self.line_num.clone(), token: self.token.clone(), children: self.children.clone() }
     }
 }
 
