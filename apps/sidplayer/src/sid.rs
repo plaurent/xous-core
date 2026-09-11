@@ -207,17 +207,17 @@ pub struct Sid {
 
 impl Sid {
     pub fn new(_is_8580: bool) -> Self {
-        // Internal step rate ~ chip_clock / MAX_STEP. Used only to size the
-        // filter coefficients; PAL clock is close enough for NTSC too here.
-        let fs_internal = 985_248.0f32 / (MAX_STEP as f32);
+        // The filter is evaluated once per output sample, so its sample rate is
+        // the 8 kHz codec rate. Cutoff is therefore capped below Nyquist (~4 kHz);
+        // the SID's real range extends to ~12 kHz but nothing above 4 kHz can be
+        // represented at 8 kHz output anyway.
+        let fs = 8_000.0f32;
         let mut w0_table = [0i32; 2048];
         for (i, slot) in w0_table.iter_mut().enumerate() {
-            // Map the 11-bit cutoff register to ~30 Hz .. 12 kHz (roughly linear;
-            // the real chip curve differs but this is inaudible at 8 kHz output).
-            let cutoff_hz = 30.0 + (i as f32 / 2047.0) * 11_800.0;
-            let mut f = 2.0 * (core::f32::consts::PI * cutoff_hz / fs_internal).sin();
-            if f > 1.6 {
-                f = 1.6; // keep the SVF stable
+            let cutoff_hz = 30.0 + (i as f32 / 2047.0) * 3_770.0;
+            let mut f = 2.0 * (core::f32::consts::PI * cutoff_hz / fs).sin();
+            if f > 1.4 {
+                f = 1.4; // keep the SVF stable near Nyquist
             }
             *slot = (f * 65536.0) as i32;
         }

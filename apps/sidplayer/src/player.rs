@@ -127,9 +127,12 @@ impl Player {
         self.write_idx = 0;
     }
 
-    /// Apply all register writes whose cycle stamp has been reached, then step
-    /// the engine forward by up to `max` cycles, returning (output, cycles).
-    fn internal_step(&mut self, max: u32) -> (i32, u32) {
+    /// Apply due register writes and advance the oscillators/envelopes by up to
+    /// `max` cycles (bounded by MAX_STEP and the frame boundary). Returns the
+    /// number of cycles actually advanced. This deliberately does NOT compute the
+    /// analogue output — that is the expensive part (waveforms + filter) and is
+    /// done once per output sample in `next_sample`, not per internal step.
+    fn advance(&mut self, max: u32) -> u32 {
         // Start of stream, or a frame boundary: run the next play() call.
         if !self.started || self.cycle_in_frame >= self.frame_cycles {
             if self.cycle_in_frame >= self.frame_cycles {
@@ -154,27 +157,22 @@ impl Player {
 
         self.sid.clock(step);
         self.cycle_in_frame += step;
-        (self.sid.output(), step)
+        step
     }
 
-    /// Produce one 8 kHz output sample (box-averaged over the internal steps).
+    /// Produce one 8 kHz output sample. The oscillators/envelopes advance in
+    /// small sub-steps (for exact noise/sync clocking), but the waveform + filter
+    /// are evaluated just once, at the end — sampling the chip state at the 8 kHz
+    /// rate. This keeps the per-sample cost low enough for real time on RV32.
     pub fn next_sample(&mut self) -> i16 {
         self.cyc_acc += self.cyc_per_sample_q16;
         let cycles = self.cyc_acc >> 16;
         self.cyc_acc &= 0xffff;
 
-        let mut sum: i32 = 0;
-        let mut weight: u32 = 0;
         let mut remaining = cycles;
         while remaining > 0 {
-            let (out, done) = self.internal_step(remaining);
-            sum += out * done as i32;
-            weight += done;
-            remaining -= done;
+            remaining -= self.advance(remaining);
         }
-        if weight == 0 {
-            return 0;
-        }
-        (sum / weight as i32).clamp(-32767, 32767) as i16
+        self.sid.output().clamp(-32767, 32767) as i16
     }
 }

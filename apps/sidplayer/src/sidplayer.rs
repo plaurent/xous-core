@@ -225,17 +225,11 @@ impl SidPlayer {
         }
         self.frames_played += to_push as u32;
         self.codec.swap_frames(&mut frames).unwrap();
-        // NOTE: never redraw here — GAM IPC is slow and blocking the fill
-        // callback drains the codec buffer and causes audible dropouts. The
-        // screen is refreshed off the critical path by the 1 s tick timer.
-    }
-
-    /// Periodic UI refresh, driven by a low-rate timer thread — off the audio
-    /// critical path so it can never starve the codec.
-    pub(crate) fn on_tick(&mut self) {
-        if self.playing {
-            self.redraw();
-        }
+        // NOTE: never redraw here. GAM IPC is slow, and blocking this callback
+        // drains the codec buffer and causes dropouts. The screen is refreshed
+        // only on user interaction (key / focus / play-stop) — deliberately no
+        // background timer thread, since a continuously-scheduled thread on this
+        // single-core CPU destabilised the whole device.
     }
 
     pub(crate) fn key(&mut self, k: char) {
