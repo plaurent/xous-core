@@ -24,10 +24,39 @@ pub(crate) enum ReplOp {
 pub(crate) const SERVER_NAME_EDLIN: &str = "_Edlin line-based text editor_";
 
 fn main() -> ! {
+    // The IMAP path (mr/mz) buffers whole messages (headers + body + any
+    // inline/base64 parts) in RAM while parsing, so give the app a generous
+    // stack -- same treatment as apps/mail.
+    let stack_size = 1024 * 1024;
+    std::thread::Builder::new().stack_size(stack_size).spawn(wrapped_main).unwrap().join().unwrap()
+}
+
+fn wrapped_main() -> ! {
     log_server::init_wait().unwrap();
     log::set_max_level(log::LevelFilter::Debug);
     //log::set_max_level(log::LevelFilter::Info);
     log::info!("my PID is {}", xous::process::id());
+
+    // Raise the heap ceiling: a full FETCH of a large message (with
+    // base64/quoted-printable parts, or attachments pulled in by BODY.PEEK[])
+    // can transiently allocate well past the default limit -- without this,
+    // "mr 1" on a long email fails with a memory allocation error while
+    // apps/mail (which does the same bump) reads it fine.
+    const HEAP_LARGER_LIMIT: usize = 2048 * 1024;
+    let new_limit = HEAP_LARGER_LIMIT;
+    let result =
+        xous::rsyscall(xous::SysCall::AdjustProcessLimit(xous::Limits::HeapMaximum as usize, 0, new_limit));
+    if let Ok(xous::Result::Scalar2(1, current_limit)) = result {
+        xous::rsyscall(xous::SysCall::AdjustProcessLimit(
+            xous::Limits::HeapMaximum as usize,
+            current_limit,
+            new_limit,
+        ))
+        .unwrap();
+        log::info!("Heap limit increased to: {}", new_limit);
+    } else {
+        panic!("Unsupported syscall!");
+    }
 
     let xns = xous_names::XousNames::new().unwrap();
     // unlimited connections allowed, this is a user app and it's up to the app to decide its policy
