@@ -60,6 +60,12 @@ impl Repl{
 
         let content = gam.request_content_canvas(token.unwrap()).expect("couldn't get content canvas");
         let screensize = gam.get_canvas_bounds(content).expect("couldn't get dimensions of content canvas");
+
+        // Share the content canvas with the command environment so mail
+        // commands (mr/mz) can draw a full-screen download progress bar.
+        let mut env = CmdEnv::new(xns);
+        env.set_content_canvas(content, screensize);
+
         Repl {
             input: None,
             msg: None,
@@ -73,7 +79,7 @@ impl Repl{
             bubble_margin: Point::new(4, 4),
             bubble_radius: 4,
             bubble_space: 4,
-            env: CmdEnv::new(xns),
+            env,
             token: token.unwrap(),
         }
     }

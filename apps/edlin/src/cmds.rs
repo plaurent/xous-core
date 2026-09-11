@@ -16,6 +16,8 @@ use retrobasic;
 
 use mail::{ImapChunk, ImapClient, SmtpClient};
 
+use gam::{Gid, Point, Rectangle, TextBounds, TextView, DrawStyle, PixelColor, GlyphStyle};
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 
@@ -115,6 +117,14 @@ pub struct Edlin {
     current_backlight_setting: u8,
     gam: gam::Gam,
     com: com::Com,
+
+    /// Content canvas + its bounds, shared from the Repl so mail commands
+    /// (mr/mz) can draw a full-screen download progress bar directly (see
+    /// `draw_progress`). Set via `CmdEnv::set_content_canvas` once the Repl
+    /// has requested the canvas; a zeroed Gid until then (no mail command
+    /// can run before the UI is up).
+    content: Gid,
+    screensize: Point,
 
     ///// mail (IMAP/SMTP) account settings.
     /////
@@ -1354,6 +1364,84 @@ impl Edlin {
     ///
     /// Returns (total messages in mailbox, raw message bytes) on success,
     /// or a user-facing error string.
+    /// Paints the whole content canvas the background color -- used to wipe
+    /// the REPL bubbles before drawing the download progress bar over them.
+    /// Ported from apps/mail's `clear`.
+    fn clear(&self) {
+        self.gam
+            .draw_rectangle(
+                self.content,
+                Rectangle::new_with_style(
+                    Point::new(0, 0),
+                    self.screensize,
+                    DrawStyle { fill_color: Some(PixelColor::Light), stroke_color: None, stroke_width: 0 },
+                ),
+            )
+            .ok();
+    }
+
+    /// Draws a centred message with a horizontal progress bar and percentage
+    /// underneath -- shown while streaming a message body, where `done`/`total`
+    /// are byte counts of the IMAP literal being downloaded. Ported verbatim
+    /// from apps/mail's `draw_progress` so the mr/mz download looks identical.
+    fn draw_progress(&self, msg: &str, done: usize, total: usize) {
+        self.clear();
+        let pct: isize =
+            if total == 0 { 100 } else { ((done.min(total) as u64 * 100) / total as u64) as isize };
+
+        let top = self.screensize.y / 3;
+        let mut tv = TextView::new(
+            self.content,
+            TextBounds::GrowableFromTl(Point::new(6, top), (self.screensize.x - 12) as u16),
+        );
+        tv.style = GlyphStyle::Large;
+        tv.draw_border = false;
+        tv.clear_area = true;
+        tv.margin = Point::new(0, 0);
+        write!(tv.text, "{}\n\n{}%", msg, pct).ok();
+        self.gam.post_textview(&mut tv).ok();
+
+        // Bar: a 1px-outlined box with a proportional dark fill inside it.
+        let margin = 12isize;
+        let bar_x0 = margin;
+        let bar_x1 = self.screensize.x - margin;
+        let bar_w = (bar_x1 - bar_x0).max(1);
+        // Clear the "msg\n\npct%" text block above (up to ~4 lines at the
+        // Large glyph height) so the bar never overlaps it.
+        let bar_y0 = top + 120;
+        let bar_h = 18isize;
+        let bar_y1 = bar_y0 + bar_h;
+        self.gam
+            .draw_rectangle(
+                self.content,
+                Rectangle::new_with_style(
+                    Point::new(bar_x0, bar_y0),
+                    Point::new(bar_x1, bar_y1),
+                    DrawStyle {
+                        fill_color: Some(PixelColor::Light),
+                        stroke_color: Some(PixelColor::Dark),
+                        stroke_width: 1,
+                    },
+                ),
+            )
+            .ok();
+        let inner_w = (bar_w - 2).max(1);
+        let fill_w = inner_w * pct / 100;
+        if fill_w > 0 {
+            self.gam
+                .draw_rectangle(
+                    self.content,
+                    Rectangle::new_with_style(
+                        Point::new(bar_x0 + 1, bar_y0 + 1),
+                        Point::new(bar_x0 + 1 + fill_w, bar_y1 - 1),
+                        DrawStyle { fill_color: Some(PixelColor::Dark), stroke_color: None, stroke_width: 0 },
+                    ),
+                )
+                .ok();
+        }
+        self.gam.redraw().ok();
+    }
+
     fn imap_fetch_raw(&mut self, recency_index: usize) -> Result<(u32, Vec<u8>), std::string::String> {
         if recency_index == 0 {
             return Err(std::string::String::from("Message number must be 1 or greater."));
@@ -1373,7 +1461,17 @@ impl Edlin {
         }
         let seq = total - (recency_index as u32 - 1);
 
-        let responses = match client.fetch(&seq.to_string(), "BODY.PEEK[]") {
+        // Stream the body with a live progress bar. The IMAP `{n}` literal
+        // gives us the total byte count up front, so `done/total` is exact.
+        // Redraw only when the whole percent changes, to avoid flooding GAM.
+        let mut last_pct = usize::MAX;
+        let responses = match client.fetch_with_progress(&seq.to_string(), "BODY.PEEK[]", &mut |done, total| {
+            let pct = if total == 0 { 100 } else { (done.min(total) as u64 * 100 / total as u64) as usize };
+            if pct != last_pct {
+                last_pct = pct;
+                self.draw_progress("Downloading message...", done, total);
+            }
+        }) {
             Ok(r) => r,
             Err(e) => {
                 let _ = client.logout();
@@ -2007,6 +2105,11 @@ impl CmdEnv {
             gam: gam::Gam::new(&xns).expect("couldn't connect to GAM"),
             com: com::Com::new(&xns).unwrap(),
 
+            // Placeholder until the Repl hands us its content canvas via
+            // set_content_canvas(); no mail command can run before then.
+            content: Gid::new([0, 0, 0, 0]),
+            screensize: Point::new(0, 0),
+
             ///// Blank until "r mail" loads the mail file -- see
             ///// apply_mail_config() and its call sites in process().
             imap_user: std::string::String::new(),
@@ -2034,6 +2137,14 @@ impl CmdEnv {
             //audio_cmd: Audio::new(&xns),
             edlin: edlin,
         }
+    }
+
+    /// Hand the Repl's content canvas + bounds to the command environment so
+    /// mail commands (mr/mz) can draw a full-screen download progress bar.
+    /// Must be called once the Repl has requested its content canvas.
+    pub fn set_content_canvas(&mut self, content: Gid, screensize: Point) {
+        self.edlin.content = content;
+        self.edlin.screensize = screensize;
     }
 
     pub fn dispatch(&mut self, maybe_cmdline: Option<&mut String>, maybe_callback: Option<&MessageEnvelope>) -> Result<Option<String>, xous::Error> {
