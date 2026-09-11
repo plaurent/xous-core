@@ -60,6 +60,8 @@ pub(crate) struct SidPlayer {
     output: OutputMode,
     /// headphone analog gain in dB (0 = loudest, more negative = quieter)
     hp_gain_db: f32,
+    /// signature of the last painted screen, for skipping redundant redraws
+    last_paint_sig: u64,
 }
 
 impl SidPlayer {
@@ -105,6 +107,7 @@ impl SidPlayer {
             status: String::from("Space/center: play   o: output   up/dn: volume"),
             output: OutputMode::Headphones,
             hp_gain_db: 0.0,
+            last_paint_sig: u64::MAX, // force the first paint
         }
     }
 
@@ -139,7 +142,7 @@ impl SidPlayer {
         } else {
             self.start();
         }
-        self.redraw();
+        self.force_redraw();
     }
 
     fn start(&mut self) {
@@ -240,21 +243,21 @@ impl SidPlayer {
                 if self.playing {
                     self.apply_output();
                 }
-                self.redraw();
+                self.force_redraw();
             }
             '↑' | '+' => {
                 self.hp_gain_db = (self.hp_gain_db + 3.0).min(0.0);
                 if self.playing {
                     self.apply_output();
                 }
-                self.redraw();
+                self.force_redraw();
             }
             '↓' | '-' => {
                 self.hp_gain_db = (self.hp_gain_db - 3.0).max(-42.0);
                 if self.playing {
                     self.apply_output();
                 }
-                self.redraw();
+                self.force_redraw();
             }
             _ => {}
         }
@@ -264,10 +267,38 @@ impl SidPlayer {
         if !foreground && self.playing {
             self.stop();
         }
-        self.redraw();
+        // Always repaint on a focus change so the screen is correct on return.
+        self.force_redraw();
     }
 
+    /// A cheap signature of everything actually drawn on screen (deliberately
+    /// excludes the live elapsed time). If GAM asks us to repaint while this is
+    /// unchanged, we can skip the whole expensive draw — which matters because a
+    /// full clear + text + LCD flush is tens of ms of blocking GAM IPC, and doing
+    /// it during playback stalls the single thread from feeding the codec.
+    fn paint_sig(&self) -> u64 {
+        let mode = match self.output {
+            OutputMode::Headphones => 0u64,
+            OutputMode::Speaker => 1,
+            OutputMode::Both => 2,
+        };
+        let mut h = self.playing as u64;
+        h = h.wrapping_mul(31).wrapping_add(mode);
+        h = h.wrapping_mul(31).wrapping_add((self.hp_gain_db as i32 as i64 as u64) & 0xffff);
+        h = h.wrapping_mul(31).wrapping_add(self.underruns as u64);
+        h
+    }
+
+    /// GAM-driven repaint: skip the expensive draw if nothing visible changed.
     pub(crate) fn redraw(&mut self) {
+        if self.paint_sig() != self.last_paint_sig {
+            self.force_redraw();
+        }
+    }
+
+    /// Unconditional repaint. Used for user actions and focus changes.
+    pub(crate) fn force_redraw(&mut self) {
+        self.last_paint_sig = self.paint_sig();
         // clear
         self.gam
             .draw_rectangle(
@@ -297,18 +328,9 @@ impl SidPlayer {
         .ok();
         self.text(4, 100, &outline);
 
-        // elapsed time, at ~256 samples/frame / 8000 Hz = 32 ms per frame
         let mut line = String::new();
         if self.playing {
-            let ms = (self.frames_played as u64 * codec::FIFO_DEPTH as u64 * 1000) / OUTPUT_RATE as u64;
-            write!(
-                line,
-                "Playing   {}.{:01}s   underruns: {}",
-                ms / 1000,
-                (ms % 1000) / 100,
-                self.underruns
-            )
-            .ok();
+            write!(line, "Playing   underruns: {}", self.underruns).ok();
         } else {
             write!(line, "{}", self.status).ok();
         }
