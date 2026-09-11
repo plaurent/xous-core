@@ -58,6 +58,10 @@ pub(crate) struct SidPlayer {
     frames_played: u32,
     underruns: u32,
     status: String,
+    /// currently selected subtune (0-based)
+    song: u16,
+    /// total number of subtunes in the file
+    songs: u16,
     output: OutputMode,
     /// headphone analog gain in dB (0 = loudest, more negative = quieter)
     hp_gain_db: f32,
@@ -92,6 +96,14 @@ impl SidPlayer {
         let ticktimer = ticktimer_server::Ticktimer::new().unwrap();
         let self_conn = xous::connect(sid).unwrap();
 
+        // Peek at the header once so the subtune count and default selection are
+        // known before the first play (needed for the track display and so left/
+        // right work while stopped). Fall back to a single song if it won't parse.
+        let (songs, song) = match Psid::parse(COMMANDO_SID) {
+            Ok(p) => (p.songs.max(1), p.start_song.saturating_sub(1)),
+            Err(_) => (1, 0),
+        };
+
         SidPlayer {
             gam,
             _token: token,
@@ -105,7 +117,9 @@ impl SidPlayer {
             hooked: false,
             frames_played: 0,
             underruns: 0,
-            status: String::from("Space/center: play   o: output   up/dn: volume"),
+            status: String::from("Space: play  o: output  up/dn: vol  lft/rgt: track"),
+            song,
+            songs,
             output: OutputMode::Headphones,
             hp_gain_db: 0.0,
             last_paint_sig: u64::MAX, // force the first paint
@@ -132,6 +146,21 @@ impl SidPlayer {
         }
     }
 
+    /// Step to the previous/next subtune, wrapping around. If a tune is playing,
+    /// the new subtune is hot-swapped in without tearing down the codec stream;
+    /// otherwise the selection is just remembered for the next play.
+    fn select_song(&mut self, forward: bool) {
+        if self.songs <= 1 {
+            return; // single-subtune file: nothing to switch to
+        }
+        self.song =
+            if forward { (self.song + 1) % self.songs } else { (self.song + self.songs - 1) % self.songs };
+        if self.playing {
+            self.load_player();
+        }
+        self.force_redraw();
+    }
+
     /// Toggle playback on/off.
     pub(crate) fn toggle(&mut self) {
         if self.playing {
@@ -142,27 +171,42 @@ impl SidPlayer {
         self.force_redraw();
     }
 
-    fn start(&mut self) {
+    /// Parse the tune and build a fresh `Player` for the currently selected
+    /// subtune (`self.song`), resetting the frame/underrun counters. Returns
+    /// false and sets an error status if the file won't parse. Does not touch
+    /// the codec — the caller owns stream setup — so it is also safe to call
+    /// while playing to hot-swap to a different subtune.
+    fn load_player(&mut self) -> bool {
         let psid = match Psid::parse(COMMANDO_SID) {
             Ok(p) => p,
             Err(e) => {
                 self.status = String::new();
                 write!(self.status, "Parse error: {}", e.0).ok();
                 log::error!("sidplayer: PSID parse error: {}", e.0);
-                return;
+                return false;
             }
         };
-        let song0 = psid.start_song.saturating_sub(1);
+        self.songs = psid.songs.max(1);
+        if self.song >= self.songs {
+            self.song = psid.start_song.saturating_sub(1).min(self.songs - 1);
+        }
         log::info!(
             "sidplayer: playing '{}' by {} (song {}/{})",
             psid.name.as_str(),
             psid.author.as_str(),
-            song0 + 1,
-            psid.songs
+            self.song + 1,
+            self.songs
         );
-        self.player = Some(Player::new(&psid, song0));
+        self.player = Some(Player::new(&psid, self.song));
         self.frames_played = 0;
         self.underruns = 0;
+        true
+    }
+
+    fn start(&mut self) {
+        if !self.load_player() {
+            return;
+        }
 
         self.codec.setup_8k_stream().expect("couldn't set up 8k stream");
         self.ticktimer.sleep_ms(50).unwrap();
@@ -254,6 +298,8 @@ impl SidPlayer {
                 }
                 self.force_redraw();
             }
+            '←' => self.select_song(false),
+            '→' => self.select_song(true),
             _ => {}
         }
     }
@@ -281,6 +327,7 @@ impl SidPlayer {
         h = h.wrapping_mul(31).wrapping_add(mode);
         h = h.wrapping_mul(31).wrapping_add((self.hp_gain_db as i32 as i64 as u64) & 0xffff);
         h = h.wrapping_mul(31).wrapping_add(self.underruns as u64);
+        h = h.wrapping_mul(31).wrapping_add(self.song as u64);
         h
     }
 
@@ -311,6 +358,11 @@ impl SidPlayer {
         self.text(4, 4, "SID Player");
         self.text(4, 40, "Commando");
         self.text(4, 64, "Rob Hubbard, 1985 Elite");
+
+        // current subtune (left/right to change)
+        let mut trackline = String::new();
+        write!(trackline, "Track: {}/{}", self.song + 1, self.songs).ok();
+        self.text(4, 82, &trackline);
 
         // output routing + headphone volume
         let mut outline = String::new();
