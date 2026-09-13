@@ -1,4 +1,6 @@
+mod catalog;
 mod cpu6502;
+mod netfetch;
 mod player;
 mod psid;
 mod sid;

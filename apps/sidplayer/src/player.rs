@@ -96,28 +96,7 @@ impl Player {
     }
 
     /// Set up a sentinel-return call and run until it returns or the cap trips.
-    fn call(&mut self, addr: u16, cap: u32) {
-        self.cpu.cycle = 0;
-        self.cpu.pc = addr;
-        // push sentinel-1 (RTS adds 1) so RTS lands on SENTINEL
-        let ret = SENTINEL.wrapping_sub(1);
-        self.cpu.sp = 0xfd;
-        self.cpu.mem[0x01ff] = (ret >> 8) as u8;
-        self.cpu.mem[0x01fe] = (ret & 0xff) as u8;
-
-        let mut insns = 0u32;
-        loop {
-            if self.cpu.pc == SENTINEL {
-                break;
-            }
-            self.cpu.step();
-            insns += 1;
-            if insns >= cap {
-                log::warn!("sidplayer: instruction cap hit at pc={:04x}", self.cpu.pc);
-                break;
-            }
-        }
-    }
+    fn call(&mut self, addr: u16, cap: u32) { run_call(&mut self.cpu, addr, cap); }
 
     /// Call the play routine for a new frame and capture its register-write log.
     fn run_play(&mut self) {
@@ -173,4 +152,113 @@ impl Player {
         }
         self.sid.output().clamp(-32767, 32767) as i16
     }
+}
+
+/// Set up a sentinel-return call on `cpu` and run until it returns (PC reaches the
+/// sentinel) or the instruction cap trips. Shared by the live [`Player`] and the
+/// headless [`classify_music_songs`] probe.
+fn run_call(cpu: &mut Cpu, addr: u16, cap: u32) {
+    cpu.cycle = 0;
+    cpu.pc = addr;
+    // push sentinel-1 (RTS adds 1) so RTS lands on SENTINEL
+    let ret = SENTINEL.wrapping_sub(1);
+    cpu.sp = 0xfd;
+    cpu.mem[0x01ff] = (ret >> 8) as u8;
+    cpu.mem[0x01fe] = (ret & 0xff) as u8;
+
+    let mut insns = 0u32;
+    loop {
+        if cpu.pc == SENTINEL {
+            break;
+        }
+        cpu.step();
+        insns += 1;
+        if insns >= cap {
+            log::warn!("sidplayer: instruction cap hit at pc={:04x}", cpu.pc);
+            break;
+        }
+    }
+}
+
+/// Number of emulated ~50 Hz frames to run per subtune when classifying — ~6 s.
+const PROBE_FRAMES: u32 = 300;
+/// A subtune counts as "music" only if it was still gating fresh notes at least
+/// this far into the probe (~2.4 s in). Short SFX/jingles gate a burst up front
+/// and then fall silent well before this.
+const MUSIC_MIN_LAST_FRAME: u32 = 120;
+/// ...and produced at least this many distinct note-on (gate rising) events.
+const MUSIC_MIN_GATES: u32 = 6;
+
+/// Voice control-register offsets within the SID register file ($D400-relative):
+/// voice 1 = $04, voice 2 = $0B, voice 3 = $12. Bit 0 of each is the gate.
+const CTRL_REGS: [u8; 3] = [0x04, 0x0b, 0x12];
+
+/// Headlessly classify which subtunes of `psid` are actual music (vs short sound
+/// effects / jingles) by running each one's 6502 init+play driver for a few
+/// emulated seconds and watching SID gate activity — no audio synthesis, so this
+/// is cheap. Returns the 0-based indices judged to be music. Falls back to *all*
+/// subtunes if the heuristic would otherwise hide everything (e.g. a percussive
+/// tune that never trips the gate heuristic), so a file is never left unplayable.
+pub fn classify_music_songs(psid: &Psid) -> Vec<u16> {
+    let songs = psid.songs.max(1);
+    let mut music = Vec::new();
+    for song in 0..songs {
+        if probe_is_music(psid, song) {
+            music.push(song);
+        }
+    }
+    if music.is_empty() {
+        music.extend(0..songs);
+    }
+    music
+}
+
+/// Run one subtune headlessly and decide whether it looks like sustained music.
+fn probe_is_music(psid: &Psid, song: u16) -> bool {
+    let mut cpu = Cpu::new();
+    let (load_addr, body) = psid.program();
+    for (i, &b) in body.iter().enumerate() {
+        let addr = load_addr as usize + i;
+        if addr < 65536 {
+            cpu.mem[addr] = b;
+        }
+    }
+
+    // init(A = song index)
+    cpu.a = song as u8;
+    cpu.x = 0;
+    cpu.y = 0;
+    run_call(&mut cpu, psid.init_address, INIT_INSN_CAP);
+
+    // Track per-voice gate state. `apply` walks a frame's writes and, when
+    // `count_frame` is Some, records each gate rising edge as a fresh note-on.
+    let mut prev_gate = [false; 3];
+    let mut last_gate_frame = 0u32;
+    let mut gate_on_count = 0u32;
+    let mut apply = |writes: &[RegWrite], prev: &mut [bool; 3], count_frame: Option<u32>| {
+        for w in writes {
+            if let Some(v) = CTRL_REGS.iter().position(|&cr| cr == w.reg) {
+                let g = w.val & 0x01 != 0;
+                if g && !prev[v] {
+                    if let Some(f) = count_frame {
+                        last_gate_frame = f;
+                        gate_on_count += 1;
+                    }
+                }
+                prev[v] = g;
+            }
+        }
+    };
+
+    // Seed gate state from whatever init left in the control registers, so a note
+    // held open across init->play isn't miscounted as a fresh note-on.
+    apply(&cpu.writes, &mut prev_gate, None);
+
+    for frame in 0..PROBE_FRAMES {
+        cpu.writes.clear();
+        run_call(&mut cpu, psid.play_address, PLAY_INSN_CAP);
+        apply(&cpu.writes, &mut prev_gate, Some(frame));
+    }
+
+    gate_on_count >= MUSIC_MIN_GATES && last_gate_frame >= MUSIC_MIN_LAST_FRAME
 }

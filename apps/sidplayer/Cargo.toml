@@ -17,6 +17,12 @@ ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.70" }
 xous-names = { package = "xous-api-names", version = "0.9.71" }
 gam = { path = "../../services/gam" }
 codec = { path = "../../services/codec" }
+modals = { path = "../../services/modals" }
+net = { path = "../../services/net" }
+pddb = { path = "../../services/pddb" }
+tls = { path = "../../libs/tls" }
+ureq = { version = "2.9.4", features = ["json"] }
+url = "2.3.1"
 
 [features]
 default = []
