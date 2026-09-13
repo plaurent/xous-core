@@ -224,11 +224,18 @@ impl SidPlayer {
         app
     }
 
-    /// Rebuild the library from the built-in tune plus everything in the PDDB.
+    /// Rebuild the library from the PDDB, plus the built-in tune.
+    ///
+    /// The built-in Commando is only shown when nothing has been downloaded yet, so
+    /// it acts as a starter tune but gets out of the way once the user has their own
+    /// library. A *downloaded* Commando is an ordinary PDDB entry and stays visible.
     fn rebuild_entries(&mut self) {
+        let downloaded = self.catalog.list();
         let mut entries = Vec::new();
-        entries.push(Entry { meta: self.builtin_meta.clone(), builtin: true });
-        for m in self.catalog.list() {
+        if downloaded.is_empty() {
+            entries.push(Entry { meta: self.builtin_meta.clone(), builtin: true });
+        }
+        for m in downloaded {
             entries.push(Entry { meta: m, builtin: false });
         }
         self.entries = entries;

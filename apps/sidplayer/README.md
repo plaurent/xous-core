@@ -12,8 +12,8 @@ list — including a **random shuffle** mode.
 
 ## Quick start
 
-1. Launch **SID Music Player** from the app menu. It opens on the built-in tune,
-   Rob Hubbard's *Commando* (1985, Elite).
+1. Launch **SID Music Player** from the app menu. Before you've downloaded
+   anything it shows a built-in demo tune, Rob Hubbard's *Commando* (1985, Elite).
 2. Use **↑/↓** to move the selection (the outline box) and **Enter** (or Space) to
    play/stop it.
 3. To add your own tunes, press **d** and enter a directory URL (see
@@ -46,8 +46,10 @@ rows of key hints.
 
 Everything you can play is shown as one scrollable list:
 
-- The **built-in** *Commando* tune is always first and can't be deleted.
-- Any **downloaded** tunes follow, sorted by name.
+- The **built-in** *Commando* tune is shown only while nothing has been downloaded
+  yet — a starter tune that steps aside once you have your own library. It can't be
+  deleted. (A *downloaded* Commando is an ordinary tune and stays visible.)
+- **Downloaded** tunes are listed sorted by name.
 - Each file contributes one row **per subtune**. The first row of a file shows its
   name and author; the rest are indented `t2/19`, `t3/19`, etc.
 - The **selected** row is drawn with an outline box. (Reverse-video highlighting
@@ -177,9 +179,6 @@ Deleting a tune (Backspace) removes it from `sidplayer.tunes` and `sidplayer.met
   use shuffle for continuous, changing playback.
 - There is no HVSC song-length database on the device, so shuffle uses a fixed
   minutes-per-tune rather than each tune's true length.
-
-No copyrighted tunes are committed to this repository; the only embedded tune is the
-*Commando* demo. Everything else you add is downloaded to your own device.
 
 ---
 
