@@ -1,11 +1,9 @@
 //! Local tune library backed by the PDDB.
 //!
 //! Layout (all in the default basis):
-//!   * dict `sidplayer.tunes` — one key per downloaded file, key = filename,
-//!     value = the raw `.sid` bytes.
-//!   * dict `sidplayer.meta`  — one key per file, key = filename, value = a single
-//!     tab-separated metadata line (see [`TuneMeta::to_line`]). Cached so we don't
-//!     re-parse/re-probe every tune on each launch.
+//!   * dict `sidplayer.tunes` — one key per downloaded file, key = filename, value = the raw `.sid` bytes.
+//!   * dict `sidplayer.meta`  — one key per file, key = filename, value = a single tab-separated metadata
+//!     line (see [`TuneMeta::to_line`]). Cached so we don't re-parse/re-probe every tune on each launch.
 //!   * dict `sidplayer.state` — app state; key `url` = last directory URL entered.
 
 use std::io::{Read, Write};
@@ -120,15 +118,8 @@ impl Catalog {
     pub fn store(&self, meta: &TuneMeta, bytes: &[u8]) -> std::io::Result<()> {
         // delete-then-create so a shorter new value can't leave stale trailing bytes
         self.pddb.delete_key(TUNES_DICT, &meta.filename, None).ok();
-        let mut k = self.pddb.get(
-            TUNES_DICT,
-            &meta.filename,
-            None,
-            true,
-            true,
-            Some(bytes.len()),
-            None::<fn()>,
-        )?;
+        let mut k =
+            self.pddb.get(TUNES_DICT, &meta.filename, None, true, true, Some(bytes.len()), None::<fn()>)?;
         k.write_all(bytes)?;
         drop(k);
 

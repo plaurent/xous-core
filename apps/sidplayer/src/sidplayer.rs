@@ -619,10 +619,7 @@ impl SidPlayer {
         };
         if links.is_empty() {
             self.modals
-                .show_notification(
-                    &format!("No .sid files linked on that page.\n\nURL: {}", url),
-                    None,
-                )
+                .show_notification(&format!("No .sid files linked on that page.\n\nURL: {}", url), None)
                 .ok();
             self.set_status("No .sid files found");
             self.force_redraw();
@@ -835,11 +832,8 @@ impl SidPlayer {
     fn row_text(&self, idx: usize) -> String {
         let row = self.rows[idx];
         let e = &self.entries[row.entry];
-        let playing = self
-            .now_playing
-            .as_ref()
-            .map(|(f, s)| f == &e.meta.filename && *s == row.song)
-            .unwrap_or(false);
+        let playing =
+            self.now_playing.as_ref().map(|(f, s)| f == &e.meta.filename && *s == row.song).unwrap_or(false);
         let mark = if playing { "▶" } else { " " };
 
         let body = if row.first {

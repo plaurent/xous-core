@@ -72,11 +72,9 @@ pub fn list_sid_files(agent: &Agent, index_url: &str) -> Result<Vec<SidLink>, St
         // 526 is the tls connector's sentinel for an untrusted certificate chain
         // (its synthetic response reads "https://example.com/ status code 526").
         Err(ureq::Error::Status(526, _)) => {
-            return Err(
-                "TLS certificate for this host is not trusted. Trust the site's root \
+            return Err("TLS certificate for this host is not trusted. Trust the site's root \
                  CA when prompted, then try again."
-                    .to_string(),
-            );
+                .to_string());
         }
         Err(e) => return Err(format!("fetch failed: {}", e)),
     };
