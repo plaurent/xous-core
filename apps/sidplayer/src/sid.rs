@@ -11,10 +11,11 @@
 //! RV32IMAC even when called ~1 M times a second. The *filter* (`output`) is a
 //! different story: it runs only once per (oversampled) output sample —
 //! `FILTER_RATE` = 32 kHz, a few thousand times per second — and there the
-//! coefficient/state products genuinely exceed i32 range, so it uses i64
-//! intermediates. That is a `mul`/`mulh` pair per multiply, a handful per sample;
-//! negligible next to the per-cycle path. `new()` uses floats once at startup to
-//! precompute the cutoff (`g`) table.
+//! coefficient×state products genuinely exceed i32 range. Its state and
+//! coefficients are kept i32 but each product/sum is taken in i64, so the
+//! multiplies widen i32×i32 → i64 (a `mul`/`mulh` pair) rather than a full
+//! i64×i64 — a handful per sample, negligible next to the per-cycle path.
+//! `new()` uses floats once at startup to precompute the cutoff (`g`) table.
 //!
 //! The analogue models here are deliberately lean approximations (AND-combined
 //! waveforms, a topology-preserving / zero-delay-feedback state-variable filter).
@@ -67,6 +68,11 @@ static RES_K_Q16: [i32; 16] = [
     91750, 85064, 78865, 73118, 67790, 62850, 58270, 54023,
     50086, 46436, 43052, 39915, 37006, 34310, 31809, 29491,
 ];
+
+/// Hard-sync / ring-mod source voice for each voice: voice `v` is modulated by
+/// voice `(v+2) % 3`. Precomputed as a table so the hot loops avoid a `% 3`
+/// (a reciprocal-multiply sequence on RV32, which has no cheap general divide).
+const SYNC_SRC: [usize; 3] = [2, 0, 1];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EnvState {
@@ -316,12 +322,18 @@ pub struct Sid {
     // Q-shifted). `a1`/`a2`/`a3`/`k` are the derived coefficients in Q16; they
     // depend only on `fc`/`res`, so they are recomputed lazily via `filter_dirty`
     // when a filter register is written rather than every sample.
-    ic1eq: i64,
-    ic2eq: i64,
-    a1: i64,
-    a2: i64,
-    a3: i64,
-    k: i64,
+    //
+    // All of these fit comfortably in i32 (states peak in the low tens of
+    // thousands even at max resonance; coefficients are <= ~92000). They are kept
+    // i32 so the per-sample multiplies widen i32*i32 -> i64 (a `mul`/`mulh` pair
+    // on RV32) instead of a full i64*i64; only the products and their sums are
+    // taken in i64, which is where the range is actually needed.
+    ic1eq: i32,
+    ic2eq: i32,
+    a1: i32,
+    a2: i32,
+    a3: i32,
+    k: i32,
     filter_dirty: bool,
     // precomputed prewarped-cutoff table: fc(0..2047) -> g = tan(pi*fc_hz/FILTER_RATE), Q16
     g_table: [i32; 2048],
@@ -369,14 +381,16 @@ impl Sid {
         let g = self.g_table[(self.fc & 0x7ff) as usize] as i64; // Q16
         let k = RES_K_Q16[(self.res & 0x0f) as usize] as i64; // Q16
         // denom = 1 + g*(g + k)   (all Q16); a1 = 1/denom, a2 = g*a1, a3 = g*a2.
+        // Done in i64 here (this runs only when a filter register changes, ~once
+        // per frame), then stored as i32 for the cheap per-sample path.
         let denom = (1i64 << 16) + ((g * (g + k)) >> 16);
         let a1 = (1i64 << 32) / denom; // Q16
         let a2 = (g * a1) >> 16; // Q16
         let a3 = (g * a2) >> 16; // Q16
-        self.a1 = a1;
-        self.a2 = a2;
-        self.a3 = a3;
-        self.k = k;
+        self.a1 = a1 as i32;
+        self.a2 = a2 as i32;
+        self.a3 = a3 as i32;
+        self.k = k as i32;
         self.filter_dirty = false;
     }
 
@@ -453,7 +467,12 @@ impl Sid {
                 // 2^25 fits in i32) and clock the LFSR that many times.
                 let lo = a0 as i32 - 0x8_0000;
                 let hi = (a0 + adv) as i32 - 0x8_0000;
-                let edges = hi.div_euclid(0x10_0000) - lo.div_euclid(0x10_0000);
+                // edges = floor(hi/2^20) - floor(lo/2^20). The divisor is a
+                // positive power of two, so floor-division is exactly an
+                // arithmetic right shift (same rounding toward -inf for the
+                // negative `lo` case) — and a shift avoids the soft-division
+                // routine a `div_euclid` can compile to on RV32 (no HW divide).
+                let edges = (hi >> 20) - (lo >> 20);
                 for _ in 0..edges {
                     Self::clock_noise(voice);
                 }
@@ -464,7 +483,7 @@ impl Sid {
 
         // Hard sync: voice v is synced by voice (v+2)%3 (0<-2, 1<-0, 2<-1).
         for v in 0..3 {
-            let src = (v + 2) % 3;
+            let src = SYNC_SRC[v];
             let src_rose = !old_msb[src] && (new_acc[src] & 0x80_0000 != 0);
             if self.voices[v].sync() && src_rose && !self.voices[v].test() {
                 self.voices[v].acc = 0;
@@ -543,7 +562,7 @@ impl Sid {
         let mut filt_in: i32 = 0;
 
         for v in 0..3 {
-            let src = (v + 2) % 3;
+            let src = SYNC_SRC[v];
             let ring_src_msb = self.voices[src].prev_msb;
             let vo = Self::waveform(&self.voices[v], ring_src_msb);
             let routed = self.filt_mask & (1 << v) != 0;
@@ -572,17 +591,20 @@ impl Sid {
         //   lp = v2 ; bp = v1 ; hp = x - k*v1 - v2
         //
         // Products of a Q16 coefficient with a signal-scale state exceed i32 at
-        // high resonance (state can reach ~Q * input), so the multiplies are done
-        // in i64. This is a handful of 64-bit multiplies per (32 kHz) filter
-        // sample — cheap, and confined to this per-sample path, not the per-cycle
+        // high resonance (state can reach ~Q * input), so each product/sum is
+        // taken in i64 — but the operands are i32, so these widen i32*i32 -> i64
+        // (a `mul`/`mulh` pair on RV32) rather than a full i64*i64. Results are
+        // shifted back down and stored as i32. A handful of widening multiplies
+        // per (32 kHz) filter sample, confined to this path — not the per-cycle
         // oscillator loop.
         if self.filter_dirty {
             self.recompute_filter();
         }
-        let x = filt_in as i64;
+        let x = filt_in;
         let v3 = x - self.ic2eq;
-        let v1 = (self.a1 * self.ic1eq + self.a2 * v3) >> 16;
-        let v2 = self.ic2eq + ((self.a2 * self.ic1eq + self.a3 * v3) >> 16);
+        let v1 = ((self.a1 as i64 * self.ic1eq as i64 + self.a2 as i64 * v3 as i64) >> 16) as i32;
+        let v2 = (self.ic2eq as i64
+            + ((self.a2 as i64 * self.ic1eq as i64 + self.a3 as i64 * v3 as i64) >> 16)) as i32;
         self.ic1eq = 2 * v1 - self.ic1eq;
         self.ic2eq = 2 * v2 - self.ic2eq;
         // Tripwire (test builds only): the ZDF form keeps state bounded by
@@ -595,9 +617,9 @@ impl Sid {
         );
         let lp = v2;
         let bp = v1;
-        let hp = x - ((self.k * v1) >> 16) - v2;
+        let hp = x - ((self.k as i64 * v1 as i64) >> 16) as i32 - v2;
 
-        let mut filt_out: i64 = 0;
+        let mut filt_out: i32 = 0;
         if self.mode_vol & 0x10 != 0 {
             filt_out += lp;
         }
@@ -608,9 +630,10 @@ impl Sid {
             filt_out += hp;
         }
 
-        let total = direct as i64 + filt_out;
-        // Apply master volume and scale into i16 territory; clamp.
-        let s = (total * master_vol as i64 * 4) / 15;
-        s.clamp(-32767, 32767) as i32
+        let total = direct + filt_out;
+        // Apply master volume and scale into i16 territory; clamp. Peak `total`
+        // (~5*10^4) * 15 * 4 stays well inside i32, so no widening is needed here.
+        let s = (total * master_vol * 4) / 15;
+        s.clamp(-32767, 32767)
     }
 }
