@@ -182,6 +182,37 @@ Deleting a tune (Backspace) removes it from `sidplayer.tunes` and `sidplayer.met
 
 ---
 
+## SID model fidelity
+
+The chip model (`sid.rs`) trades cycle-accuracy for real-time performance on the
+RV32 core, but reproduces the essential character of classic tunes well:
+
+- **Filter:** a zero-delay-feedback (topology-preserving) state-variable filter.
+  It is unconditionally stable at any cutoff/resonance, is a true low-pass above
+  cutoff (the previous Chamberlin form boosted treble ~14 dB where it should cut),
+  and has a realistic 6581 resonance curve (`Q` from ~0.7 up to ~2.2). The cutoff
+  register maps through the 6581's measured nonlinear curve (or a near-linear one
+  for the 8580, selected from the PSID model flag), **scaled so the full register
+  range lands just under the 8 kHz output's 4 kHz Nyquist**. Mapping to the chip's
+  real 8–12 kHz would push filter sweeps into a band the codec can't reproduce and
+  silence filter-swept percussion; the scaling rises automatically if the codec
+  rate is ever raised.
+- **Oversampling:** the waveform + filter stage runs 4× the 8 kHz codec rate
+  (`OVERSAMPLE` in `sid.rs`) and is box-averaged down, so noise bursts and narrow
+  pulses keep their transient character instead of aliasing to a dull thud. Drop
+  `OVERSAMPLE` to 2 or 1 if a future change needs more CPU headroom.
+
+### Known gaps (deliberately out of scope)
+
+- **Combined waveforms** are modelled as a bitwise AND of the selected waveforms.
+  That is reasonable for saw+triangle and saw+pulse, but wrong for anything
+  combined with **noise** (the real chip progressively zeroes the LFSR instead).
+- **No 6581 DC offset or output nonlinearity**, so tunes that make percussion by
+  banging the master-volume register (`$D418` "sample drums") will be **inaudible**.
+  Many 1986–90 tunes rely on this.
+- When **no waveform bit is set** the model outputs silence; the real chip holds
+  the last value. Minor, but a few tunes do write `$D404 = $00` mid-note.
+
 ## Building
 
 This app depends on service crates (`modals`, `pddb`, `tls`, `net`), so build it as
