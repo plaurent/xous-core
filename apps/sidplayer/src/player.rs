@@ -11,10 +11,10 @@ use alloc::vec::Vec;
 
 use crate::cpu6502::{Cpu, RegWrite};
 use crate::psid::{Clock, Psid};
-use crate::sid::{MAX_STEP, OVERSAMPLE, Sid};
+use crate::sid::{MAX_STEP, Sid};
 
 /// Final codec output rate. Must match `sid::CODEC_RATE`, from which the SID
-/// filter derives its (oversampled) `FILTER_RATE`.
+/// filter derives its (oversampled) sample rate (`CODEC_RATE * oversample`).
 pub const OUTPUT_RATE: u32 = 8000;
 
 /// Cap on 6502 instructions per init/play call, to bound runaway tunes.
@@ -38,10 +38,15 @@ pub struct Player {
     writes: Vec<RegWrite>,
     write_idx: usize,
     started: bool,
+
+    /// Waveform+filter evaluations per output sample (see `sid::DEFAULT_OVERSAMPLE`).
+    oversample: u32,
 }
 
 impl Player {
-    pub fn new(psid: &Psid, song0: u16) -> Self {
+    /// `oversample` sets the quality/CPU trade-off (see `sid::DEFAULT_OVERSAMPLE`);
+    /// it is clamped and used to build the SID's filter and drive `next_sample`.
+    pub fn new(psid: &Psid, song0: u16, oversample: u32) -> Self {
         let mut cpu = Cpu::new();
 
         // Load the program at its effective load address.
@@ -63,7 +68,8 @@ impl Player {
         };
         let cyc_per_sample_q16 = ((chip_clock as u64) << 16) as u64 / OUTPUT_RATE as u64;
 
-        let sid = Sid::new(matches!(psid.model, crate::psid::SidModel::Mos8580));
+        let sid = Sid::new(matches!(psid.model, crate::psid::SidModel::Mos8580), oversample);
+        let oversample = sid.oversample(); // clamped value actually in use
 
         let mut player = Player {
             cpu,
@@ -76,6 +82,7 @@ impl Player {
             writes: Vec::new(),
             write_idx: 0,
             started: false,
+            oversample,
         };
 
         player.run_init(psid.init_address, song0);
@@ -141,24 +148,25 @@ impl Player {
 
     /// Produce one 8 kHz output sample. The oscillators/envelopes advance in
     /// small sub-steps (for exact noise/sync clocking); the waveform + filter are
-    /// then evaluated `OVERSAMPLE` times across this sample's worth of chip
+    /// then evaluated `self.oversample` times across this sample's worth of chip
     /// cycles and box-averaged. Oversampling folds the noise/pulse energy above
     /// the 4 kHz codec Nyquist down as a lowered noise floor instead of letting
     /// it alias into the audible band, which is what gives noise bursts their
     /// hiss-with-a-transient character rather than a dull click. The chip itself
-    /// is still batch-clocked, so the extra cost is `OVERSAMPLE` waveform+filter
-    /// evaluations, not `OVERSAMPLE`x the emulation.
+    /// is still batch-clocked, so the extra cost is `oversample` waveform+filter
+    /// evaluations, not `oversample`x the emulation.
     pub fn next_sample(&mut self) -> i16 {
         self.cyc_acc += self.cyc_per_sample_q16;
         let cycles = self.cyc_acc >> 16;
         self.cyc_acc &= 0xffff;
 
+        let n = self.oversample;
         let mut sum: i32 = 0;
         let mut done: u32 = 0;
-        for i in 0..OVERSAMPLE {
+        for i in 0..n {
             // Advance to this sub-sample's share of the cycle budget, distributing
-            // any remainder evenly across the OVERSAMPLE points.
-            let target = (cycles * (i + 1)) / OVERSAMPLE;
+            // any remainder evenly across the `n` points.
+            let target = (cycles * (i + 1)) / n;
             let mut remaining = target - done;
             while remaining > 0 {
                 remaining -= self.advance(remaining);
@@ -166,7 +174,7 @@ impl Player {
             done = target;
             sum += self.sid.output();
         }
-        (sum / OVERSAMPLE as i32).clamp(-32767, 32767) as i16
+        (sum / n as i32).clamp(-32767, 32767) as i16
     }
 }
 

@@ -9,6 +9,7 @@ use crate::catalog::{Catalog, TuneMeta};
 use crate::netfetch;
 use crate::player::{OUTPUT_RATE, Player, classify_music_songs};
 use crate::psid::Psid;
+use crate::sid::{DEFAULT_OVERSAMPLE, MAX_OVERSAMPLE, MIN_OVERSAMPLE};
 
 /// The embedded tune. Rob Hubbard's "Commando" (1985, Elite). Always present as
 /// the first library entry so the app is useful before anything is downloaded.
@@ -118,6 +119,9 @@ pub(crate) struct SidPlayer {
     output: OutputMode,
     /// headphone analog gain in dB (0 = loudest, more negative = quieter)
     hp_gain_db: f32,
+    /// SID oversampling factor (quality vs CPU). Adjustable with +/- while
+    /// stopped; applied to the engine when the next tune starts.
+    oversample: u32,
 
     /// Random-shuffle mode: play a random row, advance to another random row every
     /// `shuffle_secs`. Driven by the audio-callback sample counter, no timer thread.
@@ -185,6 +189,11 @@ impl SidPlayer {
         let visible_rows = ((screensize.y - LIST_TOP - FOOTER_H) / ROW_H).max(1) as usize;
         let max_chars = ((screensize.x - 12) / 8).max(8) as usize;
 
+        // Restore the saved quality (oversample) setting, clamped to the valid
+        // range in case an out-of-range value was ever written.
+        let oversample =
+            catalog.get_oversample().unwrap_or(DEFAULT_OVERSAMPLE).clamp(MIN_OVERSAMPLE, MAX_OVERSAMPLE);
+
         let mut app = SidPlayer {
             gam,
             _token: token,
@@ -214,6 +223,7 @@ impl SidPlayer {
             songs: 1,
             output: OutputMode::Headphones,
             hp_gain_db: 0.0,
+            oversample,
             shuffle: false,
             shuffle_secs: 0,
             rng_state: 0,
@@ -472,7 +482,7 @@ impl SidPlayer {
             self.song + 1,
             self.songs
         );
-        self.player = Some(Player::new(&psid, self.song));
+        self.player = Some(Player::new(&psid, self.song, self.oversample));
         self.frames_played = 0;
         self.underruns = 0;
         true
@@ -763,24 +773,61 @@ impl SidPlayer {
                 }
                 self.force_redraw();
             }
-            // Volume up: F1 (0x11), or +/= as aliases. (Up/Down now scroll the list.)
-            '\u{11}' | '+' | '=' => {
-                self.hp_gain_db = (self.hp_gain_db + 3.0).min(0.0);
+            // Volume up/down: F1 (0x11) / F4 (0x14) always adjust volume.
+            '\u{11}' => self.volume_up(),
+            '\u{14}' => self.volume_down(),
+            // +/- adjust volume while a tune is playing, but change the SID
+            // oversampling quality while stopped (rebuilding the engine mid-play
+            // would glitch the audio, so it only takes effect on the next play).
+            '+' | '=' => {
                 if self.playing {
-                    self.apply_output();
+                    self.volume_up();
+                } else {
+                    self.change_quality(1);
                 }
-                self.force_redraw();
             }
-            // Volume down: F4 (0x14), or -/_ as aliases.
-            '\u{14}' | '-' | '_' => {
-                self.hp_gain_db = (self.hp_gain_db - 3.0).max(-42.0);
+            '-' | '_' => {
                 if self.playing {
-                    self.apply_output();
+                    self.volume_down();
+                } else {
+                    self.change_quality(-1);
                 }
-                self.force_redraw();
             }
             _ => {}
         }
+    }
+
+    fn volume_up(&mut self) {
+        self.hp_gain_db = (self.hp_gain_db + 3.0).min(0.0);
+        if self.playing {
+            self.apply_output();
+        }
+        self.force_redraw();
+    }
+
+    fn volume_down(&mut self) {
+        self.hp_gain_db = (self.hp_gain_db - 3.0).max(-42.0);
+        if self.playing {
+            self.apply_output();
+        }
+        self.force_redraw();
+    }
+
+    /// Adjust the SID oversampling factor (quality vs CPU) by `delta`, clamped to
+    /// the engine's supported range. Only reachable while stopped; the new value
+    /// is applied when the next tune starts (see `load_player`).
+    fn change_quality(&mut self, delta: i32) {
+        let n = (self.oversample as i32 + delta)
+            .clamp(MIN_OVERSAMPLE as i32, MAX_OVERSAMPLE as i32) as u32;
+        if n == self.oversample {
+            return; // already at the limit; nothing changed, skip the flash write
+        }
+        self.oversample = n;
+        self.catalog.set_oversample(n); // persist across launches
+        let mut s = String::new();
+        write!(s, "SID quality (oversample) = {} — applies on next play", n).ok();
+        self.status = s;
+        self.force_redraw();
     }
 
     pub(crate) fn on_focus(&mut self, foreground: bool) {
@@ -903,13 +950,15 @@ impl SidPlayer {
         let statusline = truncate(&self.status, self.max_chars);
         self.text(4, fy, &statusline);
         let mut info = String::new();
-        write!(info, "Out {}  Vol {} dB", self.output.label(), self.hp_gain_db as i32).ok();
+        write!(info, "Out {}  Vol {} dB  Q{}", self.output.label(), self.hp_gain_db as i32, self.oversample).ok();
         if self.playing {
             write!(info, "  ur {}", self.underruns).ok();
         }
         self.text(4, fy + LINE_H, &info);
         self.text(4, fy + 2 * LINE_H, "⏎play/stop  1-9:shuffle  a:all");
-        self.text(4, fy + 3 * LINE_H, "d:get  ⌫del  o:out  F1/F4:vol");
+        // +/- is volume while playing, SID quality (oversample) while stopped.
+        let hint = if self.playing { "d:get ⌫del o:out F1/F4/±:vol" } else { "d:get ⌫del o:out F1/F4:vol ±:qual" };
+        self.text(4, fy + 3 * LINE_H, hint);
 
         self.gam.redraw().unwrap();
     }

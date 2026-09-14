@@ -14,6 +14,7 @@ const TUNES_DICT: &str = "sidplayer.tunes";
 const META_DICT: &str = "sidplayer.meta";
 const STATE_DICT: &str = "sidplayer.state";
 const URL_KEY: &str = "url";
+const OVERSAMPLE_KEY: &str = "oversample";
 
 /// Per-tune metadata shown in the browser and used to drive playback.
 #[derive(Clone)]
@@ -164,6 +165,27 @@ impl Catalog {
         self.pddb.delete_key(STATE_DICT, URL_KEY, None).ok();
         if let Ok(mut key) = self.pddb.get(STATE_DICT, URL_KEY, None, true, true, None, None::<fn()>) {
             key.write_all(url.as_bytes()).ok();
+            drop(key);
+            self.pddb.sync().ok();
+        }
+    }
+
+    /// Saved SID oversampling (quality) factor, if any. Returns None when unset or
+    /// unparseable so the caller can fall back to its default.
+    pub fn get_oversample(&self) -> Option<u32> {
+        let mut key =
+            self.pddb.get(STATE_DICT, OVERSAMPLE_KEY, None, false, false, None, None::<fn()>).ok()?;
+        let mut buf = Vec::new();
+        key.read_to_end(&mut buf).ok()?;
+        String::from_utf8_lossy(&buf).trim().parse().ok()
+    }
+
+    pub fn set_oversample(&self, n: u32) {
+        self.pddb.delete_key(STATE_DICT, OVERSAMPLE_KEY, None).ok();
+        if let Ok(mut key) =
+            self.pddb.get(STATE_DICT, OVERSAMPLE_KEY, None, true, true, None, None::<fn()>)
+        {
+            key.write_all(n.to_string().as_bytes()).ok();
             drop(key);
             self.pddb.sync().ok();
         }

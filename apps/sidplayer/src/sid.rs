@@ -9,8 +9,9 @@
 //! The per-cycle oscillator/envelope path (`clock`, `waveform`) is integer-only
 //! and 32-bit: no floats, no 64-bit multiply/divide, so it stays cheap on
 //! RV32IMAC even when called ~1 M times a second. The *filter* (`output`) is a
-//! different story: it runs only once per (oversampled) output sample —
-//! `FILTER_RATE` = 32 kHz, a few thousand times per second — and there the
+//! different story: it runs once per (oversampled) output sample — at
+//! `CODEC_RATE * oversample` (e.g. 16 kHz at the default 2x), a few thousand
+//! times per second — and there the
 //! coefficient×state products genuinely exceed i32 range. Its state and
 //! coefficients are kept i32 but each product/sum is taken in i64, so the
 //! multiplies widen i32×i32 → i64 (a `mul`/`mulh` pair) rather than a full
@@ -20,7 +21,8 @@
 //! The analogue models here are deliberately lean approximations (AND-combined
 //! waveforms, a topology-preserving / zero-delay-feedback state-variable filter).
 //! They are not cycle-accurate, but reproduce the essential character of classic
-//! tunes well. The filter and waveform stages are oversampled `OVERSAMPLE`x above
+//! tunes well. The filter and waveform stages are oversampled (a runtime
+//! `oversample` factor) above
 //! the codec rate so noise bursts and narrow pulses retain their transient
 //! character instead of aliasing to a dull thud.
 
@@ -34,16 +36,21 @@ pub const MAX_STEP: u32 = 128;
 
 /// Codec (final) output sample rate. Must match `player::OUTPUT_RATE`.
 pub const CODEC_RATE: u32 = 8_000;
-/// How many times the waveform + filter stage is evaluated per codec sample. The
-/// chip is advanced by a fraction of the sample's cycles between each evaluation
-/// and the results are box-averaged, so energy above the codec Nyquist folds down
-/// as a lowered noise floor rather than aliasing into the audible band. Bumping
-/// this up costs `OVERSAMPLE` waveform+filter evaluations per output sample (not
-/// `OVERSAMPLE`x the whole chip emulation — `clock()` still batches the chip
-/// state). Drop to 2 (or 1) if hardware profiling shows 4 is too expensive.
-pub const OVERSAMPLE: u32 = 4;
-/// Rate at which the filter (and waveform sampling) actually runs.
-pub const FILTER_RATE: u32 = CODEC_RATE * OVERSAMPLE;
+/// Oversampling factor: how many times the waveform + filter stage is evaluated
+/// per codec sample. The chip is advanced by a fraction of the sample's cycles
+/// between each evaluation and the results are box-averaged, so energy above the
+/// codec Nyquist folds down as a lowered noise floor rather than aliasing into
+/// the audible band. Each step costs one extra waveform+filter evaluation per
+/// output sample (NOT a whole extra chip emulation — `clock()` still batches the
+/// chip state), so per-sample cost is roughly linear in this factor.
+///
+/// Chosen at runtime (`Sid::new` / `Player::new`) rather than fixed at compile
+/// time, so the app can trade CPU for quality on the fly. Higher = better
+/// anti-aliasing but more CPU; 1 = point-sampled (cheapest). The filter runs at
+/// `CODEC_RATE * oversample`, so changing it rebuilds the cutoff (`g`) table.
+pub const DEFAULT_OVERSAMPLE: u32 = 2;
+pub const MIN_OVERSAMPLE: u32 = 1;
+pub const MAX_OVERSAMPLE: u32 = 8;
 
 /// reSID rate-counter periods indexed by the 4-bit attack/decay/release value.
 #[rustfmt::skip]
@@ -273,8 +280,8 @@ static F0_POINTS_6581: [(u32, f32); 27] = [
 ///
 /// Crucially, both curves are then **scaled** so the register's full range maps
 /// just under the *output* Nyquist (`CODEC_RATE/2`), not up to the chip's real
-/// 8–12 kHz. The filter is oversampled (`FILTER_RATE` = 32 kHz) but the final
-/// codec output is still 8 kHz, so any cutoff above ~4 kHz puts the filter's
+/// 8–12 kHz. The filter is oversampled (it runs at `CODEC_RATE * oversample`) but
+/// the final codec output is still 8 kHz, so any cutoff above ~4 kHz puts the filter's
 /// resonant peak and rolloff into a band the codec cannot reproduce — which is
 /// exactly what silences filter-swept percussion (e.g. this file's drum, whose
 /// sweep sits at register `fc` 1024–1536: ~5–7 kHz on the raw 6581 curve, dead
@@ -335,17 +342,24 @@ pub struct Sid {
     a3: i32,
     k: i32,
     filter_dirty: bool,
-    // precomputed prewarped-cutoff table: fc(0..2047) -> g = tan(pi*fc_hz/FILTER_RATE), Q16
+    // filter sample rate = CODEC_RATE * oversample; the `g` table is built for it.
+    oversample: u32,
+    // precomputed prewarped-cutoff table: fc(0..2047) -> g = tan(pi*fc_hz/filter_rate), Q16
     g_table: [i32; 2048],
 }
 
 impl Sid {
-    pub fn new(is_8580: bool) -> Self {
-        // The filter runs at FILTER_RATE (32 kHz), so its usable range extends to
-        // ~16 kHz — the whole SID cutoff range is now representable. `g` is the
-        // prewarped ZDF coefficient tan(pi*fc_hz/fs); cap fc_hz at 0.45*fs so
-        // tan() stays well-conditioned (it blows up toward Nyquist).
-        let fs = FILTER_RATE as f32;
+    /// `oversample` is the waveform+filter evaluation factor (see
+    /// [`DEFAULT_OVERSAMPLE`]); it is clamped to [`MIN_OVERSAMPLE`,
+    /// `MAX_OVERSAMPLE`] and sets the filter's sample rate.
+    pub fn new(is_8580: bool, oversample: u32) -> Self {
+        let oversample = oversample.clamp(MIN_OVERSAMPLE, MAX_OVERSAMPLE);
+        // The filter runs at CODEC_RATE * oversample, so its usable range extends
+        // to half that — the whole (audible-scaled) SID cutoff range is
+        // representable. `g` is the prewarped ZDF coefficient tan(pi*fc_hz/fs);
+        // cap fc_hz at 0.45*fs so tan() stays well-conditioned (it blows up
+        // toward Nyquist).
+        let fs = (CODEC_RATE * oversample) as f32;
         let fc_cap = 0.45 * fs;
         let mut g_table = [0i32; 2048];
         for (i, slot) in g_table.iter_mut().enumerate() {
@@ -369,9 +383,15 @@ impl Sid {
             a3: 0,
             k: 0,
             filter_dirty: true,
+            oversample,
             g_table,
         }
     }
+
+    /// The oversampling factor this instance was built with (see [`Player`], which
+    /// drives the per-sample oversampling loop at this rate).
+    #[inline]
+    pub fn oversample(&self) -> u32 { self.oversample }
 
     /// Recompute the ZDF coefficients from the current `fc`/`res`. Called lazily
     /// from `output()` when a filter register has been written since the last

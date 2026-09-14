@@ -34,11 +34,12 @@ list — including a **random shuffle** mode.
 | **a** | Toggle **show all** subtunes vs. music-only (see [Tracks](#tracks-music-vs-sound-effects)). |
 | **d** | **Download** tunes from a directory URL. |
 | **o** | Cycle audio **output**: Headphones → Speaker → Both. |
-| **F1** / **+** | Volume up. |
-| **F4** / **–** | Volume down. |
+| **F1** | Volume up. |
+| **F4** | Volume down. |
+| **+ / –** | **While playing:** volume up/down. **While stopped:** raise/lower the SID **quality** (oversampling) — see [Quality vs. CPU](#quality-vs-cpu). |
 
-The bottom of the screen shows a status line, the current output/volume, and two
-rows of key hints.
+The bottom of the screen shows a status line, the current output/volume/quality
+(`Q<n>`), and two rows of key hints.
 
 ---
 
@@ -161,7 +162,7 @@ All data lives in the default basis:
 |---|---|
 | `sidplayer.tunes` | one key per downloaded file (key = filename, value = raw `.sid` bytes). |
 | `sidplayer.meta` | one key per file with cached metadata (name, author, subtune count, which subtunes are music) so tunes aren't re-probed on every launch. |
-| `sidplayer.state` | app state; key `url` holds the last directory URL. |
+| `sidplayer.state` | app state; key `url` holds the last directory URL, key `oversample` holds the SID quality setting. |
 | `tls.trusted` | trusted CA certificates (managed by the shared `tls` library). |
 
 Deleting a tune (Backspace) removes it from `sidplayer.tunes` and `sidplayer.meta`.
@@ -182,6 +183,21 @@ Deleting a tune (Backspace) removes it from `sidplayer.tunes` and `sidplayer.met
 
 ---
 
+## Quality vs. CPU
+
+The SID engine **oversamples** the waveform + filter stage (evaluates it several
+times per output sample and averages) to keep noise bursts and narrow pulses from
+aliasing into a dull click. More oversampling sounds better but costs more CPU,
+which on this single-core device can eventually cause audio dropouts.
+
+You can tune this trade-off with **+ / –** *while playback is stopped* (while
+playing, those keys are volume). The current factor is shown in the footer as
+`Q<n>` (default **Q2**, range 1–8). **Q1** is cheapest (point-sampled); higher is
+smoother. A change takes effect the **next time you start a tune** — rebuilding the
+filter mid-play would glitch the audio, so it isn't applied live. If you hear rare
+dropouts, stop, press **–** once or twice, and play again. The setting is
+**remembered across launches** (stored in the PDDB).
+
 ## SID model fidelity
 
 The chip model (`sid.rs`) trades cycle-accuracy for real-time performance on the
@@ -197,10 +213,12 @@ RV32 core, but reproduces the essential character of classic tunes well:
   real 8–12 kHz would push filter sweeps into a band the codec can't reproduce and
   silence filter-swept percussion; the scaling rises automatically if the codec
   rate is ever raised.
-- **Oversampling:** the waveform + filter stage runs 4× the 8 kHz codec rate
-  (`OVERSAMPLE` in `sid.rs`) and is box-averaged down, so noise bursts and narrow
-  pulses keep their transient character instead of aliasing to a dull thud. Drop
-  `OVERSAMPLE` to 2 or 1 if a future change needs more CPU headroom.
+- **Oversampling:** the waveform + filter stage runs at an integer multiple of the
+  8 kHz codec rate (default 2×; runtime-adjustable 1–8×, see [Quality vs.
+  CPU](#quality-vs-cpu)) and is box-averaged down, so noise bursts and narrow
+  pulses keep their transient character instead of aliasing to a dull thud. The
+  filter path is bit-exact integer arithmetic (i32 state with widening i32×i32→i64
+  products) to stay cheap on RV32.
 
 ### Known gaps (deliberately out of scope)
 
