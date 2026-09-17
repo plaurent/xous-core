@@ -48,6 +48,18 @@
             }
         }
     },
+    "ollama-client": {
+        "context_name": "ollama chat",
+        "menu_name": {
+            "appmenu.ollama-client": {
+                "en": "Ollama Chat",
+                "en-tts": "Ollama Chat",
+                "fr": "Ollama Chat *EN*",
+                "ja": "Ollama Chat *EN*",
+                "zh": "Ollama Chat *EN*"
+            }
+        }
+    },
     "chat-test": {
         "context_name": "Chat UI test",
         "menu_name": {
