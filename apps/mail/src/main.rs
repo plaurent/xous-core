@@ -96,6 +96,9 @@ fn wrapped_main() -> ! {
                         gam::FocusState::Foreground => {
                             allow_redraw = true;
                             app.redraw();
+                            // If the reader was left via center/Home to raise the
+                            // system menu, re-open it here at the saved page.
+                            app.resume_reading();
                         }
                     }
                 });
