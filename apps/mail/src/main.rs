@@ -65,24 +65,32 @@ fn wrapped_main() -> ! {
                 // repaint the home screen (the flow's transient status /
                 // modal has been dismissed by then).
                 xous::msg_scalar_unpack!(msg, k1, _, _, _, {
-                    let handled = match core::char::from_u32(k1 as u32).unwrap_or('\u{0000}') {
-                        F1 => {
-                            app.inbox();
-                            true
+                    let c = core::char::from_u32(k1 as u32).unwrap_or('\u{0000}');
+                    // While the inline reader is open it takes the navigation keys
+                    // (scroll / exit / reply). The center/Home key never gets here
+                    // — GAM raises the system menu itself for our App context.
+                    let handled = if app.reading() && app.reader_key(c) {
+                        true
+                    } else {
+                        match c {
+                            F1 => {
+                                app.inbox();
+                                true
+                            }
+                            F2 => {
+                                app.compose();
+                                true
+                            }
+                            F3 => {
+                                app.settings();
+                                true
+                            }
+                            F4 => {
+                                app.reply();
+                                true
+                            }
+                            _ => false,
                         }
-                        F2 => {
-                            app.compose();
-                            true
-                        }
-                        F3 => {
-                            app.settings();
-                            true
-                        }
-                        F4 => {
-                            app.reply();
-                            true
-                        }
-                        _ => false,
                     };
                     if handled && allow_redraw {
                         app.redraw();
@@ -95,10 +103,10 @@ fn wrapped_main() -> ! {
                         gam::FocusState::Background => allow_redraw = false,
                         gam::FocusState::Foreground => {
                             allow_redraw = true;
+                            // Redraw restores whatever was on screen — including the
+                            // inline reader at its current scroll — so returning from
+                            // the system menu lands you right back in the message.
                             app.redraw();
-                            // If the reader was left via center/Home to raise the
-                            // system menu, re-open it here at the saved page.
-                            app.resume_reading();
                         }
                     }
                 });
