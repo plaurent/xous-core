@@ -47,44 +47,6 @@ const DEFAULT_SMTP_PORT: u16 = 465;
 /// How many messages the F1 inbox lists per page.
 const PAGE_SIZE: usize = 10;
 
-/// Geometry for sizing the message-reader pager so a page never overflows
-/// the modal (overflow clips the text and pushes the nav buttons
-/// off-screen). The modal content area is at most `MODAL_Y_MAX_PX` tall
-/// (matches gam::api::MODAL_Y_MAX) on a screen `MODAL_WIDTH_PX` wide. The
-/// glyph *height* is queried at runtime (SYSTEM_STYLE — currently Large,
-/// 24px), so page sizing tracks the configured font size; width is derived
-/// from that height since the fonts are proportional and GAM exposes no
-/// width hint.
-const MODAL_Y_MAX_PX: usize = 350;
-/// Usable text width inside the modal, in pixels. Tuned down from an initial
-/// 320: at 320 a full content line overran the real text area by ~2-3
-/// characters, so the modal re-wrapped the tail onto a second line and
-/// wasted vertical space. 285 drops the wrap width by ~4 chars at the Large
-/// font (page_cols 35 -> 31), clearing the overrun plus a small margin. This
-/// is the effective wrap width, so keep it a little under the true content
-/// width to leave that margin.
-const MODAL_WIDTH_PX: usize = 285;
-/// Lines held back from the *content* budget (`page_lines`): the "page i/N"
-/// title plus enough slack that a page's real text -- even when the modal's
-/// proportional font wraps a few lines wider than our character estimate --
-/// still fits under the modal's clamp height (see `paginate` / `PAD_EXTRA`).
-///
-/// The modal clamps *text* to `MODAL_Y_MAX - 2*line` (~12 lines at the Large
-/// font), and the reader is a plain notification with no nav buttons, so we
-/// only really need to reserve the title line + a small wrap margin. This
-/// was 7 (a leftover from the earlier button-based pager) then 5; 3 fills
-/// nearly the whole clamp with text. This is close to the limit -- if the
-/// bottom line ever clips (e.g. on a page with several wrapping lines),
-/// raise it back toward 4-5.
-const MODAL_RESERVED_LINES: usize = 5;
-
-/// Extra blank lines appended to every page (beyond the modal's max height)
-/// so the modal *always* renders at its clamped maximum height. The modal
-/// auto-sizes to content and doesn't clear the screen when it shrinks, so
-/// forcing a constant (max) height is what stops a shorter page leaving the
-/// previous page's residue behind. See `paginate`.
-const PAD_EXTRA: usize = 4;
-
 // =======================================================================
 // Mail parsing helpers (no self needed).
 //
@@ -821,14 +783,39 @@ struct InboxEntry {
 }
 
 /// The message currently displayed in the view, remembered so F4 can
-/// pre-fill a reply from it (and so the reader can be re-opened at the same
-/// page after the system menu is raised — see `resume_page`).
-#[derive(Clone)]
+/// pre-fill a reply from it.
 struct OpenMessage {
     from: String,
     subject: String,
     body: String,
 }
+
+/// The inline message reader's state. `text` is the full message (From/Subject/
+/// body); `lines` is it word-wrapped for the current font, `scroll` is the first
+/// visible line, `rows` is how many fit. Drawn on the content canvas (see
+/// `draw_reader`), so it persists across focus changes and coexists with the
+/// native center/Home system-menu behaviour. Re-wrapped by `relayout_reader`
+/// whenever the font size (`MailApp::reader_large`) changes.
+struct Reader {
+    text: String,
+    lines: Vec<String>,
+    scroll: usize,
+    rows: usize,
+}
+
+/// Inline-reader layout metrics. Regular glyphs are ~15 px tall; the Extra-Large
+/// toggle uses ~30 px glyphs (see `MailApp::reader_metrics`). Widths are
+/// proportional-font estimates for the wrap column count.
+const READER_CHAR_W: isize = 8;
+const READER_ROW_H: isize = 16;
+// ~0.43x the 30px glyph height: the proportional font's true average advance is
+// narrower than the height, so this fills close to the full width (an earlier 16
+// left ~1/4 of the row empty) while staying conservative enough that a wide line
+// doesn't overrun the canvas and wrap into the next row.
+const READER_XL_CHAR_W: isize = 13;
+const READER_XL_ROW_H: isize = 32;
+/// Y of the first body line, below the one-line header.
+const READER_BODY_TOP: isize = 22;
 
 pub struct MailApp {
     modals: Modals,
@@ -884,10 +871,12 @@ pub struct MailApp {
     /// The message most recently opened under F1, so F4 can reply to it.
     open_msg: Option<OpenMessage>,
 
-    /// Set when the reader is left via the center/Home key (which raises the
-    /// system menu): the page index to restore. On the next Foreground focus we
-    /// re-open `open_msg` at this page, then clear it. `None` = nothing to resume.
-    resume_page: Option<usize>,
+    /// The inline reader, present while a message is open on screen. `None` on
+    /// the home screen. Its scroll position persists across focus changes.
+    reader: Option<Reader>,
+    /// When true, the reader draws in the Extra-Large glyph style. Toggled from
+    /// the F4 reading-options menu; remembered for the rest of the session.
+    reader_large: bool,
 
     /// "host:port" endpoints whose TLS chain we've already probed and
     /// trusted (or prompted for) this session, so we don't re-probe on
@@ -901,15 +890,6 @@ pub struct MailApp {
     gam: gam::Gam,
     content: Gid,
     screensize: Point,
-
-    /// Message-pager page geometry, computed once from the runtime glyph
-    /// height so each page fits the modal at the configured font size.
-    /// `page_cols` = characters per wrapped line, `page_lines` = content
-    /// lines per page, `pad_lines` = fixed line count each multi-page page is
-    /// padded to so every page renders at the same (max) modal height.
-    page_cols: usize,
-    page_lines: usize,
-    pad_lines: usize,
 }
 
 impl MailApp {
@@ -963,8 +943,6 @@ impl MailApp {
         gam.allow_mainmenu().ok();
 
         let modals = Modals::new(xns).expect("can't connect to Modals server");
-        let (page_cols, page_lines, pad_lines) = compute_page_geometry(&gam);
-        log::info!("mail: pager geometry {} cols x {} lines (pad to {})", page_cols, page_lines, pad_lines);
 
         let mut app = MailApp {
             modals,
@@ -983,14 +961,12 @@ impl MailApp {
             strip_paren_urls: true,
             inbox: Vec::new(),
             open_msg: None,
-            resume_page: None,
+            reader: None,
+            reader_large: false,
             trusted: HashSet::new(),
             gam,
             content,
             screensize,
-            page_cols,
-            page_lines,
-            pad_lines,
         };
         app.load_config();
         app
@@ -1012,10 +988,16 @@ impl MailApp {
             .ok();
     }
 
-    /// Draws the home screen: a title and the F-key legend. Called on focus
-    /// and after any modal flow returns.
+    /// Repaints the content canvas: the inline reader when a message is open,
+    /// otherwise the home screen (title + F-key legend). Called on focus and
+    /// after any modal flow returns.
     pub fn redraw(&self) {
         self.clear();
+        if let Some(r) = &self.reader {
+            self.draw_reader(r);
+            self.gam.redraw().ok();
+            return;
+        }
         let mut tv = TextView::new(
             self.content,
             TextBounds::GrowableFromTl(Point::new(6, 6), (self.screensize.x - 12) as u16),
@@ -1026,7 +1008,7 @@ impl MailApp {
         tv.margin = Point::new(0, 0);
         write!(
             tv.text,
-            "Mail\n\nF1  INBOX   - list & read messages\nF2  WRITE   - compose a new message\nF3  CONFIG  - IMAP/SMTP account settings\nF4  REPLY   - reply to the open message\n\nNo account yet? Start under F3 (CONFIG).\nThe labels above also show under the F-keys.\n\nWhile reading an email:\n - down/space (next page)\n - up (prev page) \n - backspace/enter (exit reading)\n - center/home (app switcher)"
+            "Mail\n\nF1  INBOX   - list & read messages\nF2  WRITE   - compose a new message\nF3  CONFIG  - IMAP/SMTP account settings\nF4  REPLY   - reply to the open message\n\nNo account yet? Start under F3 (CONFIG).\nThe labels above also show under the F-keys.\n\nWhile reading an email:\n - up/down (scroll a line)\n - left/right or space (scroll a page)\n - F4 (font size / reply)\n - backspace/enter (exit to this screen)\n - center/home (app switcher)"
         )
         .ok();
         self.gam.post_textview(&mut tv).ok();
@@ -1208,8 +1190,12 @@ impl MailApp {
         }
     }
 
-    /// Fetch and decode message `recency` (1 = most recent), then display it
-    /// in a self-managed modal pager (see `page_message`).
+    /// Fetch and decode message `recency` (1 = most recent), then show it in the
+    /// inline reader — word-wrapped text drawn on our own content canvas (not a
+    /// modal), the same shape as apps/ollama-client. Because the reader lives on
+    /// our App context rather than a modal, the center/Home key raises the system
+    /// menu natively, and the scroll position simply survives a focus change (we
+    /// redraw the reader whenever we regain focus).
     fn open_message(&mut self, recency: usize) {
         if !self.network_ready() {
             self.notify("No network yet. Connect to WiFi, then try again.");
@@ -1221,140 +1207,154 @@ impl MailApp {
 
         match result {
             Ok((from, subject, body)) => {
-                // Remember it *before* paging so F4 (reply) can pre-fill from
-                // it -- whether pressed from the home screen after backing out,
-                // or from inside the reader itself (see page_message).
+                // Remember it so F4 (reply) can pre-fill from it, whether pressed
+                // while reading or from the home screen after exiting.
                 self.open_msg =
                     Some(OpenMessage { from: from.clone(), subject: subject.clone(), body: body.clone() });
-                // The reader captures every keystroke while its modal is open,
-                // so an F4 pressed while reading is handled there and reported
-                // back here rather than reaching the main loop's Rawkeys path.
-                if self.page_message(&from, &subject, &body, 0) {
-                    self.reply();
-                }
+                let full = format!("From: {}\nSubject: {}\n\n{}", from, subject, body);
+                self.reader = Some(Reader { text: full, lines: Vec::new(), scroll: 0, rows: 1 });
+                self.relayout_reader();
+                self.redraw();
             }
             Err(e) => self.notify(&e),
         }
     }
 
-    /// Displays a message in a modal pager with per-key navigation. The
-    /// From/Subject header and body are word-wrapped and split into
-    /// fixed-size pages (see `paginate`, sized by `page_cols`/`page_lines` to
-    /// fit the modal), then shown one page at a time in a `dynamic_notification`
-    /// whose keystrokes are delivered to us (rather than any key dismissing):
-    ///
-    ///   * Down or Space -> next page
-    ///   * Up    -> previous page
-    ///   * ∴ (center/Home) -> close the reader and raise the system app switcher
-    ///   * F4    -> close the reader and reply (returns true)
-    ///   * Enter or Backspace -> close the reader
-    ///   * anything else -> ignored (stays on the page)
-    ///
-    /// Opens at `start_page` (0 = top). A fresh open passes 0; a resume after the
-    /// center/Home app-switcher passes the page we left off on (see
-    /// `resume_reading`). The index is clamped in case pagination changed.
-    ///
-    /// Returns `true` when the reader was closed via F4 (the caller should
-    /// then start a reply). While this modal is open it receives *every*
-    /// keystroke, so F4 can't reach the main loop's Rawkeys handler -- we
-    /// handle it here instead.
-    fn page_message(&mut self, from: &str, subject: &str, body: &str, start_page: usize) -> bool {
-        let full = format!("From: {}\nSubject: {}\n\n{}", from, subject, body);
-        let pages = paginate(&full, self.page_cols, self.page_lines, self.pad_lines);
-        let n = pages.len();
-        // Normally 0 (top of message); non-zero when resuming after the app
-        // switcher (see `resume_reading`). Clamp in case pagination changed.
-        let mut idx = start_page.min(n.saturating_sub(1));
-
-        self.modals.dynamic_notification(page_title(idx, n).as_deref(), Some(pages[idx].as_str())).ok();
-
-        // The blocking listener returns one key per call and re-arms while
-        // the notification stays open (see apps/vault for the same idiom).
-        let token = self.modals.token();
-        let conn = self.modals.conn();
-        let mut reply_requested = false;
-        let mut raise_main_menu = false;
-        loop {
-            match modals::dynamic_notification_blocking_listener(token, conn) {
-                Ok(Some(key)) => match key {
-                    // Down or Space: next page; Up: previous page.
-                    // Clamped at the ends (no wrap).
-                    '\u{2193}' | ' ' => {
-                        if idx + 1 < n {
-                            idx += 1;
-                            self.modals
-                                .dynamic_notification_update(
-                                    page_title(idx, n).as_deref(),
-                                    Some(pages[idx].as_str()),
-                                )
-                                .ok();
-                        }
-                    }
-                    '\u{2191}' => {
-                        if idx > 0 {
-                            idx -= 1;
-                            self.modals
-                                .dynamic_notification_update(
-                                    page_title(idx, n).as_deref(),
-                                    Some(pages[idx].as_str()),
-                                )
-                                .ok();
-                        }
-                    }
-                    // Center/Home key ('∴'): close the reader and raise the system
-                    // app-switcher menu. GAM only auto-raises the main menu on '∴'
-                    // for App-layout contexts (services/gam/src/contexts.rs), but
-                    // while this reader is open a *modal* owns focus, so GAM never
-                    // does it — we have to trigger it explicitly once the modal is
-                    // torn down (see after the loop).
-                    '∴' => {
-                        // Remember where we were so the next Foreground focus
-                        // re-opens this message at this page (see resume_reading).
-                        self.resume_page = Some(idx);
-                        raise_main_menu = true;
-                        break;
-                    }
-                    // Enter (CR/LF) or Backspace/Delete: close the reader.
-                    '\u{d}' | '\n' | '\u{8}' | '\u{7f}' => break,
-                    // F4 (crate::api::F4): close the reader and reply. The
-                    // caller starts the reply once the modal is torn down.
-                    '\u{0014}' => {
-                        reply_requested = true;
-                        break;
-                    }
-                    _ => {} // ignore other keys; stay on the current page
-                },
-                Ok(None) => break, // modal closed / unblocked with no key
-                Err(_) => break,
-            }
+    /// Glyph style + estimated char width + line pitch for the current reader
+    /// font (Regular by default, Extra-Large when toggled under F4).
+    fn reader_metrics(&self) -> (GlyphStyle, isize, isize) {
+        if self.reader_large {
+            (GlyphStyle::ExtraLarge, READER_XL_CHAR_W, READER_XL_ROW_H)
+        } else {
+            (GlyphStyle::Regular, READER_CHAR_W, READER_ROW_H)
         }
-        self.modals.dynamic_notification_close().ok();
-        // Now that the reader modal is gone, hand focus to the system menu if the
-        // user pressed the center/Home key. Dismissing that menu (or switching
-        // back to mail later) fires a Foreground focus, where `resume_reading`
-        // re-opens this message at `resume_page`.
-        if raise_main_menu {
-            if self.gam.raise_menu(gam::MAIN_MENU_NAME).is_err() {
-                // The menu didn't come up, so there's no focus round-trip coming;
-                // drop the pending resume so we don't re-open the reader out of
-                // the blue on some unrelated later focus.
-                self.resume_page = None;
-            }
-        }
-        reply_requested
     }
 
-    /// If the reader was left via the center/Home key, re-open the same message
-    /// at the same page. Called on Foreground focus; a no-op unless a resume is
-    /// pending. `take()` makes it fire exactly once per center/Home press.
-    pub fn resume_reading(&mut self) {
-        if let Some(page) = self.resume_page.take() {
-            if let Some(msg) = self.open_msg.clone() {
-                if self.page_message(&msg.from, &msg.subject, &msg.body, page) {
-                    self.reply();
-                }
-            }
+    /// Re-wrap the reader's text and recompute the visible-row count for the
+    /// current font, clamping the scroll position. Call after opening a message
+    /// or changing the font size.
+    fn relayout_reader(&mut self) {
+        let (_, char_w, row_h) = self.reader_metrics();
+        let cols = ((self.screensize.x - 12) / char_w).max(8) as usize;
+        let rows = ((self.screensize.y - READER_BODY_TOP - 4) / row_h).max(1) as usize;
+        if let Some(r) = &mut self.reader {
+            r.lines = wrap_lines(&r.text, cols);
+            r.rows = rows;
+            r.scroll = r.scroll.min(r.lines.len().saturating_sub(rows));
         }
+    }
+
+    /// The F4 reading-options menu: toggle the font size, or reply.
+    fn reader_menu(&mut self) {
+        let font_item =
+            if self.reader_large { "Font size: Regular" } else { "Font size: Extra large" };
+        self.modals.add_list_item(font_item).ok();
+        self.modals.add_list_item("Reply").ok();
+        self.modals.add_list_item("Cancel").ok();
+        match self.modals.get_radiobutton("Reading options") {
+            Ok(choice) if choice == font_item => {
+                self.reader_large = !self.reader_large;
+                self.relayout_reader();
+            }
+            Ok(choice) if choice == "Reply" => {
+                self.reader = None;
+                self.reply();
+            }
+            _ => {}
+        }
+    }
+
+    /// True while the inline message reader is open.
+    pub fn reading(&self) -> bool { self.reader.is_some() }
+
+    /// Handle a key while the reader is open; returns true if it was consumed.
+    /// Scrolls with the arrows (↑/↓ a line, ←/→ or space a page), exits on
+    /// Backspace/Enter (back to the home screen), and opens the reading-options
+    /// menu (font size / reply) on F4. The center/Home key never reaches here —
+    /// GAM raises the system menu itself, since the reader is drawn on our App
+    /// canvas rather than a modal.
+    pub fn reader_key(&mut self, k: char) -> bool {
+        let page = self.reader.as_ref().map(|r| (r.rows.saturating_sub(1)).max(1) as isize).unwrap_or(1);
+        match k {
+            '↑' => {
+                self.reader_scroll(-1);
+                true
+            }
+            '↓' => {
+                self.reader_scroll(1);
+                true
+            }
+            '←' => {
+                self.reader_scroll(-page);
+                true
+            }
+            '→' | ' ' => {
+                self.reader_scroll(page);
+                true
+            }
+            // Backspace/Delete or Enter: exit the reader, back to the home screen.
+            '\u{8}' | '\u{7f}' | '\u{d}' | '\n' => {
+                self.reader = None;
+                true
+            }
+            // F4: reading options (font size / reply).
+            '\u{14}' => {
+                self.reader_menu();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn reader_scroll(&mut self, delta: isize) {
+        if let Some(r) = &mut self.reader {
+            let max_scroll = r.lines.len().saturating_sub(r.rows);
+            let target = (r.scroll as isize + delta).max(0) as usize;
+            r.scroll = target.min(max_scroll);
+        }
+    }
+
+    /// Draw the reader onto the content canvas: a one-line header (scroll
+    /// position + key hints) and the visible window of wrapped body lines.
+    /// Called from `redraw`, which clears first and flushes afterwards.
+    fn draw_reader(&self, r: &Reader) {
+        // Header stays Regular (compact) regardless of the body font size.
+        let (style, _cw, row_h) = self.reader_metrics();
+        let total = r.lines.len();
+        let last = (r.scroll + r.rows).min(total);
+        let first = if total == 0 { 0 } else { r.scroll + 1 };
+        // Header is Regular; clamp it to one line's worth of columns so it can
+        // never wrap onto the body (which overlaps, especially at Extra-Large).
+        let header_cols = ((self.screensize.x - 12) / READER_CHAR_W).max(8) as usize;
+        self.draw_text(
+            6,
+            4,
+            GlyphStyle::Regular,
+            &truncate(&format!("{}-{}/{}   ↑↓ ←→ scroll   ⌫ exit   F4 opts", first, last, total), header_cols),
+        );
+        for i in 0..r.rows {
+            let idx = r.scroll + i;
+            if idx >= total {
+                break;
+            }
+            let y = READER_BODY_TOP + (i as isize) * row_h;
+            self.draw_text(6, y, style, &r.lines[idx]);
+        }
+    }
+
+    /// Post one line of text on the content canvas (no flush — the caller's
+    /// `redraw` issues the single `gam.redraw`).
+    fn draw_text(&self, x: isize, y: isize, style: GlyphStyle, s: &str) {
+        let mut tv = TextView::new(
+            self.content,
+            TextBounds::GrowableFromTl(Point::new(x, y), (self.screensize.x - x - 4).max(1) as u16),
+        );
+        tv.style = style;
+        tv.draw_border = false;
+        tv.clear_area = false;
+        tv.margin = Point::new(0, 0);
+        write!(tv.text, "{}", s).ok();
+        self.gam.post_textview(&mut tv).ok();
     }
 
     // ---- F2: compose --------------------------------------------------
@@ -2093,84 +2093,6 @@ impl MailApp {
     // ---- small helpers ------------------------------------------------
 
     fn notify(&self, msg: &str) { self.modals.show_notification(msg, None).ok(); }
-}
-
-/// Computes the message-pager page geometry from the runtime glyph height,
-/// so pages fit the modal at whatever font size is configured (this build's
-/// SYSTEM_STYLE is Large = 24px). Returns `(cols, lines)`.
-///
-/// Vertical (the dimension that actually clips): the modal is at most
-/// `MODAL_Y_MAX_PX` tall, i.e. `MODAL_Y_MAX_PX / line_px` lines; we hold
-/// back `MODAL_RESERVED_LINES` for the "page i/N" title line and margins.
-/// Horizontal: GAM exposes no glyph-width hint and the fonts are
-/// proportional, so we estimate the *average* advance width as ~0.40x the
-/// glyph height. That's deliberately a touch wider than reality (measured
-/// empirically: text was reaching the full modal width at ~0.37x), which
-/// leaves a small margin so an occasional wide line doesn't force the modal
-/// to re-wrap (which would add a line and risk a vertical clip).
-/// Returns `(page_cols, page_lines, pad_lines)`: characters per wrapped
-/// line, content lines per page, and the fixed line count every multi-page
-/// page is padded to (which exceeds the modal's max height, forcing a
-/// constant clamped height -- see `paginate`).
-fn compute_page_geometry(gam: &gam::Gam) -> (usize, usize, usize) {
-    let line_px = gam.glyph_height_hint(gam::SYSTEM_STYLE).ok().unwrap_or(24).max(1);
-
-    let total_lines = (MODAL_Y_MAX_PX / line_px).max(1);
-    let page_lines = total_lines.saturating_sub(MODAL_RESERVED_LINES).max(3);
-    // Pad past the top of the modal so every page overflows and clamps to the
-    // same max height.
-    let pad_lines = total_lines + PAD_EXTRA;
-
-    let avg_glyph_px = (line_px * 40 / 100).max(1);
-    let page_cols = (MODAL_WIDTH_PX / avg_glyph_px).max(8);
-
-    (page_cols, page_lines, pad_lines)
-}
-
-/// The reader's dynamic-notification title: "page i/N" when there's more
-/// than one page, or `None` for a single-page message.
-fn page_title(idx: usize, n: usize) -> Option<String> {
-    if n > 1 { Some(format!("page {}/{}", idx + 1, n)) } else { None }
-}
-
-/// Word-wraps `text` to at most `cols` characters per line (preserving
-/// existing line breaks and blank lines; hard-splitting any single word
-/// longer than `cols`), then groups the wrapped lines into pages of
-/// `lines_per_page` content lines.
-///
-/// When there is more than one page, every page is padded with blank " "
-/// lines out to `pad_to` lines. `pad_to` is chosen (see
-/// `compute_page_geometry`) to exceed the modal's max height, so *every*
-/// page overflows and the modal clamps it to the same maximum height. This
-/// is what keeps the reader a fixed size: the modal auto-sizes to content
-/// and doesn't clear the screen when it shrinks, so a shorter page would
-/// otherwise leave the previous page's residue behind -- and because the
-/// proportional font wraps some lines wider than our character estimate,
-/// even equal content-line counts render at different heights. Overflowing
-/// every page removes both problems. The extra blank lines are simply
-/// clipped, and content (kept under the clamp by `page_lines`) stays fully
-/// visible at the top. A single-page message isn't padded -- there's
-/// nothing to shrink from.
-fn paginate(text: &str, cols: usize, lines_per_page: usize, pad_to: usize) -> Vec<String> {
-    let wrapped = wrap_lines(text, cols);
-    let lpp = lines_per_page.max(1);
-    if wrapped.is_empty() {
-        return vec![String::new()];
-    }
-    let chunks: Vec<&[String]> = wrapped.chunks(lpp).collect();
-    let pad = chunks.len() > 1;
-    chunks
-        .iter()
-        .map(|chunk| {
-            let mut lines: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
-            if pad {
-                while lines.len() < pad_to {
-                    lines.push(" ");
-                }
-            }
-            lines.join("\n")
-        })
-        .collect()
 }
 
 /// Greedy word-wrap to `cols` chars, one output entry per visual line.
