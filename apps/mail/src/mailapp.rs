@@ -821,7 +821,9 @@ struct InboxEntry {
 }
 
 /// The message currently displayed in the view, remembered so F4 can
-/// pre-fill a reply from it.
+/// pre-fill a reply from it (and so the reader can be re-opened at the same
+/// page after the system menu is raised — see `resume_page`).
+#[derive(Clone)]
 struct OpenMessage {
     from: String,
     subject: String,
@@ -881,6 +883,11 @@ pub struct MailApp {
 
     /// The message most recently opened under F1, so F4 can reply to it.
     open_msg: Option<OpenMessage>,
+
+    /// Set when the reader is left via the center/Home key (which raises the
+    /// system menu): the page index to restore. On the next Foreground focus we
+    /// re-open `open_msg` at this page, then clear it. `None` = nothing to resume.
+    resume_page: Option<usize>,
 
     /// "host:port" endpoints whose TLS chain we've already probed and
     /// trusted (or prompted for) this session, so we don't re-probe on
@@ -976,6 +983,7 @@ impl MailApp {
             strip_paren_urls: true,
             inbox: Vec::new(),
             open_msg: None,
+            resume_page: None,
             trusted: HashSet::new(),
             gam,
             content,
@@ -1018,7 +1026,7 @@ impl MailApp {
         tv.margin = Point::new(0, 0);
         write!(
             tv.text,
-            "Mail\n\nF1  INBOX   - list & read messages\nF2  WRITE   - compose a new message\nF3  CONFIG  - IMAP/SMTP account settings\nF4  REPLY   - reply to the open message\n\nNo account yet? Start under F3 (CONFIG).\nThe labels above also show under the F-keys.\n\nWhile reading an email:\n - down/space (next page)\n - up (prev page) \n - backspace/enter (exit reading)"
+            "Mail\n\nF1  INBOX   - list & read messages\nF2  WRITE   - compose a new message\nF3  CONFIG  - IMAP/SMTP account settings\nF4  REPLY   - reply to the open message\n\nNo account yet? Start under F3 (CONFIG).\nThe labels above also show under the F-keys.\n\nWhile reading an email:\n - down/space (next page)\n - up (prev page) \n - backspace/enter (exit reading)\n - center/home (app switcher)"
         )
         .ok();
         self.gam.post_textview(&mut tv).ok();
@@ -1221,7 +1229,7 @@ impl MailApp {
                 // The reader captures every keystroke while its modal is open,
                 // so an F4 pressed while reading is handled there and reported
                 // back here rather than reaching the main loop's Rawkeys path.
-                if self.page_message(&from, &subject, &body) {
+                if self.page_message(&from, &subject, &body, 0) {
                     self.reply();
                 }
             }
@@ -1237,22 +1245,26 @@ impl MailApp {
     ///
     ///   * Down or Space -> next page
     ///   * Up    -> previous page
+    ///   * ∴ (center/Home) -> close the reader and raise the system app switcher
     ///   * F4    -> close the reader and reply (returns true)
     ///   * Enter or Backspace -> close the reader
     ///   * anything else -> ignored (stays on the page)
     ///
-    /// Every open starts at page 1 (top of the message) -- there's no shared
-    /// scroll state to carry over.
+    /// Opens at `start_page` (0 = top). A fresh open passes 0; a resume after the
+    /// center/Home app-switcher passes the page we left off on (see
+    /// `resume_reading`). The index is clamped in case pagination changed.
     ///
     /// Returns `true` when the reader was closed via F4 (the caller should
     /// then start a reply). While this modal is open it receives *every*
     /// keystroke, so F4 can't reach the main loop's Rawkeys handler -- we
     /// handle it here instead.
-    fn page_message(&mut self, from: &str, subject: &str, body: &str) -> bool {
+    fn page_message(&mut self, from: &str, subject: &str, body: &str, start_page: usize) -> bool {
         let full = format!("From: {}\nSubject: {}\n\n{}", from, subject, body);
         let pages = paginate(&full, self.page_cols, self.page_lines, self.pad_lines);
         let n = pages.len();
-        let mut idx = 0usize;
+        // Normally 0 (top of message); non-zero when resuming after the app
+        // switcher (see `resume_reading`). Clamp in case pagination changed.
+        let mut idx = start_page.min(n.saturating_sub(1));
 
         self.modals.dynamic_notification(page_title(idx, n).as_deref(), Some(pages[idx].as_str())).ok();
 
@@ -1261,6 +1273,7 @@ impl MailApp {
         let token = self.modals.token();
         let conn = self.modals.conn();
         let mut reply_requested = false;
+        let mut raise_main_menu = false;
         loop {
             match modals::dynamic_notification_blocking_listener(token, conn) {
                 Ok(Some(key)) => match key {
@@ -1288,10 +1301,20 @@ impl MailApp {
                                 .ok();
                         }
                     }
-                    // Enter (CR/LF) or Backspace/Delete: close. Note we do
-                    // *not* close on '∴' (the center/Home key) so that key is
-                    // left free for the system app switcher instead of exiting
-                    // the reader.
+                    // Center/Home key ('∴'): close the reader and raise the system
+                    // app-switcher menu. GAM only auto-raises the main menu on '∴'
+                    // for App-layout contexts (services/gam/src/contexts.rs), but
+                    // while this reader is open a *modal* owns focus, so GAM never
+                    // does it — we have to trigger it explicitly once the modal is
+                    // torn down (see after the loop).
+                    '∴' => {
+                        // Remember where we were so the next Foreground focus
+                        // re-opens this message at this page (see resume_reading).
+                        self.resume_page = Some(idx);
+                        raise_main_menu = true;
+                        break;
+                    }
+                    // Enter (CR/LF) or Backspace/Delete: close the reader.
                     '\u{d}' | '\n' | '\u{8}' | '\u{7f}' => break,
                     // F4 (crate::api::F4): close the reader and reply. The
                     // caller starts the reply once the modal is torn down.
@@ -1306,7 +1329,32 @@ impl MailApp {
             }
         }
         self.modals.dynamic_notification_close().ok();
+        // Now that the reader modal is gone, hand focus to the system menu if the
+        // user pressed the center/Home key. Dismissing that menu (or switching
+        // back to mail later) fires a Foreground focus, where `resume_reading`
+        // re-opens this message at `resume_page`.
+        if raise_main_menu {
+            if self.gam.raise_menu(gam::MAIN_MENU_NAME).is_err() {
+                // The menu didn't come up, so there's no focus round-trip coming;
+                // drop the pending resume so we don't re-open the reader out of
+                // the blue on some unrelated later focus.
+                self.resume_page = None;
+            }
+        }
         reply_requested
+    }
+
+    /// If the reader was left via the center/Home key, re-open the same message
+    /// at the same page. Called on Foreground focus; a no-op unless a resume is
+    /// pending. `take()` makes it fire exactly once per center/Home press.
+    pub fn resume_reading(&mut self) {
+        if let Some(page) = self.resume_page.take() {
+            if let Some(msg) = self.open_msg.clone() {
+                if self.page_message(&msg.from, &msg.subject, &msg.body, page) {
+                    self.reply();
+                }
+            }
+        }
     }
 
     // ---- F2: compose --------------------------------------------------
