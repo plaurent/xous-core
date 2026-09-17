@@ -75,6 +75,7 @@ members = [
   "apps/ball",
   "apps/paklis",
   "apps/sidplayer",
+  "apps/ollama-client",
   "apps/hello",
   "apps/mtxchat",
   "apps/mtxcli",
