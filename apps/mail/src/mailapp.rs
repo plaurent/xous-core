@@ -1246,8 +1246,7 @@ impl MailApp {
 
     /// The F4 reading-options menu: toggle the font size, or reply.
     fn reader_menu(&mut self) {
-        let font_item =
-            if self.reader_large { "Font size: Regular" } else { "Font size: Extra large" };
+        let font_item = if self.reader_large { "Font size: Regular" } else { "Font size: Extra large" };
         self.modals.add_list_item(font_item).ok();
         self.modals.add_list_item("Reply").ok();
         self.modals.add_list_item("Cancel").ok();
@@ -1330,7 +1329,10 @@ impl MailApp {
             6,
             4,
             GlyphStyle::Regular,
-            &truncate(&format!("{}-{}/{}   ↑↓ ←→ scroll   ⌫ exit   F4 opts", first, last, total), header_cols),
+            &truncate(
+                &format!("{}-{}/{}   ↑↓ ←→ scroll   ⌫ exit   F4 opts", first, last, total),
+                header_cols,
+            ),
         );
         for i in 0..r.rows {
             let idx = r.scroll + i;
