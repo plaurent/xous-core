@@ -22,9 +22,14 @@ ime-plugin-api = { path = "../../services/ime-plugin-api" }
 modals = { path = "../../services/modals" }
 net = { path = "../../services/net" }
 pddb = { path = "../../services/pddb" }
-# HTTP + JSON. ollama is plain HTTP on the LAN, so no TLS connector is needed
-# (contrast apps/sidplayer's netfetch, which pulls in libs/tls for HTTPS).
+# HTTP + JSON. ureq's default features already bundle a rustls TLS stack, but we
+# use the Xous trust-store connector below (tls::xtls) so HTTPS to a self-signed
+# or otherwise-untrusted host runs the trust-on-first-use flow, exactly like
+# apps/sidplayer's netfetch. Plain HTTP (the LAN default) still works unchanged.
 ureq = { version = "2.9.4", features = ["json"] }
+# TLS trust store + the ureq connector (tls::xtls::TlsConnector) and the
+# probe/trust-modal flow. Certificates the user trusts are saved in the PDDB.
+tls = { path = "../../libs/tls" }
 serde = { version = "1.0", features = ["derive"] }
 
 [features]

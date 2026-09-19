@@ -1,16 +1,27 @@
-//! Talks to a local ollama server over plain HTTP.
+//! Talks to an ollama server over HTTP or HTTPS.
 //!
 //! Uses ollama's `/api/chat` endpoint with `"stream": false`, so a single POST
 //! returns the whole assistant reply as one JSON document. The Xous `net` service
 //! transparently backs `std::net::TcpStream`, so `ureq` "just works" with no
-//! socket code of our own — and because the endpoint is plain HTTP on the LAN we
-//! don't need the TLS trust connector that `apps/sidplayer` uses for HTTPS.
+//! socket code of our own.
+//!
+//! When TLS is enabled (`Config::use_tls`, e.g. a cloud host), the agent uses the
+//! Xous trust-store connector (`tls::xtls::TlsConnector`). The Precursor ships
+//! with no root CAs, so *every* HTTPS host — public-CA or self-signed alike — is
+//! trusted on first use: [`ensure_trusted`] probes the server's certificate chain
+//! and, if nothing offered is already trusted, prompts the user to save one to the
+//! PDDB. This must run *before* the request: the connector's own retry only
+//! re-probes (it never saves trust), so an untrusted handshake would otherwise
+//! never succeed.
 //!
 //! See: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tls::xtls::TlsConnector;
+use ureq::Agent;
 
 use crate::config::Config;
 
@@ -54,17 +65,70 @@ struct ModelInfo {
     name: String,
 }
 
+/// Build a ureq agent wired to the Xous TLS trust-store connector. The connector
+/// is only exercised for `https://` URLs; plain-HTTP requests ignore it entirely,
+/// so it's safe to attach unconditionally.
+fn make_agent(read_timeout: Duration, connect_timeout: Option<Duration>) -> Agent {
+    let mut builder = ureq::builder().tls_connector(Arc::new(TlsConnector {})).timeout_read(read_timeout);
+    if let Some(ct) = connect_timeout {
+        builder = builder.timeout_connect(ct);
+    }
+    builder.build()
+}
+
+/// When TLS is enabled, ensure the ollama host's certificate chain is trusted
+/// before we connect. Probes the *configured* port (ollama can serve TLS on any
+/// port, so 443 is never assumed) and, if nothing offered is already trusted,
+/// pops the trust modal so the user can save a certificate to the PDDB. Once
+/// trusted, the connector's handshake verifies against it on the actual request.
+///
+/// No-op for plain HTTP. Returns a user-facing error if the probe fails or the
+/// user trusts nothing (so we don't then spin in the connector's retry loop).
+fn ensure_trusted(config: &Config) -> Result<(), String> {
+    if !config.use_tls {
+        return Ok(());
+    }
+    let host = config.host.trim();
+    let tls = tls::Tls::new();
+    match tls.probe_port(host, config.port) {
+        Ok(certs) if !certs.is_empty() => {
+            if certs.iter().any(|c| tls.is_trusted_cert(c.clone())) {
+                Ok(()) // already have a trusted anchor for this chain
+            } else if tls.trust_modal(certs) > 0 {
+                Ok(()) // user just trusted at least one certificate
+            } else {
+                Err(format!(
+                    "No certificate trusted for {}:{}.\n\nHTTPS needs you to trust the \
+                     server's certificate when the list is offered. Try again and trust \
+                     the root (or, for a self-signed server, the offered certificate).",
+                    host, config.port
+                ))
+            }
+        }
+        Ok(_) => Err(format!(
+            "{}:{} offered no TLS certificate.\n\nIs the server really using HTTPS on that \
+             port? If it's plain HTTP, turn HTTPS off under F1.",
+            host, config.port
+        )),
+        Err(e) => Err(format!(
+            "Couldn't check the TLS certificate for {}:{}.\n\nCommon causes:\n\
+             • The device clock is unset (Precursor defaults to year 2000, which makes \
+             valid certificates look \"not valid yet\") — set the time, then retry,\n\
+             • the host is unreachable, or isn't speaking TLS on that port.\n\n({})",
+            host, config.port, e
+        )),
+    }
+}
+
 /// Query the ollama server for the list of locally-installed models
 /// (`GET /api/tags`), returning their names sorted alphabetically.
 ///
 /// Blocking; run it off the UI loop or accept a brief stall (it's a fast local
 /// call, but a wrong/unreachable host can block up to the connect timeout).
 pub fn list_models(config: &Config) -> Result<Vec<String>, String> {
+    ensure_trusted(config)?;
     let url = config.tags_url();
-    let agent = ureq::builder()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
-        .build();
+    let agent = make_agent(Duration::from_secs(30), Some(Duration::from_secs(10)));
 
     match agent.get(&url).call() {
         Ok(resp) => match resp.into_json::<TagsResponse>() {
@@ -91,6 +155,7 @@ pub fn list_models(config: &Config) -> Result<Vec<String>, String> {
 /// This blocks (network round-trip + model inference), so callers run it on a
 /// worker thread, not on the UI message loop.
 pub fn chat(config: &Config, messages: &[ChatMessage]) -> Result<String, String> {
+    ensure_trusted(config)?;
     let url = config.chat_url();
     let req = ChatRequest { model: config.model.trim(), messages, stream: false };
 
@@ -102,7 +167,7 @@ pub fn chat(config: &Config, messages: &[ChatMessage]) -> Result<String, String>
     // request mid-inference — the server finishes but we've already hung up, and
     // ollama logs `context canceled` / 500. We instead bound liveness with the
     // read timeout (a genuinely dead connection still errors out after this).
-    let agent = ureq::builder().timeout_read(Duration::from_secs(300)).build();
+    let agent = make_agent(Duration::from_secs(300), None);
 
     match agent.post(&url).send_json(&req) {
         Ok(resp) => match resp.into_json::<ChatResponse>() {

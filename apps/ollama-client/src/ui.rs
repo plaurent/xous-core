@@ -300,7 +300,7 @@ impl OllamaClient {
             return;
         }
         if !self.config.is_ready() {
-            self.edit_settings();
+            self.edit_server_address();
             if !self.config.is_ready() {
                 return;
             }
@@ -367,7 +367,7 @@ impl OllamaClient {
             return;
         }
         if !self.config.is_ready() {
-            self.edit_settings();
+            self.edit_server_address();
             if !self.config.is_ready() {
                 return;
             }
@@ -418,8 +418,43 @@ impl OllamaClient {
         self.force_redraw();
     }
 
-    /// Prompt for host / port / model in one modal and persist the result.
+    /// F1 server settings — a small menu (mail-style) so each concern gets its
+    /// own dialog. The connection entry shows the current scheme inline, so the
+    /// user can see whether HTTPS is on without opening the sub-dialog.
     fn edit_settings(&mut self) {
+        const ADDRESS: &str = "Server address & model";
+        let conn_item = format!("Connection: {}", if self.config.use_tls { "HTTPS" } else { "HTTP" });
+        self.modals.add_list_item(ADDRESS).ok();
+        self.modals.add_list_item(&conn_item).ok();
+        self.modals.add_list_item("Cancel").ok();
+        match self.modals.get_radiobutton("Server settings:") {
+            Ok(choice) if choice == ADDRESS => self.edit_server_address(),
+            Ok(choice) if choice == conn_item => self.edit_connection(),
+            _ => self.force_redraw(),
+        }
+    }
+
+    /// F1 -> "Connection": a checkbox toggling HTTPS (TLS). Pre-checked with the
+    /// current state; dismissing leaves it unchanged.
+    fn edit_connection(&mut self) {
+        const HTTPS: &str = "Use HTTPS (TLS)";
+        self.modals.add_stateful_list_item(self.config.use_tls, HTTPS).ok();
+        let checked = match self.modals.get_checkbox("Connection") {
+            Ok(c) => c,
+            Err(_) => return, // dismissed: leave the setting unchanged
+        };
+        self.config.use_tls = checked.iter().any(|s| s == HTTPS);
+        self.config.save();
+        self.add_message(
+            Role::System,
+            &format!("Connection set to {}.", if self.config.use_tls { "HTTPS" } else { "HTTP" }),
+        );
+        self.scroll = self.max_scroll();
+        self.force_redraw();
+    }
+
+    /// Prompt for host / port / model in one modal and persist the result.
+    fn edit_server_address(&mut self) {
         let host = if self.config.host.is_empty() { "192.168.1.20".to_string() } else { self.config.host.clone() };
         let port = self.config.port.to_string();
         let model =

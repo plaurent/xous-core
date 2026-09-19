@@ -15,6 +15,7 @@ const CONFIG_DICT: &str = "ollama.config";
 const HOST_KEY: &str = "host";
 const PORT_KEY: &str = "port";
 const MODEL_KEY: &str = "model";
+const TLS_KEY: &str = "tls";
 
 /// Default ollama port. Override in the settings modal (F1).
 pub const DEFAULT_PORT: u16 = 11434;
@@ -31,6 +32,11 @@ pub struct Config {
     pub port: u16,
     /// Model name to chat with, e.g. `llama3.2` or `qwen2.5:3b`.
     pub model: String,
+    /// When true, connect over HTTPS (TLS) instead of plain HTTP. Must be set
+    /// explicitly — it can't be inferred from the port, since ollama can be
+    /// exposed on any port with or without TLS (e.g. a cloud host behind a
+    /// reverse proxy). Defaults to false (plain HTTP, the LAN case).
+    pub use_tls: bool,
 }
 
 impl Config {
@@ -46,6 +52,7 @@ impl Config {
                 let m = read_key(&pddb, MODEL_KEY).unwrap_or_default();
                 if m.is_empty() { DEFAULT_MODEL.to_string() } else { m }
             },
+            use_tls: read_key(&pddb, TLS_KEY).map(|s| s == "true").unwrap_or(false),
         }
     }
 
@@ -55,14 +62,19 @@ impl Config {
         write_key(&pddb, HOST_KEY, &self.host);
         write_key(&pddb, PORT_KEY, &self.port.to_string());
         write_key(&pddb, MODEL_KEY, &self.model);
+        write_key(&pddb, TLS_KEY, if self.use_tls { "true" } else { "false" });
         pddb.sync().ok();
     }
 
     /// True once a host has been configured; sends are blocked until then.
     pub fn is_ready(&self) -> bool { !self.host.trim().is_empty() }
 
-    /// The server root, e.g. `http://192.168.1.20:11434`.
-    pub fn base_url(&self) -> String { format!("http://{}:{}", self.host.trim(), self.port) }
+    /// The server root, e.g. `http://192.168.1.20:11434` (or `https://…` when
+    /// [`use_tls`](Self::use_tls) is set — e.g. a cloud host with a public cert).
+    pub fn base_url(&self) -> String {
+        let scheme = if self.use_tls { "https" } else { "http" };
+        format!("{}://{}:{}", scheme, self.host.trim(), self.port)
+    }
 
     /// The ollama chat endpoint, e.g. `http://192.168.1.20:11434/api/chat`.
     pub fn chat_url(&self) -> String { format!("{}/api/chat", self.base_url()) }
