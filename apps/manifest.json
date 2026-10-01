@@ -48,6 +48,18 @@
             }
         }
     },
+    "worldclock": {
+        "context_name": "world clock",
+        "menu_name": {
+            "appmenu.worldclock": {
+                "en": "World clock",
+                "en-tts": "World clock",
+                "fr": "Horloge mondiale",
+                "ja": "世界時計",
+                "zh": "世界时钟"
+            }
+        }
+    },
     "sidplayer": {
         "context_name": "sidplayer",
         "menu_name": {
