@@ -61,8 +61,10 @@ const BANNER_ROW: i32 = 17;
 /// Animation frames per second (derived from the pump interval).
 const SEC: u32 = (1000 / PAKLMAN_TICK_MS) as u32;
 
-/// Entities accumulate `speed` per frame and take one step each time the accumulator
-/// passes this threshold. All speeds are kept below it, so at most one step per frame.
+/// Each actor's `acc` is how far it has travelled from its cell towards the next one, where
+/// `STEP` is a whole cell. Actors add `speed` per frame and are drawn at that sub-cell pixel
+/// offset; reaching `STEP` means arriving at the next cell's centre, where turns, eating and
+/// ghost decisions happen. All speeds are kept below `STEP`, so at most one arrival per frame.
 const STEP: u32 = 100;
 const PAC_SPEED: u32 = 24;
 const GHOST_SPEED: u32 = 22;
@@ -139,6 +141,11 @@ fn step(pos: (i32, i32), d: Dir) -> (i32, i32) {
     ((pos.0 + dx).rem_euclid(COLS), pos.1 + dy)
 }
 
+/// The cells an actor overlaps: the one it's leaving and, if it's under way, the next one.
+fn occupied(pos: (i32, i32), dir: Dir, acc: u32) -> [(i32, i32); 2] {
+    [pos, if acc > 0 { step(pos, dir) } else { pos }]
+}
+
 fn dist2(a: (i32, i32), b: (i32, i32)) -> i32 {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
@@ -158,13 +165,15 @@ enum GhostState {
 }
 
 struct Ghost {
+    /// the cell the ghost is leaving (it's at this cell's centre when `acc` is 0)
     pos: (i32, i32),
-    prev: (i32, i32),
+    /// the way it's travelling; `step(pos, dir)` is always a cell it may enter
     dir: Dir,
     state: GhostState,
     frightened: bool,
     /// set when the ghosts switch modes; the next step reverses direction
     reverse: bool,
+    /// progress towards the next cell, out of STEP
     acc: u32,
     /// scatter-mode target, outside the maze near this ghost's home corner
     corner: (i32, i32),
@@ -179,26 +188,25 @@ impl Ghost {
             2 => ((11, 14), Dir::Up, GhostState::InHouse, (27, 31)),
             _ => ((16, 14), Dir::Up, GhostState::InHouse, (0, 31)),
         };
-        Ghost { pos, prev: pos, dir, state, frightened: false, reverse: false, acc: 0, corner }
+        Ghost { pos, dir, state, frightened: false, reverse: false, acc: 0, corner }
     }
 }
 
 struct Pac {
+    /// the cell the player is leaving (or standing in, when `acc` is 0)
     pos: (i32, i32),
-    prev: (i32, i32),
     /// current heading; kept even while stopped against a wall
     dir: Dir,
     /// buffered turn request, taken as soon as the maze allows it
     want: Dir,
+    /// progress towards the next cell, out of STEP; stays 0 while stopped at a wall
     acc: u32,
-    /// advances every step to animate the mouth
+    /// advances every frame of movement to animate the mouth
     anim: u32,
 }
 
 impl Pac {
-    fn new() -> Self {
-        Pac { pos: PAC_START, prev: PAC_START, dir: Dir::Left, want: Dir::Left, acc: 0, anim: 0 }
-    }
+    fn new() -> Self { Pac { pos: PAC_START, dir: Dir::Left, want: Dir::Left, acc: 0, anim: 0 } }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -588,40 +596,53 @@ impl Paklman {
         Some(best)
     }
 
-    fn move_ghost(&mut self, i: usize) {
-        if self.ghosts[i].state == GhostState::InHouse {
-            // bob up and down until released
-            let g = &mut self.ghosts[i];
-            let next = step(g.pos, g.dir);
-            if self.tiles[next.1 as usize][next.0 as usize] == Tile::Empty {
-                g.pos = next;
-            } else {
-                g.dir = g.dir.reverse();
-            }
-            return;
-        }
-
-        let dir = if self.ghosts[i].reverse {
-            self.ghosts[i].reverse = false;
-            Some(self.ghosts[i].dir.reverse())
-        } else {
-            self.choose_dir(i)
-        };
+    fn advance_ghost(&mut self, i: usize) {
         let g = &mut self.ghosts[i];
-        if let Some(d) = dir {
-            g.dir = d;
-            g.pos = step(g.pos, d);
+        if g.reverse {
+            // turn around on the spot, even mid-corridor
+            g.reverse = false;
+            if g.acc > 0 {
+                g.pos = step(g.pos, g.dir);
+                g.acc = STEP - g.acc;
+            }
+            g.dir = g.dir.reverse();
         }
+        let speed = self.ghost_speed(&self.ghosts[i]);
+        let g = &mut self.ghosts[i];
+        g.acc += speed;
+        if g.acc >= STEP {
+            g.acc -= STEP;
+            g.pos = step(g.pos, g.dir);
+            self.ghost_arrived(i);
+        }
+    }
+
+    /// Ghost `i` just reached a cell centre: update its state and pick the next direction.
+    fn ghost_arrived(&mut self, i: usize) {
+        let g = &mut self.ghosts[i];
         match g.state {
+            GhostState::InHouse => {
+                // bob up and down until released
+                let next = step(g.pos, g.dir);
+                if self.tiles[next.1 as usize][next.0 as usize] != Tile::Empty {
+                    g.dir = g.dir.reverse();
+                }
+                return;
+            }
             GhostState::Leaving if g.pos == HOUSE_EXIT => {
                 g.state = GhostState::Active;
                 g.dir = Dir::Left;
+                return;
             }
             GhostState::Eaten if g.pos == HOUSE_CENTER => {
                 // revived; head straight back out
                 g.state = GhostState::Leaving;
             }
             _ => {}
+        }
+        match self.choose_dir(i) {
+            Some(d) => self.ghosts[i].dir = d,
+            None => self.ghosts[i].acc = 0,
         }
     }
 
@@ -652,19 +673,35 @@ impl Paklman {
 
     // ---- player -------------------------------------------------------------------
 
-    /// Returns true if the player moved.
-    fn move_pac(&mut self) -> bool {
+    fn advance_pac(&mut self) {
+        if self.pac.acc > 0 && self.pac.want == self.pac.dir.reverse() {
+            // reversing is allowed anywhere, not just at cell centres
+            self.pac.pos = step(self.pac.pos, self.pac.dir);
+            self.pac.dir = self.pac.want;
+            self.pac.acc = STEP - self.pac.acc;
+        }
+        if self.pac.acc == 0 && !self.pac_turn() {
+            return; // standing against a wall
+        }
+        self.pac.acc += PAC_SPEED + self.level_bonus();
+        self.pac.anim = self.pac.anim.wrapping_add(1);
+        if self.pac.acc >= STEP {
+            self.pac.acc -= STEP;
+            self.pac.pos = step(self.pac.pos, self.pac.dir);
+            self.eat();
+            if !self.pac_turn() {
+                self.pac.acc = 0;
+            }
+        }
+    }
+
+    /// At a cell centre: take the buffered turn if it's open. Returns false if the way
+    /// ahead is blocked.
+    fn pac_turn(&mut self) -> bool {
         if self.pac_can_enter(step(self.pac.pos, self.pac.want)) {
             self.pac.dir = self.pac.want;
         }
-        let next = step(self.pac.pos, self.pac.dir);
-        if self.pac_can_enter(next) {
-            self.pac.pos = next;
-            self.pac.anim = self.pac.anim.wrapping_add(1);
-            true
-        } else {
-            false
-        }
+        self.pac_can_enter(step(self.pac.pos, self.pac.dir))
     }
 
     /// Eat whatever is under the player.
@@ -720,13 +757,16 @@ impl Paklman {
 
     /// Handle player/ghost contact. Returns true if play was interrupted (eat pause or death).
     fn check_collisions(&mut self) -> bool {
+        let (px, py) = self.actor_center(self.pac.pos, self.pac.dir, self.pac.acc);
         for i in 0..4 {
             let g = &self.ghosts[i];
             if !matches!(g.state, GhostState::Active | GhostState::Leaving) {
                 continue;
             }
-            // same cell, or the two swapped cells this frame
-            let touching = g.pos == self.pac.pos || (g.pos == self.pac.prev && g.prev == self.pac.pos);
+            // Within 2/3 of a cell. Player and ghost close by at most ~half a cell per frame,
+            // so they can't pass through each other between frames.
+            let (gx, gy) = self.actor_center(g.pos, g.dir, g.acc);
+            let touching = (gx - px).abs() + (gy - py).abs() < self.cell * 2 / 3;
             if !touching {
                 continue;
             }
@@ -782,27 +822,11 @@ impl Paklman {
         self.idle_frames += 1;
         self.release_ghosts();
 
-        // move everyone, remembering where they were so we can erase and detect crossings
-        self.pac.prev = self.pac.pos;
-        for g in self.ghosts.iter_mut() {
-            g.prev = g.pos;
-        }
-
-        self.pac.acc += PAC_SPEED + self.level_bonus();
-        if self.pac.acc >= STEP {
-            self.pac.acc -= STEP;
-            if self.move_pac() {
-                self.eat();
-            }
-        }
-
+        // move everyone, remembering where they were so we can erase what moved
+        let before = self.actor_motions();
+        self.advance_pac();
         for i in 0..4 {
-            let speed = self.ghost_speed(&self.ghosts[i]);
-            self.ghosts[i].acc += speed;
-            if self.ghosts[i].acc >= STEP {
-                self.ghosts[i].acc -= STEP;
-                self.move_ghost(i);
-            }
+            self.advance_ghost(i);
         }
 
         self.check_collisions();
@@ -811,12 +835,10 @@ impl Paklman {
             self.phase = Phase::LevelClear(LEVEL_CLEAR_FRAMES);
         }
 
-        if self.pac.prev != self.pac.pos {
-            self.dirty.push(self.pac.prev);
-        }
-        for i in 0..4 {
-            if self.ghosts[i].prev != self.ghosts[i].pos {
-                self.dirty.push(self.ghosts[i].prev);
+        let after = self.actor_motions();
+        for (&(pos, dir, acc), now) in before.iter().zip(after.iter()) {
+            if (pos, dir, acc) != *now {
+                self.dirty.extend_from_slice(&occupied(pos, dir, acc));
             }
         }
         if self.frame % 8 == 0 {
@@ -846,6 +868,27 @@ impl Paklman {
     fn cell_center(&self, pos: (i32, i32)) -> (isize, isize) {
         let (x0, y0) = self.cell_origin(pos);
         (x0 + self.cell / 2, y0 + self.cell / 2)
+    }
+
+    /// Pixel centre of an actor `acc`/STEP of the way from `pos` towards the next cell.
+    fn actor_center(&self, pos: (i32, i32), dir: Dir, acc: u32) -> (isize, isize) {
+        let (cx, cy) = self.cell_center(pos);
+        let (dx, dy) = dir.delta();
+        if pos.0 + dx < 0 || pos.0 + dx >= COLS {
+            // in the tunnel mouth: don't slide off the maze, just pop across
+            return (cx, cy);
+        }
+        let off = acc as isize * self.cell / STEP as isize;
+        (cx + dx as isize * off, cy + dy as isize * off)
+    }
+
+    /// Position and motion of the player and each ghost, to tell what moved this frame.
+    fn actor_motions(&self) -> [((i32, i32), Dir, u32); 5] {
+        let mut out = [(self.pac.pos, self.pac.dir, self.pac.acc); 5];
+        for (o, g) in out[1..].iter_mut().zip(self.ghosts.iter()) {
+            *o = (g.pos, g.dir, g.acc);
+        }
+        out
     }
 
     /// Sprite radius: sprites fill their cell with a 1px margin.
@@ -936,13 +979,13 @@ impl Paklman {
         if radius <= 0 {
             return;
         }
-        let (cx, cy) = self.cell_center(self.pac.pos);
+        let (cx, cy) = self.actor_center(self.pac.pos, self.pac.dir, self.pac.acc);
         b.circle(cx, cy, radius, PixelColor::Dark);
         if radius < self.radius() {
             return; // no mouth while dying
         }
         // mouth half-opening at the lips, cycling closed -> half -> open -> half
-        let open = [0, radius / 2, radius * 3 / 4, radius / 2][(self.pac.anim % 4) as usize];
+        let open = [0, radius / 2, radius * 3 / 4, radius / 2][((self.pac.anim / 2) % 4) as usize];
         if open == 0 {
             return;
         }
@@ -962,7 +1005,7 @@ impl Paklman {
 
     fn push_ghost(&self, b: &mut Batch, i: usize) {
         let g = &self.ghosts[i];
-        let (cx, cy) = self.cell_center(g.pos);
+        let (cx, cy) = self.actor_center(g.pos, g.dir, g.acc);
         let r = self.radius();
         let (dx, dy) = g.dir.delta();
         let (dx, dy) = (dx as isize, dy as isize);
@@ -1045,6 +1088,8 @@ impl Paklman {
     }
 
     fn draw_frame(&mut self) {
+        self.dirty.sort_unstable();
+        self.dirty.dedup();
         let mut b = Batch::new(&self.gam, self.gid);
         for &pos in self.dirty.iter() {
             self.push_cell_bg(&mut b, pos);
@@ -1180,7 +1225,9 @@ impl Paklman {
                     // shrink away to nothing
                     let radius = self.radius() - ((elapsed - freeze) / 3) as isize;
                     let mut b = Batch::new(&self.gam, self.gid);
-                    self.push_cell_bg(&mut b, self.pac.pos);
+                    for &pos in occupied(self.pac.pos, self.pac.dir, self.pac.acc).iter() {
+                        self.push_cell_bg(&mut b, pos);
+                    }
                     self.push_pac(&mut b, radius);
                     b.flush();
                     drop(b);
