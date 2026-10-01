@@ -4732,6 +4732,7 @@ dependencies = [
  "num-traits",
  "pddb",
  "serde",
+ "tls",
  "ureq",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",
@@ -4880,6 +4881,23 @@ dependencies = [
 
 [[package]]
 name = "paklis"
+version = "0.1.0"
+dependencies = [
+ "gam",
+ "log 0.4.22",
+ "modals",
+ "num-derive 0.4.2",
+ "num-traits",
+ "trng",
+ "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous-api-log",
+ "xous-api-names",
+ "xous-api-ticktimer",
+ "xous-ipc 0.10.10 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "paklman"
 version = "0.1.0"
 dependencies = [
  "gam",

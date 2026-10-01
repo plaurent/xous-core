@@ -74,6 +74,7 @@ members = [
   "apps/app-loader/spawn",
   "apps/ball",
   "apps/paklis",
+  "apps/paklman",
   "apps/sidplayer",
   "apps/ollama-client",
   "apps/hello",

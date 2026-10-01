@@ -36,6 +36,18 @@
             }
         }
     },
+    "paklman": {
+        "context_name": "paklman game",
+        "menu_name": {
+            "appmenu.paklman": {
+                "en": "Paklman maze game",
+                "en-tts": "Paklman maze game",
+                "fr": "Jeu de labyrinthe Paklman",
+                "ja": "パクルマン 迷路ゲーム",
+                "zh": "Paklman 迷宫游戏"
+            }
+        }
+    },
     "sidplayer": {
         "context_name": "sidplayer",
         "menu_name": {
