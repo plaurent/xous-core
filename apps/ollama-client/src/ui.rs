@@ -55,9 +55,10 @@ impl Role {
     }
 }
 
-/// Approximate glyph metrics used to size the transcript layout. Heights come
-/// from blitstr2 (Regular = 15 px, Large = 24 px); widths are proportional-font
-/// estimates for the wrap column count.
+/// Glyph metrics used to size the layout. Heights come from blitstr2
+/// (Regular = 15 px, Large = 24 px). `font_char_w` is a rough Regular-font
+/// estimate, used only to truncate the chrome lines; the transcript is wrapped
+/// by real glyph widths (see [`glyph_advance`]).
 fn font_char_w(large: bool) -> isize { if large { 13 } else { 8 } }
 fn font_row_h(large: bool) -> isize { if large { 26 } else { 16 } }
 fn font_style(large: bool) -> GlyphStyle { if large { GlyphStyle::Large } else { GlyphStyle::Regular } }
@@ -82,8 +83,8 @@ pub(crate) struct OllamaClient {
     scroll: usize,
     /// How many transcript lines fit on screen.
     visible_rows: usize,
-    /// Max characters that fit on a line before wrapping.
-    max_chars: usize,
+    /// Pixel width a transcript line may fill before wrapping.
+    max_px: isize,
     /// When true, draw the transcript in the Large glyph style.
     large_font: bool,
 
@@ -144,7 +145,7 @@ impl OllamaClient {
         let self_conn = xous::connect(sid).unwrap();
 
         let visible_rows = ((screensize.y - TRANSCRIPT_TOP - FOOTER_H) / font_row_h(false)).max(1) as usize;
-        let max_chars = ((screensize.x - 12) / font_char_w(false)).max(8) as usize;
+        let max_px = transcript_width(screensize);
 
         // Config::load() blocks until the PDDB is mounted.
         let config = Config::load();
@@ -161,7 +162,7 @@ impl OllamaClient {
             lines: Vec::new(),
             scroll: 0,
             visible_rows,
-            max_chars,
+            max_px,
             large_font: false,
             scroll_mode: false,
             busy: false,
@@ -202,7 +203,7 @@ impl OllamaClient {
                 lines.push(String::new());
             }
             lines.push(role.header().to_string());
-            for l in wrap(text, self.max_chars) {
+            for l in wrap(text, self.max_px, self.large_font) {
                 lines.push(l);
             }
         }
@@ -212,7 +213,6 @@ impl OllamaClient {
     /// Recompute wrap width + visible-row count for the current font, then
     /// re-wrap and clamp the scroll position.
     fn recompute_layout(&mut self) {
-        self.max_chars = ((self.screensize.x - 12) / font_char_w(self.large_font)).max(8) as usize;
         self.visible_rows =
             ((self.screensize.y - TRANSCRIPT_TOP - FOOTER_H) / font_row_h(self.large_font)).max(1) as usize;
         self.rewrap();
@@ -229,8 +229,7 @@ impl OllamaClient {
     fn max_scroll(&self) -> usize { self.lines.len().saturating_sub(self.visible_rows) }
 
     /// Character budget for the chrome (title/status/hints), which is always drawn
-    /// in the Regular font — so it must NOT use `max_chars`, which tracks the
-    /// (possibly Large) transcript font and would over-truncate these lines.
+    /// in the Regular font, whatever the transcript font is.
     fn chrome_chars(&self) -> usize { ((self.screensize.x - 8) / font_char_w(false)).max(8) as usize }
 
     fn overflowing(&self) -> bool { self.lines.len() > self.visible_rows }
@@ -455,7 +454,8 @@ impl OllamaClient {
 
     /// Prompt for host / port / model in one modal and persist the result.
     fn edit_server_address(&mut self) {
-        let host = if self.config.host.is_empty() { "192.168.1.20".to_string() } else { self.config.host.clone() };
+        let host =
+            if self.config.host.is_empty() { "192.168.1.20".to_string() } else { self.config.host.clone() };
         let port = self.config.port.to_string();
         let model =
             if self.config.model.is_empty() { DEFAULT_MODEL.to_string() } else { self.config.model.clone() };
@@ -486,7 +486,10 @@ impl OllamaClient {
 
         self.add_message(
             Role::System,
-            &format!("Server set to {}:{}, model \"{}\".", self.config.host, self.config.port, self.config.model),
+            &format!(
+                "Server set to {}:{}, model \"{}\".",
+                self.config.host, self.config.port, self.config.model
+            ),
         );
         self.set_status(if self.config.is_ready() {
             "Type a message and press Enter."
@@ -557,8 +560,13 @@ impl OllamaClient {
 
         // title bar: model + mode + a scroll position indicator on the right.
         let mut title = String::new();
-        write!(title, "Ollama · {} · {}", self.config.model, if self.scroll_mode { "SCROLL" } else { "EDIT" })
-            .ok();
+        write!(
+            title,
+            "Ollama · {} · {}",
+            self.config.model,
+            if self.scroll_mode { "SCROLL" } else { "EDIT" }
+        )
+        .ok();
         self.text(4, 2, &truncate(&title, self.chrome_chars().saturating_sub(9)));
         if self.overflowing() {
             let last = (self.scroll + self.visible_rows).min(self.lines.len());
@@ -577,7 +585,8 @@ impl OllamaClient {
                 break;
             }
             let y = TRANSCRIPT_TOP + (i as isize) * row_h;
-            self.text_styled(6, y, &truncate(&self.lines[idx], self.max_chars), style);
+            // already wrapped to `max_px`, so no truncation needed
+            self.text_styled(6, y, &self.lines[idx], style);
         }
 
         // footer: status line + key hints (the input line itself is drawn by GAM)
@@ -610,10 +619,35 @@ impl OllamaClient {
     }
 }
 
-/// Word-wrap `text` to `width` columns. Preserves paragraph breaks (`\n`) and
-/// hard-splits any single word longer than `width`.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
+/// Transcript lines start at x = 6; keep the same gap on the right so the
+/// TextView never needs to wrap a line itself.
+fn transcript_width(screensize: Point) -> isize { (screensize.x - 12).max(40) }
+
+/// Horizontal advance of one glyph in pixels, as the GAM typesetter lays it
+/// out: glyph width plus kerning, with spaces unkerned. Large is the Small font
+/// drawn at double size. Characters outside the Latin fonts (emoji, CJK) are
+/// given a full-square width.
+fn glyph_advance(ch: char, large: bool) -> isize {
+    let glyph = if large { blitstr2::large_glyph(ch) } else { blitstr2::regular_glyph(ch) };
+    match glyph {
+        Ok(g) if ch == ' ' => g.wide as isize,
+        Ok(g) => (g.wide + g.kern) as isize,
+        Err(_) => {
+            if large {
+                32
+            } else {
+                16
+            }
+        }
+    }
+}
+
+fn text_px(s: &str, large: bool) -> isize { s.chars().map(|c| glyph_advance(c, large)).sum() }
+
+/// Word-wrap `text` to `width` pixels in the Regular or Large font. Preserves
+/// paragraph breaks (`\n`) and hard-splits any single word wider than a line.
+fn wrap(text: &str, width: isize, large: bool) -> Vec<String> {
+    let space = glyph_advance(' ', large);
     let mut out = Vec::new();
     for para in text.split('\n') {
         let words: Vec<&str> = para.split_whitespace().collect();
@@ -622,43 +656,41 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
             continue;
         }
         let mut cur = String::new();
-        let mut cur_len = 0usize;
+        let mut cur_px = 0isize;
         for word in words {
-            let wlen = word.chars().count();
-            if wlen > width {
-                // flush the current line, then emit the long word in width-sized chunks
-                if cur_len > 0 {
+            let wpx = text_px(word, large);
+            if wpx > width {
+                // flush the current line, then emit the long word in line-sized chunks
+                if !cur.is_empty() {
                     out.push(std::mem::take(&mut cur));
-                    cur_len = 0;
                 }
                 let mut chunk = String::new();
-                let mut clen = 0;
+                let mut cpx = 0;
                 for ch in word.chars() {
-                    chunk.push(ch);
-                    clen += 1;
-                    if clen == width {
+                    let adv = glyph_advance(ch, large);
+                    if cpx + adv > width && !chunk.is_empty() {
                         out.push(std::mem::take(&mut chunk));
-                        clen = 0;
+                        cpx = 0;
                     }
+                    chunk.push(ch);
+                    cpx += adv;
                 }
-                if clen > 0 {
-                    cur = chunk;
-                    cur_len = clen;
-                }
-            } else if cur_len == 0 {
+                cur = chunk;
+                cur_px = cpx;
+            } else if cur.is_empty() {
                 cur.push_str(word);
-                cur_len = wlen;
-            } else if cur_len + 1 + wlen <= width {
+                cur_px = wpx;
+            } else if cur_px + space + wpx <= width {
                 cur.push(' ');
                 cur.push_str(word);
-                cur_len += 1 + wlen;
+                cur_px += space + wpx;
             } else {
                 out.push(std::mem::take(&mut cur));
                 cur.push_str(word);
-                cur_len = wlen;
+                cur_px = wpx;
             }
         }
-        if cur_len > 0 {
+        if !cur.is_empty() {
             out.push(cur);
         }
     }

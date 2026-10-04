@@ -35,9 +35,8 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn user(text: &str) -> Self { ChatMessage { role: "user".into(), content: text.into() } }
-    pub fn assistant(text: &str) -> Self {
-        ChatMessage { role: "assistant".into(), content: text.into() }
-    }
+
+    pub fn assistant(text: &str) -> Self { ChatMessage { role: "assistant".into(), content: text.into() } }
 }
 
 #[derive(Serialize)]
@@ -143,9 +142,7 @@ pub fn list_models(config: &Config) -> Result<Vec<String>, String> {
             let body = resp.into_string().unwrap_or_default();
             Err(format!("Server error {}: {}", code, body.trim()))
         }
-        Err(ureq::Error::Transport(t)) => {
-            Err(format!("Could not reach ollama at {}\n\n({})", url, t))
-        }
+        Err(ureq::Error::Transport(t)) => Err(format!("Could not reach ollama at {}\n\n({})", url, t)),
     }
 }
 
