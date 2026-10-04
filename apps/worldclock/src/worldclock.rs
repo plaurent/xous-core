@@ -13,9 +13,9 @@ use super::*;
 use crate::cities::{self, City};
 
 /// Height of one clock row, in pixels.
-const ROW_H: isize = 72;
+const ROW_H: isize = 90;
 /// Clock face radius.
-const FACE_R: isize = 31;
+const FACE_R: isize = 40;
 /// Left edge of the text to the right of the clock.
 const TEXT_X: isize = 6 + 2 * FACE_R + 10;
 /// Key hint line at the bottom of the screen.
@@ -321,7 +321,7 @@ impl WorldClock {
             if night { (PixelColor::Dark, PixelColor::Light) } else { (PixelColor::Light, PixelColor::Dark) };
         let r = FACE_R;
         b.circle(cx, cy, r, PixelColor::Dark);
-        b.circle(cx, cy, r - 2, bg);
+        b.circle(cx, cy, r - 3, bg);
         let point = |angle: f64, len: f64| -> (isize, isize) {
             (
                 (cx as f64 + len * angle.sin()).round() as isize,
@@ -332,8 +332,8 @@ impl WorldClock {
         for k in 0..12 {
             let a = tau * k as f64 / 12.0;
             let major = k % 3 == 0;
-            let (x0, y0) = point(a, (r - 4) as f64);
-            let (x1, y1) = point(a, (r - if major { 11 } else { 7 }) as f64);
+            let (x0, y0) = point(a, (r - 5) as f64);
+            let (x1, y1) = point(a, (r - if major { 14 } else { 9 }) as f64);
             b.line(x0, y0, x1, y1, fg);
             if major {
                 // double up the quarter-hour marks
@@ -353,9 +353,14 @@ impl WorldClock {
         };
         let hour_angle = tau * ((hour % 12) as f64 + minute as f64 / 60.0) / 12.0;
         let minute_angle = tau * minute as f64 / 60.0;
-        hand(b, hour_angle, r as f64 * 0.5, &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]);
-        hand(b, minute_angle, r as f64 * 0.8, &[(0, 0), (1, 0), (0, 1)]);
-        b.circle(cx, cy, 3, fg);
+        hand(
+            b,
+            hour_angle,
+            r as f64 * 0.5,
+            &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)],
+        );
+        hand(b, minute_angle, r as f64 * 0.8, &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]);
+        b.circle(cx, cy, 4, fg);
     }
 
     fn draw_row(&self, row: usize, y: isize, utc: i64, local_offset: i32) {
@@ -383,8 +388,8 @@ impl WorldClock {
             );
             let (cx, cy) = (6 + FACE_R, y + ROW_H / 2);
             let mut b = Batch::new(&self.gam, self.gid);
-            b.rect(cx - 10, cy - 1, cx + 10, cy + 1, DrawStyle::new(PixelColor::Dark, PixelColor::Dark, 1));
-            b.rect(cx - 1, cy - 10, cx + 1, cy + 10, DrawStyle::new(PixelColor::Dark, PixelColor::Dark, 1));
+            b.rect(cx - 13, cy - 1, cx + 13, cy + 1, DrawStyle::new(PixelColor::Dark, PixelColor::Dark, 1));
+            b.rect(cx - 1, cy - 13, cx + 1, cy + 13, DrawStyle::new(PixelColor::Dark, PixelColor::Dark, 1));
             b.flush();
             return;
         }
@@ -394,9 +399,9 @@ impl WorldClock {
             // Without a wall-clock time there's nothing meaningful to show for any city.
             self.draw_face(&mut b, 6 + FACE_R, y + ROW_H / 2, None, false);
             b.flush();
-            self.text(TEXT_X, y + 4, w - 6, y + 20, GlyphStyle::Bold, &info.name);
-            self.text(TEXT_X, y + 22, w - 6, y + 48, GlyphStyle::Large, "--:--");
-            self.text(TEXT_X, y + 51, w - 6, y + 66, GlyphStyle::Small, "Clock not set");
+            self.text(TEXT_X, y + 6, w - 6, y + 23, GlyphStyle::Bold, &info.name);
+            self.text(TEXT_X, y + 26, w - 6, y + 60, GlyphStyle::ExtraLarge, "--:--");
+            self.text(TEXT_X, y + 65, w - 6, y + 84, GlyphStyle::Regular, "Clock not set");
             return;
         }
         let local = utc + info.offset_min as i64 * 60;
@@ -433,12 +438,12 @@ impl WorldClock {
                 }
             }
         }
-        self.text(TEXT_X, y + 4, w - 6, y + 20, GlyphStyle::Bold, &line);
+        self.text(TEXT_X, y + 6, w - 6, y + 23, GlyphStyle::Bold, &line);
 
         // line 2: the digital readout
         let mut line = String::new();
         self.fmt_time(min_of_day, &mut line);
-        self.text(TEXT_X, y + 22, w - 6, y + 48, GlyphStyle::Large, &line);
+        self.text(TEXT_X, y + 26, w - 6, y + 60, GlyphStyle::ExtraLarge, &line);
 
         // line 3: sunrise and sunset in the city's own time
         let mut line = String::new();
@@ -447,7 +452,7 @@ impl WorldClock {
                 let off = info.offset_min as i64 * 60;
                 line.push_str("Rise ");
                 self.fmt_time((rise + off).rem_euclid(DAY) / 60, &mut line);
-                line.push_str("   Set ");
+                line.push_str("  Set ");
                 self.fmt_time((set + off).rem_euclid(DAY) / 60, &mut line);
             }
             Sun::PolarDay => line.push_str("Sun up all day"),
@@ -461,7 +466,7 @@ impl WorldClock {
                 line.push_str("  F3: set your city");
             }
         }
-        self.text(TEXT_X, y + 51, w - 6, y + 66, GlyphStyle::Small, &line);
+        self.text(TEXT_X, y + 65, w - 6, y + 84, GlyphStyle::Regular, &line);
     }
 
     fn draw_footer(&self) {
