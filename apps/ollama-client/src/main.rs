@@ -30,6 +30,10 @@ pub(crate) enum AppOp {
     FocusChange,
     /// a worker thread has an ollama reply (or error) ready for us
     ResponseReady,
+    /// more of a streaming reply has arrived
+    Progress,
+    /// once a second while a request is in flight, to update the status line
+    Tick,
     /// exit the application
     Quit,
 }
@@ -97,6 +101,12 @@ fn wrapped_main() -> ! {
             }),
             Some(AppOp::ResponseReady) => {
                 app.on_response();
+            }
+            Some(AppOp::Progress) => {
+                app.on_progress();
+            }
+            Some(AppOp::Tick) => {
+                app.on_tick();
             }
             Some(AppOp::Quit) => {
                 log::info!("ollama-client quitting");

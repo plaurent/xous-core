@@ -13,12 +13,18 @@
 //! them only in **scroll mode**, toggled with **F3**. In edit mode we ignore the
 //! arrows and let the IME move the input cursor.
 //!
-//! A send blocks (network + inference), so it runs on a worker thread; when the
-//! reply (or error) is ready the worker drops it in a shared slot and pings our
-//! server with `AppOp::ResponseReady`.
+//! A send blocks (network + inference), so it runs on a worker thread that
+//! streams the reply into a shared [`Request`], pinging our server with
+//! `AppOp::Progress` as text arrives and `AppOp::ResponseReady` at the end. A
+//! second watchdog thread ticks the status line once a second and decides when a
+//! request has died: while waiting for the first words it probes the server every
+//! [`PROBE_EVERY`], and once text is flowing it gives up after [`STALL_LIMIT`] of
+//! silence. (Xous TCP has no keep-alives, so a silent connection can't be asked
+//! whether it's still there.)
 
 use core::fmt::Write as _;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gam::*;
 use num_traits::ToPrimitive;
@@ -36,6 +42,78 @@ const TRANSCRIPT_TOP: isize = 20;
 /// Footer inside our content canvas: a status line + a key-hint line.
 /// (The input & prediction area below this is drawn by GAM, not us.)
 const FOOTER_H: isize = 2 * LINE_H + 4;
+
+/// While waiting for the first words of a reply, check the server is still up
+/// this often.
+const PROBE_EVERY: Duration = Duration::from_secs(15);
+/// Give up waiting after this many failed probes in a row.
+const PROBE_FAILURES_TO_GIVE_UP: u32 = 2;
+/// Once a reply is streaming, this long without any data means it has stalled.
+const STALL_LIMIT: Duration = Duration::from_secs(90);
+/// Redraw a streaming reply at most this often.
+const PROGRESS_EVERY: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    /// checking the TLS certificate / opening the connection
+    Connecting,
+    /// request sent; nothing back yet (prompt evaluation, model load)
+    Waiting,
+    /// reply chunks are arriving
+    Receiving,
+}
+
+/// One chat request in flight, shared between the UI, the worker thread that
+/// streams the reply, and the watchdog thread. Each request gets its own, so a
+/// worker that outlives its request (abandoned after a stall) can't disturb the
+/// next one.
+struct Request {
+    started: Instant,
+    phase: Phase,
+    /// the reply so far
+    text: String,
+    /// the latest chunk was reasoning rather than answer text
+    reasoning: bool,
+    last_data: Instant,
+    /// result of the latest server probe, if any has finished
+    server_ok: Option<bool>,
+    probe_failures: u32,
+    probing: bool,
+    /// set when the request ends, by whichever thread ends it
+    outcome: Option<Result<String, String>>,
+    /// tells the worker to stop reading
+    cancelled: bool,
+}
+
+impl Request {
+    fn new() -> Self {
+        let now = Instant::now();
+        Request {
+            started: now,
+            phase: Phase::Connecting,
+            text: String::new(),
+            reasoning: false,
+            last_data: now,
+            server_ok: None,
+            probe_failures: 0,
+            probing: false,
+            outcome: None,
+            cancelled: false,
+        }
+    }
+
+    /// End the request with an error, unless it has already ended.
+    fn fail(&mut self, msg: &str) {
+        if self.outcome.is_none() {
+            self.outcome = Some(Err(String::from(msg)));
+        }
+        self.cancelled = true;
+    }
+}
+
+fn ping(cid: xous::CID, op: AppOp) {
+    xous::send_message(cid, xous::Message::new_scalar(op.to_usize().unwrap(), 0, 0, 0, 0)).ok();
+}
 
 /// Who authored a line of the transcript (drives its prefix header).
 #[derive(Clone, Copy)]
@@ -79,6 +157,9 @@ pub(crate) struct OllamaClient {
     transcript: Vec<(Role, String)>,
     /// Word-wrapped display lines derived from `transcript` (what we render).
     lines: Vec<String>,
+    /// Index in `lines` where the last transcript message starts, so a streaming
+    /// reply can be re-wrapped without redoing the whole transcript.
+    last_msg_line: usize,
     /// Index of the first visible transcript line.
     scroll: usize,
     /// How many transcript lines fit on screen.
@@ -96,8 +177,10 @@ pub(crate) struct OllamaClient {
     busy: bool,
     status: String,
 
-    /// Filled by the worker thread with the reply text or an error message.
-    pending: Arc<Mutex<Option<Result<String, String>>>>,
+    /// The request in flight, if any.
+    request: Option<Arc<Mutex<Request>>>,
+    /// Transcript index of the reply being streamed, once its first words arrive.
+    streaming_msg: Option<usize>,
     /// Connection back to our own server, so the worker can wake the UI.
     self_conn: xous::CID,
 
@@ -145,7 +228,7 @@ impl OllamaClient {
         let self_conn = xous::connect(sid).unwrap();
 
         let visible_rows = ((screensize.y - TRANSCRIPT_TOP - FOOTER_H) / font_row_h(false)).max(1) as usize;
-        let max_px = transcript_width(screensize);
+        let max_px = transcript_width(screensize, false);
 
         // Config::load() blocks until the PDDB is mounted.
         let config = Config::load();
@@ -160,6 +243,7 @@ impl OllamaClient {
             history: Vec::new(),
             transcript: Vec::new(),
             lines: Vec::new(),
+            last_msg_line: 0,
             scroll: 0,
             visible_rows,
             max_px,
@@ -167,7 +251,8 @@ impl OllamaClient {
             scroll_mode: false,
             busy: false,
             status: String::new(),
-            pending: Arc::new(Mutex::new(None)),
+            request: None,
+            streaming_msg: None,
             self_conn,
             allow_redraw: false,
             last_paint_sig: 0,
@@ -191,28 +276,45 @@ impl OllamaClient {
     /// Append a message to the transcript and re-wrap the display.
     fn add_message(&mut self, role: Role, text: &str) {
         self.transcript.push((role, text.to_string()));
-        self.rewrap();
+        self.push_lines(self.transcript.len() - 1);
     }
 
-    /// Rebuild `lines` from `transcript` at the current wrap width: a blank
-    /// separator between messages, a role header, then the word-wrapped body.
-    fn rewrap(&mut self) {
-        let mut lines: Vec<String> = Vec::new();
-        for (role, text) in &self.transcript {
-            if !lines.is_empty() {
-                lines.push(String::new());
-            }
-            lines.push(role.header().to_string());
-            for l in wrap(text, self.max_px, self.large_font) {
-                lines.push(l);
-            }
+    /// Append the display lines for transcript message `i`: a blank separator
+    /// (except before the first), a role header, then the word-wrapped body.
+    fn push_lines(&mut self, i: usize) {
+        if !self.lines.is_empty() {
+            self.lines.push(String::new());
         }
-        self.lines = lines;
+        self.last_msg_line = self.lines.len();
+        let (role, text) = &self.transcript[i];
+        self.lines.push(role.header().to_string());
+        let body = wrap(text, self.max_px, self.large_font);
+        self.lines.extend(body);
+    }
+
+    /// Rebuild `lines` from `transcript` at the current wrap width.
+    fn rewrap(&mut self) {
+        self.lines.clear();
+        for i in 0..self.transcript.len() {
+            self.push_lines(i);
+        }
+    }
+
+    /// Re-wrap only the last message (a reply that's still streaming in).
+    fn rewrap_last(&mut self) {
+        if self.transcript.is_empty() {
+            return;
+        }
+        // drop its lines and the separator before it, then lay it out again
+        let cut = if self.last_msg_line > 0 { self.last_msg_line - 1 } else { 0 };
+        self.lines.truncate(cut);
+        self.push_lines(self.transcript.len() - 1);
     }
 
     /// Recompute wrap width + visible-row count for the current font, then
     /// re-wrap and clamp the scroll position.
     fn recompute_layout(&mut self) {
+        self.max_px = transcript_width(self.screensize, self.large_font);
         self.visible_rows =
             ((self.screensize.y - TRANSCRIPT_TOP - FOOTER_H) / font_row_h(self.large_font)).max(1) as usize;
         self.rewrap();
@@ -275,12 +377,17 @@ impl OllamaClient {
 
     /// F4: a small display menu — toggle the transcript font size, or clear.
     fn display_menu(&mut self) {
+        const STOP_ITEM: &str = "Stop waiting for the reply";
+        if self.busy {
+            self.modals.add_list_item(STOP_ITEM).ok();
+        }
         let font_item =
             if self.large_font { "Font size: switch to Regular" } else { "Font size: switch to Large" };
         self.modals.add_list_item(font_item).ok();
         self.modals.add_list_item("Clear conversation").ok();
         self.modals.add_list_item("Cancel").ok();
         match self.modals.get_radiobutton("Display:") {
+            Ok(choice) if choice == STOP_ITEM => self.cancel_request(),
             Ok(choice) if choice == font_item => self.set_font(!self.large_font),
             Ok(choice) if choice == "Clear conversation" => self.clear_conversation(),
             _ => self.force_redraw(),
@@ -316,40 +423,180 @@ impl OllamaClient {
 
         // Hand the request to a worker thread so the UI stays responsive (the user
         // can still toggle scroll mode and read while the model is thinking).
-        let pending = Arc::clone(&self.pending);
+        let request = Arc::new(Mutex::new(Request::new()));
+        self.request = Some(Arc::clone(&request));
+        self.streaming_msg = None;
         let cid = self.self_conn;
         let config = self.config.clone();
         let history = self.history.clone();
-        std::thread::spawn(move || {
-            let result = net::chat(&config, &history);
-            *pending.lock().unwrap() = Some(result);
-            xous::send_message(
-                cid,
-                xous::Message::new_scalar(AppOp::ResponseReady.to_usize().unwrap(), 0, 0, 0, 0),
-            )
-            .ok();
-        });
+        {
+            let request = Arc::clone(&request);
+            let config = config.clone();
+            std::thread::spawn(move || {
+                let mut last_progress = Instant::now();
+                let result = net::chat_stream(
+                    &config,
+                    &history,
+                    || request.lock().unwrap().phase = Phase::Waiting,
+                    |content, reasoning| {
+                        let mut r = request.lock().unwrap();
+                        if r.cancelled {
+                            return false;
+                        }
+                        r.phase = Phase::Receiving;
+                        r.last_data = Instant::now();
+                        r.reasoning = reasoning;
+                        r.text.push_str(content);
+                        drop(r);
+                        if last_progress.elapsed() >= PROGRESS_EVERY {
+                            last_progress = Instant::now();
+                            ping(cid, AppOp::Progress);
+                        }
+                        true
+                    },
+                );
+                let mut r = request.lock().unwrap();
+                // the watchdog may already have given up on this request
+                if r.outcome.is_none() {
+                    r.outcome = Some(result);
+                }
+                drop(r);
+                ping(cid, AppOp::ResponseReady);
+            });
+        }
+        std::thread::spawn(move || watchdog(request, config, cid));
     }
 
-    /// Handle the worker thread's result (called from the main loop on wake-up).
+    /// The streaming reply has grown: show the new text.
+    pub(crate) fn on_progress(&mut self) {
+        let changed = self.sync_streaming_text();
+        self.update_busy_status();
+        // new text can land within the last line, which `paint_sig` doesn't see
+        if changed {
+            self.force_redraw();
+        } else {
+            self.redraw();
+        }
+    }
+
+    /// Once a second while a request is in flight: refresh the elapsed time.
+    pub(crate) fn on_tick(&mut self) {
+        if self.request.is_some() {
+            self.update_busy_status();
+            self.redraw();
+        }
+    }
+
+    /// Copy the request's text so far into the transcript, adding the reply
+    /// message when the first words arrive. Returns whether anything changed.
+    fn sync_streaming_text(&mut self) -> bool {
+        let text = match &self.request {
+            Some(r) => r.lock().unwrap().text.clone(),
+            None => return false,
+        };
+        if text.is_empty() {
+            return false;
+        }
+        match self.streaming_msg {
+            Some(i) => {
+                if self.transcript[i].1.len() == text.len() {
+                    return false;
+                }
+                self.transcript[i].1 = text;
+                self.rewrap_last();
+            }
+            None => {
+                self.add_message(Role::Assistant, &text);
+                self.streaming_msg = Some(self.transcript.len() - 1);
+            }
+        }
+        // follow the text as it arrives, unless the user is scrolling around
+        if !self.scroll_mode {
+            self.scroll = self.max_scroll();
+        }
+        true
+    }
+
+    fn update_busy_status(&mut self) {
+        let status = match &self.request {
+            Some(r) => {
+                let r = r.lock().unwrap();
+                let secs = r.started.elapsed().as_secs();
+                match r.phase {
+                    Phase::Connecting => format!("Connecting… {}s", secs),
+                    Phase::Waiting => match r.server_ok {
+                        Some(true) => format!("Thinking… {}s, server OK", secs),
+                        Some(false) => format!("Thinking… {}s, server not answering", secs),
+                        None => format!("Thinking… {}s", secs),
+                    },
+                    Phase::Receiving if r.reasoning && r.text.is_empty() => format!("Reasoning… {}s", secs),
+                    Phase::Receiving => format!("Receiving… {}s", secs),
+                }
+            }
+            None => return,
+        };
+        self.set_status(&status);
+    }
+
+    /// F4 while busy: stop waiting. The worker notices and drops the connection.
+    fn cancel_request(&mut self) {
+        if let Some(r) = &self.request {
+            r.lock().unwrap().fail("Cancelled.");
+        }
+        self.on_response();
+    }
+
+    /// The request has ended (finished, failed, stalled, or cancelled).
     pub(crate) fn on_response(&mut self) {
-        let result = self.pending.lock().unwrap().take();
+        let outcome = match &self.request {
+            Some(r) => r.lock().unwrap().outcome.take(),
+            None => None,
+        };
+        // a stale wake-up from an abandoned worker, or the request isn't over yet
+        let outcome = match outcome {
+            Some(o) => o,
+            None => return,
+        };
+        // pick up any text that arrived since the last progress update
+        self.sync_streaming_text();
+        self.request = None;
+        let streamed = self.streaming_msg.take();
         self.busy = false;
-        let reply_top = self.lines.len();
-        match result {
-            Some(Ok(reply)) => {
+        // where the reply starts on screen, to anchor the view below
+        let reply_top = match streamed {
+            Some(_) => self.last_msg_line,
+            None => self.lines.len(),
+        };
+        match outcome {
+            Ok(reply) => {
                 let reply = reply.trim().to_string();
                 self.history.push(ChatMessage::assistant(&reply));
-                self.add_message(Role::Assistant, if reply.is_empty() { "(empty reply)" } else { &reply });
+                match streamed {
+                    Some(i) => {
+                        self.transcript[i].1 = reply;
+                        self.rewrap_last();
+                    }
+                    None => self.add_message(
+                        Role::Assistant,
+                        if reply.is_empty() { "(empty reply)" } else { &reply },
+                    ),
+                }
                 self.set_status("Reply received. F3 to scroll.");
             }
-            Some(Err(e)) => {
+            Err(e) => {
+                if let Some(i) = streamed {
+                    self.transcript[i].1.push_str(" […cut off]");
+                    self.rewrap_last();
+                }
                 // Drop the failed turn from the context so a retry isn't poisoned.
                 self.history.pop();
                 self.add_message(Role::System, &format!("Error: {}", e));
-                self.set_status("Request failed — see message above.");
+                self.set_status(if e == "Cancelled." {
+                    "Cancelled."
+                } else {
+                    "Request failed — see message above."
+                });
             }
-            None => return, // spurious wake-up; nothing to do
         }
         // Anchor the view at the top of the just-added reply, and if it runs off
         // the bottom of the screen switch to scroll mode so the arrows read it.
@@ -409,6 +656,7 @@ impl OllamaClient {
 
     fn clear_conversation(&mut self) {
         self.history.clear();
+        self.transcript.clear();
         self.lines.clear();
         self.scroll = 0;
         self.scroll_mode = false;
@@ -619,9 +867,66 @@ impl OllamaClient {
     }
 }
 
-/// Transcript lines start at x = 6; keep the same gap on the right so the
-/// TextView never needs to wrap a line itself.
-fn transcript_width(screensize: Point) -> isize { (screensize.x - 12).max(40) }
+/// Runs alongside each request until it ends: ticks the UI once a second, probes
+/// the server while no reply has started, and fails the request if the server
+/// stops answering or a streaming reply stalls.
+fn watchdog(request: Arc<Mutex<Request>>, config: Config, cid: xous::CID) {
+    let mut next_probe = Instant::now() + PROBE_EVERY;
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        {
+            let mut r = request.lock().unwrap();
+            if r.outcome.is_some() || r.cancelled {
+                return;
+            }
+            match r.phase {
+                Phase::Waiting if r.probe_failures >= PROBE_FAILURES_TO_GIVE_UP => {
+                    r.fail(
+                        "The server stopped answering while the reply was being prepared. Check \
+                         Wi-Fi and that ollama is still running, then send your message again.",
+                    );
+                    drop(r);
+                    ping(cid, AppOp::ResponseReady);
+                    return;
+                }
+                Phase::Receiving if r.last_data.elapsed() >= STALL_LIMIT => {
+                    r.fail(&format!(
+                        "The reply stalled: nothing arrived for {} seconds, so the connection was \
+                         probably lost. Send your message again to retry.",
+                        STALL_LIMIT.as_secs()
+                    ));
+                    drop(r);
+                    ping(cid, AppOp::ResponseReady);
+                    return;
+                }
+                Phase::Waiting if !r.probing && Instant::now() >= next_probe => {
+                    // probe on its own thread, so the ticks keep coming
+                    r.probing = true;
+                    next_probe = Instant::now() + PROBE_EVERY;
+                    let request = Arc::clone(&request);
+                    let config = config.clone();
+                    std::thread::spawn(move || {
+                        let ok = net::probe(&config);
+                        let mut r = request.lock().unwrap();
+                        r.probing = false;
+                        r.server_ok = Some(ok);
+                        r.probe_failures = if ok { 0 } else { r.probe_failures + 1 };
+                    });
+                }
+                _ => {}
+            }
+        }
+        ping(cid, AppOp::Tick);
+    }
+}
+
+/// Transcript lines start at x = 6. Leave a gap on the right so the TextView
+/// never needs to wrap a line itself; Large glyphs are drawn doubled and can
+/// spill a few pixels past their measured width, so they get a wider gap.
+fn transcript_width(screensize: Point, large: bool) -> isize {
+    let right_gap = if large { 22 } else { 8 };
+    (screensize.x - 6 - right_gap).max(40)
+}
 
 /// Horizontal advance of one glyph in pixels, as the GAM typesetter lays it
 /// out: glyph width plus kerning, with spaces unkerned. Large is the Small font

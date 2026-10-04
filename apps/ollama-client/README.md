@@ -39,12 +39,22 @@ to edit mode.
 | ↑ ↓ ← →    | *(edit mode)* move the text cursor in the input line     |
 | F1         | server settings (host / port / model)                    |
 | F2         | list the server's models and select one                  |
-| F4         | display menu: toggle font size (Regular/Large) or clear   |
+| F4         | display menu: toggle font size (Regular/Large) or clear; while a reply is pending, also "Stop waiting for the reply" |
 
 The input line uses a **no-op predictor** (no autocomplete bar to compete with the
 function keys). F4 opens a small menu to switch the transcript between the Regular
 and Large glyph size (the reply re-wraps to fit) or to clear the conversation. The
 font choice affects the transcript only; the title/status/hint chrome stays Regular.
+
+### While waiting for a reply
+
+The reply streams in as it's written. Before the first words arrive, the status
+line counts the seconds (`Thinking… 12s`) and the app checks every 15 seconds that
+the server still answers (`server OK`). If two checks in a row fail, it stops
+waiting and says so. Once text is flowing, 90 seconds without any new data counts
+as a lost connection. Either way your message is dropped from the context, so you
+can simply send it again. You can also give up yourself with **F4 → Stop waiting
+for the reply**.
 
 ### Choosing a model
 
@@ -60,10 +70,11 @@ from the beginning, then scroll down through it.
 ## How it works
 
 - `config.rs` — host / port / model, persisted in the PDDB dict `ollama.config`.
-- `net.rs` — a `POST` to ollama's `/api/chat` endpoint with `"stream": false`,
-  via `ureq` over plain HTTP. The Xous `net` service transparently backs
-  `std::net::TcpStream`, so no socket code is needed. The full conversation is
-  sent each turn so the model keeps context.
+- `net.rs` — a `POST` to ollama's `/api/chat` endpoint with `"stream": true`,
+  via `ureq`; the reply comes back as newline-delimited JSON chunks. The Xous
+  `net` service transparently backs `std::net::TcpStream`, so no socket code is
+  needed. The full conversation is sent each turn so the model keeps context.
+  `probe()` is a quick `GET /api/version` used to check the server is up.
 - `ui.rs` — a `UxType::Chat` UI: GAM/IMEF own the predictive input line at the
   bottom and hand us a content canvas above it. The conversation is kept as a
   `(role, text)` transcript and word-wrapped into display `lines`; `scroll` is the
@@ -71,7 +82,12 @@ from the beginning, then scroll down through it.
   the F4 font toggle re-flow the text. Finished prompts arrive via the `Line`
   opcode; arrow keys arrive via `rawkeys` in parallel with the IME and only scroll
   in **scroll mode** (F3). Sends run on a worker thread so the UI stays responsive;
-  the worker wakes the main loop with `AppOp::ResponseReady` when a reply is ready.
+  the worker streams the reply into a shared `Request` and wakes the main loop with
+  `AppOp::Progress` (at most twice a second) and `AppOp::ResponseReady` at the end.
+  A watchdog thread sends `AppOp::Tick` once a second for the status line and fails
+  the request when the server stops answering or the stream stalls. Xous TCP has no
+  keep-alives, so a silent connection can't be checked directly; separate probes
+  and the stream's own data are the liveness signals.
 - `predictor.rs` — a minimal IME predictor that returns no suggestions, so the
   `Chat` input line works without an autocomplete bar (modeled on
   `libs/chat/src/icontray.rs`).
@@ -81,8 +97,7 @@ from the beginning, then scroll down through it.
 
 - Plain HTTP only (fine for a LAN ollama). HTTPS would need the `libs/tls` trust
   flow, as in `apps/sidplayer/src/netfetch.rs`.
-- Non-streaming: the whole reply arrives at once (a "Thinking…" status shows
-  while waiting). Token streaming would read the body incrementally and parse
-  newline-delimited JSON.
+- A worker abandoned after a stall stays blocked until its 5-minute read timeout
+  expires, then exits quietly; its late result is ignored.
 - Conversation history is kept only in RAM (cleared with F4 or on exit); it is
   not persisted to the PDDB.
