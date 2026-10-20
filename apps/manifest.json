@@ -60,6 +60,18 @@
             }
         }
     },
+    "localwiki": {
+        "context_name": "local wiki",
+        "menu_name": {
+            "appmenu.localwiki": {
+                "en": "LocalWiki",
+                "en-tts": "Local Wiki",
+                "fr": "LocalWiki",
+                "ja": "LocalWiki",
+                "zh": "LocalWiki"
+            }
+        }
+    },
     "sidplayer": {
         "context_name": "sidplayer",
         "menu_name": {

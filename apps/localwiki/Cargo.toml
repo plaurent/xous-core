@@ -1,0 +1,30 @@
+[package]
+name = "localwiki"
+version = "0.1.0"
+authors = ["Patryk Laurent <patryk@pakl.net>"]
+edition = "2021"
+description = "A read-only reader for wikis exported from the PaklWiki apps, imported over HTTP(S)"
+
+# Dependency versions enforced by Cargo.lock.
+[dependencies]
+log = "0.4.14"
+num-derive = { version = "0.4.2", default-features = false }
+num-traits = { version = "0.2.14", default-features = false }
+xous = "0.9.70"
+log-server = { package = "xous-api-log", version = "0.1.69" }
+xous-names = { package = "xous-api-names", version = "0.9.71" }
+gam = { path = "../../services/gam" }
+# glyph width tables, to word-wrap pages and place link underlines by real pixel widths
+blitstr2 = { path = "../../libs/blitstr2" }
+modals = { path = "../../services/modals" }
+pddb = { path = "../../services/pddb" }
+# Fetching wikis from a directory index, as in apps/sidplayer: ureq over the Xous
+# trust-store TLS connector, so a new HTTPS host runs the trust-on-first-use flow.
+tls = { path = "../../libs/tls" }
+ureq = { version = "2.9.4", features = ["json"] }
+url = "2.3.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = []
