@@ -569,6 +569,8 @@ impl LocalWiki {
         match k {
             '↑' => self.scroll_by(-1),
             '↓' => self.scroll_by(1),
+            '0' => self.scroll_by((-1 * (self.visible_rows as isize - 1)).min(-1)),
+            'u' => self.scroll_by((-1 * (self.visible_rows as isize - 1)).min(-1)),
             ' ' => self.scroll_by((self.visible_rows as isize - 1).max(1)),
             '←' => self.select_link(false),
             '→' => self.select_link(true),
